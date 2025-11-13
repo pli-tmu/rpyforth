@@ -356,12 +356,16 @@ def prim_MUL_STAR(inner, cur, ip):
     BIT_MASK = (1 << LONG_BIT) - 1   #111...11 64bits
     SIGN_BIT = 1 << (LONG_BIT - 1)  #100...00 64bits
 
-    low = c.intval & BIT_MASK    # get c's low 64bits
+    low = c.intval & BIT_MASK    # get c's low 64bits 
+    #high 64bits: 0s, low 64bits: c's low 64bits,total 128bits
 
-    if low & SIGN_BIT:  # if highest bit is 1
+    if low & SIGN_BIT:  # if highest of c's low bits is 1
+    #because highest bit of 128bits is 0, conversion is required
+
         low = low - (1 << LONG_BIT)  # convert to negative number
 
-    high = c.intval >> LONG_BIT # get c's high 64bits
+    high = c.intval >> LONG_BIT # get c's high 64bits 
+    #(ex,LONG_BIT = 4) if c = 0100 0000, high = 0000 0100 = c's high 4bits : if c = 1100 1000, high = 1111 1100 = c's high 4bits
 
     inner.push_ds(W_IntObject(low))
     inner.push_ds(W_IntObject(high))
