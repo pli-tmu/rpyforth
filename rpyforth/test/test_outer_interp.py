@@ -200,6 +200,12 @@ def test_xor():
     assert run_and_pop("-1 -1 XOR").intval == 0
     assert run_and_pop("18446744073709551615 18446744073709551615 XOR").intval == 0
 
+def test_2STAR():
+    assert run_and_pop("16384 2*").intval == 32768
+    assert run_and_pop("1 2*").intval == 2
+    assert run_and_pop("0 2*").intval == 0
+
+
 def test_SDOUBLE_QUOTE():
     str = "Hello, World!"
     inner = run("S\" Hello, World!\"")
