@@ -270,10 +270,18 @@ def prim_BL(inner, cur, ip):
 
 # 2* ( x1 -- x2 )
 def prim_2STAR(inner, cur, ip):
-    """GForth core 2012: x2 is the result of shifting x1 left by one bit towards the most significant bit."""
+    """GForth core 2012: x2 is the result of shifting x1 one bit toward the most-significant bit."""
     a = inner.pop_ds()
     assert isinstance(a, W_IntObject)
     inner.push_ds(a.lshift(W_IntObject(1)))
+    return ip
+
+# 2/ ( x1 -- x2 )
+def prim_2SLASH(inner, cur, ip):
+    """GForth core 2012: x2 is the result of shifting x1 one bit right towards the least-significant bit."""
+    a = inner.pop_ds()
+    assert isinstance(a, W_IntObject)
+    inner.push_ds(a.rshift(W_IntObject(1)))
     return ip
 
 # Arithmetic
@@ -940,6 +948,7 @@ def install_primitives(outer):
     outer.define_prim("BL", prim_BL)
 
     outer.define_prim("2*", prim_2STAR)
+    outer.define_prim("2/", prim_2SLASH)
 
     # arithmetic
     outer.define_prim("+", prim_ADD)

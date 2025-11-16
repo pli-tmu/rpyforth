@@ -205,6 +205,10 @@ def test_2STAR():
     assert run_and_pop("1 2*").intval == 2
     assert run_and_pop("0 2*").intval == 0
 
+def test_2SLASH():
+    assert run_and_pop("16384 2/").intval == 8192
+    assert run_and_pop("2 2/").intval == 1
+    assert run_and_pop("-1 2/").intval == -1
 
 def test_SDOUBLE_QUOTE():
     str = "Hello, World!"
