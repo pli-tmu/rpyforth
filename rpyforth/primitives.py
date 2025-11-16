@@ -372,6 +372,25 @@ def prim_MUL_STAR(inner, cur, ip):
 
     return ip
 
+# UM* ( n1 n2 -- d)
+def prim_U_MUL_STAR(inner, cur, ip):
+    """GForth core 2012: multiply u1 by u2, giving the unsigned double-cell product ud."""
+    a, b = inner.top2_ds()
+    c = a.mul(b)    #c is 128bits
+
+    BIT_MASK = (1 << LONG_BIT) - 1   #111...11 64bits
+
+    low = c.intval & BIT_MASK    # get c's low 64bits 
+    #high 64bits: 0s, low 64bits: c's low 64bits,total 128bits
+
+    high = c.intval >> LONG_BIT # get c's high 64bits 
+    #(ex,LONG_BIT = 4) if c = 0100 0000, high = 0000 0100 = c's high 4bits : if c = 1100 1000, high = 1111 1100 = c's high 4bits
+
+    inner.push_ds(W_IntObject(low))
+    inner.push_ds(W_IntObject(high))
+
+    return ip
+
 # memory management
 
 
@@ -897,6 +916,7 @@ def install_primitives(outer):
     outer.define_prim("1-", prim_DEC)
 
     outer.define_prim("M*", prim_MUL_STAR)
+    outer.define_prim("UM*", prim_U_MUL_STAR)
 
     # I/O
     outer.define_prim(".", prim_DOT)

@@ -140,6 +140,8 @@ def test_lshift():
     assert run_and_pop("1 1 LSHIFT").intval == 2
     assert run_and_pop("1 2 LSHIFT").intval == 4
     assert run_and_pop("1 15 LSHIFT").intval == 32768
+    #assert run_and_pop("1 0xF LSHIFT").intval == 0x8000
+
 
 def test_s_to_d():
     inner = run("1024 S>D")
@@ -165,7 +167,20 @@ def test_mul_star():
 
 def test_bl():
     assert run_and_pop("BL").intval == 32
-    #assert run_and_pop("1 0xF LSHIFT").intval == 0x8000
+
+def test_u_mul_star():
+    inner = run("1024 4 UM*")
+    assert inner.pop_ds().intval == 0
+    assert inner.pop_ds().intval == 4096
+    inner = run("9223372036854775808 2 UM*")
+    assert inner.pop_ds().intval == 1
+    assert inner.pop_ds().intval == 0
+    inner = run("18446744073709551615 2 UM*")
+    assert inner.pop_ds().intval == 1
+    assert inner.pop_ds().intval == 18446744073709551614
+    inner = run("18446744073709551615 18446744073709551615 UM*")
+    assert inner.pop_ds().intval == 18446744073709551614
+    assert inner.pop_ds().intval == 1
 
 def test_SDOUBLE_QUOTE():
     str = "Hello, World!"
