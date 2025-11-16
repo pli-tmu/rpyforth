@@ -182,6 +182,12 @@ def test_u_mul_star():
     assert inner.pop_ds().intval == 18446744073709551614
     assert inner.pop_ds().intval == 1
 
+def test_and():
+    assert run_and_pop("6 3 AND").intval == 2
+    assert run_and_pop("0 9223372036854775807 AND").intval == 0
+    assert run_and_pop("-1 -1 AND").intval == -1
+    assert run_and_pop("18446744073709551615 18446744073709551615 AND").intval == 18446744073709551615
+
 def test_SDOUBLE_QUOTE():
     str = "Hello, World!"
     inner = run("S\" Hello, World!\"")
