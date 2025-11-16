@@ -400,6 +400,16 @@ def prim_AND(inner, cur, ip):
     inner.push_ds(W_IntObject(a.intval & b.intval))
     return ip
 
+
+# OR ( x1 x2 -- x3 )
+def prim_OR(inner, cur, ip):
+    """GForth core 2012: x3 is the bit-by-bit inclusive-or of x1 with x2."""
+    a, b = inner.top2_ds()
+    assert isinstance(a, W_IntObject)
+    assert isinstance(b, W_IntObject)
+    inner.push_ds(W_IntObject(a.intval | b.intval))
+    return ip
+
 # memory management
 
 
@@ -928,6 +938,7 @@ def install_primitives(outer):
     outer.define_prim("UM*", prim_U_MUL_STAR)
 
     outer.define_prim("AND", prim_AND)
+    outer.define_prim("OR", prim_OR)
 
     # I/O
     outer.define_prim(".", prim_DOT)

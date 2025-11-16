@@ -188,6 +188,12 @@ def test_and():
     assert run_and_pop("-1 -1 AND").intval == -1
     assert run_and_pop("18446744073709551615 18446744073709551615 AND").intval == 18446744073709551615
 
+def test_or():
+    assert run_and_pop("6 3 OR").intval == 7
+    assert run_and_pop("0 9223372036854775807 OR").intval == 9223372036854775807
+    assert run_and_pop("-1 -1 OR").intval == -1
+    assert run_and_pop("18446744073709551615 18446744073709551615 OR").intval == 18446744073709551615
+
 def test_SDOUBLE_QUOTE():
     str = "Hello, World!"
     inner = run("S\" Hello, World!\"")
