@@ -24,6 +24,9 @@ def entry_point(argv):
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
     path = argv[1]
+    args = None
+    if len(argv) > 1:
+        args = argv[2:]
     f = open_file_as_stream(path)
     for line in f.readall().split('\n'):
         outer.interpret_line(line)
