@@ -283,45 +283,6 @@ class OuterInterpreter(object):
                 continue
 
             tkey = to_upper(t)
-
-            # Handle control flow words
-            if self.state == INTERPRET:
-                if tkey == "IF":
-                    cond = self.inner.pop_ds()
-                    if cond.intval == 0:
-                        depth = 1
-                        while i < toks_len and depth > 0:
-                            tok = to_upper(toks[i])
-                            if tok == "IF":
-                                depth += 1
-                            elif tok == "ELSE" and depth == 1:
-                                i += 1
-                                break
-                            elif tok == "THEN":
-                                depth -= 1
-                                if depth == 0:
-                                    i += 1
-                                    break
-                            i += 1
-                    continue
-
-                if tkey == "ELSE":
-                    depth = 1
-                    while i < toks_len and depth > 0:
-                        tok = to_upper(toks[i])
-                        if tok == "IF":
-                            depth += 1
-                        elif tok == "THEN":
-                            depth -= 1
-                            if depth == 0:
-                                i += 1
-                                break
-                        i += 1
-                    continue
-
-                if tkey == "THEN":
-                    continue
-
             if self.state == INTERPRET:
                 if tkey == "VARIABLE" or tkey == "FVARIABLE":
                    if i >= toks_len:
