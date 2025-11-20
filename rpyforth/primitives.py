@@ -269,6 +269,22 @@ def prim_BL(inner, cur, ip):
     inner.push_ds(W_IntObject(ord(' ')))
     return ip
 
+# 2* ( x1 -- x2 )
+def prim_2STAR(inner, cur, ip):
+    """GForth core 2012: x2 is the result of shifting x1 one bit toward the most-significant bit."""
+    a = inner.pop_ds()
+    assert isinstance(a, W_IntObject)
+    inner.push_ds(a.lshift(W_IntObject(1)))
+    return ip
+
+# 2/ ( x1 -- x2 )
+def prim_2SLASH(inner, cur, ip):
+    """GForth core 2012: x2 is the result of shifting x1 one bit right towards the least-significant bit."""
+    a = inner.pop_ds()
+    assert isinstance(a, W_IntObject)
+    inner.push_ds(a.rshift(W_IntObject(1)))
+    return ip
+
 # Arithmetic
 
 
@@ -357,16 +373,67 @@ def prim_MUL_STAR(inner, cur, ip):
     BIT_MASK = (1 << LONG_BIT) - 1   #111...11 64bits
     SIGN_BIT = 1 << (LONG_BIT - 1)  #100...00 64bits
 
-    low = c.intval & BIT_MASK    # get c's low 64bits
+    low = c.intval & BIT_MASK    # get c's low 64bits 
+    #high 64bits: 0s, low 64bits: c's low 64bits,total 128bits
 
-    if low & SIGN_BIT:  # if highest bit is 1
+    if low & SIGN_BIT:  # if highest of c's low bits is 1
+    #because highest bit of 128bits is 0, conversion is required
+
         low = low - (1 << LONG_BIT)  # convert to negative number
 
-    high = c.intval >> LONG_BIT # get c's high 64bits
+    high = c.intval >> LONG_BIT # get c's high 64bits 
+    #(ex,LONG_BIT = 4) if c = 0100 0000, high = 0000 0100 = c's high 4bits : if c = 1100 1000, high = 1111 1100 = c's high 4bits
 
     inner.push_ds(W_IntObject(low))
     inner.push_ds(W_IntObject(high))
 
+    return ip
+
+# UM* ( n1 n2 -- d)
+def prim_U_MUL_STAR(inner, cur, ip):
+    """GForth core 2012: multiply u1 by u2, giving the unsigned double-cell product ud."""
+    a, b = inner.top2_ds()
+    c = a.mul(b)    #c is 128bits
+
+    BIT_MASK = (1 << LONG_BIT) - 1   #111...11 64bits
+
+    low = c.intval & BIT_MASK    # get c's low 64bits 
+    #high 64bits: 0s, low 64bits: c's low 64bits,total 128bits
+
+    high = c.intval >> LONG_BIT # get c's high 64bits 
+    #(ex,LONG_BIT = 4) if c = 0100 0000, high = 0000 0100 = c's high 4bits : if c = 1100 1000, high = 1111 1100 = c's high 4bits
+
+    inner.push_ds(W_IntObject(low))
+    inner.push_ds(W_IntObject(high))
+
+    return ip
+
+# AND ( x1 x2 -- x3 )
+def prim_AND(inner, cur, ip):
+    """GForth core 2012: x3 is the bit-by-bit logical "and" of x1 with x2."""
+    a, b = inner.top2_ds()
+    assert isinstance(a, W_IntObject)
+    assert isinstance(b, W_IntObject)
+    inner.push_ds(W_IntObject(a.intval & b.intval))
+    return ip
+
+
+# OR ( x1 x2 -- x3 )
+def prim_OR(inner, cur, ip):
+    """GForth core 2012: x3 is the bit-by-bit inclusive-or of x1 with x2."""
+    a, b = inner.top2_ds()
+    assert isinstance(a, W_IntObject)
+    assert isinstance(b, W_IntObject)
+    inner.push_ds(W_IntObject(a.intval | b.intval))
+    return ip
+
+# XOR ( x1 x2 -- x3 )
+def prim_XOR(inner, cur, ip):
+    """GForth core 2012: x3 is the bit-by-bit exclusive-or of x1 with x2."""
+    a, b = inner.top2_ds()
+    assert isinstance(a, W_IntObject)
+    assert isinstance(b, W_IntObject)
+    inner.push_ds(W_IntObject(a.intval ^ b.intval))
     return ip
 
 # memory management
@@ -1138,6 +1205,9 @@ def install_primitives(outer):
     outer.define_prim("S>D", prim_S_TO_D)
     outer.define_prim("BL", prim_BL)
 
+    outer.define_prim("2*", prim_2STAR)
+    outer.define_prim("2/", prim_2SLASH)
+
     # arithmetic
     outer.define_prim("+", prim_ADD)
     outer.define_prim("-", prim_SUB)
@@ -1151,6 +1221,11 @@ def install_primitives(outer):
     outer.define_prim("1-", prim_DEC)
 
     outer.define_prim("M*", prim_MUL_STAR)
+    outer.define_prim("UM*", prim_U_MUL_STAR)
+
+    outer.define_prim("AND", prim_AND)
+    outer.define_prim("OR", prim_OR)
+    outer.define_prim("XOR", prim_XOR)
 
     # I/O
     outer.define_prim(".", prim_DOT)

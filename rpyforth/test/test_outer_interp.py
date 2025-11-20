@@ -135,6 +135,8 @@ def test_lshift():
     assert run_and_pop("1 1 LSHIFT").intval == 2
     assert run_and_pop("1 2 LSHIFT").intval == 4
     assert run_and_pop("1 15 LSHIFT").intval == 32768
+    #assert run_and_pop("1 0xF LSHIFT").intval == 0x8000
+
 
 def test_s_to_d():
     inner = run("1024 S>D")
@@ -160,7 +162,48 @@ def test_mul_star():
 
 def test_bl():
     assert run_and_pop("BL").intval == 32
-    #assert run_and_pop("1 0xF LSHIFT").intval == 0x8000
+
+def test_u_mul_star():
+    inner = run("1024 4 UM*")
+    assert inner.pop_ds().intval == 0
+    assert inner.pop_ds().intval == 4096
+    inner = run("9223372036854775808 2 UM*")
+    assert inner.pop_ds().intval == 1
+    assert inner.pop_ds().intval == 0
+    inner = run("18446744073709551615 2 UM*")
+    assert inner.pop_ds().intval == 1
+    assert inner.pop_ds().intval == 18446744073709551614
+    inner = run("18446744073709551615 18446744073709551615 UM*")
+    assert inner.pop_ds().intval == 18446744073709551614
+    assert inner.pop_ds().intval == 1
+
+def test_and():
+    assert run_and_pop("6 3 AND").intval == 2
+    assert run_and_pop("0 9223372036854775807 AND").intval == 0
+    assert run_and_pop("-1 -1 AND").intval == -1
+    assert run_and_pop("18446744073709551615 18446744073709551615 AND").intval == 18446744073709551615
+
+def test_or():
+    assert run_and_pop("6 3 OR").intval == 7
+    assert run_and_pop("0 9223372036854775807 OR").intval == 9223372036854775807
+    assert run_and_pop("-1 -1 OR").intval == -1
+    assert run_and_pop("18446744073709551615 18446744073709551615 OR").intval == 18446744073709551615
+
+def test_xor():
+    assert run_and_pop("6 3 XOR").intval == 5
+    assert run_and_pop("0 9223372036854775807 XOR").intval == 9223372036854775807
+    assert run_and_pop("-1 -1 XOR").intval == 0
+    assert run_and_pop("18446744073709551615 18446744073709551615 XOR").intval == 0
+
+def test_2STAR():
+    assert run_and_pop("16384 2*").intval == 32768
+    assert run_and_pop("1 2*").intval == 2
+    assert run_and_pop("0 2*").intval == 0
+
+def test_2SLASH():
+    assert run_and_pop("16384 2/").intval == 8192
+    assert run_and_pop("2 2/").intval == 1
+    assert run_and_pop("-1 2/").intval == -1
 
 def test_SDOUBLE_QUOTE():
     str = "Hello, World!"
