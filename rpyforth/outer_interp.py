@@ -487,6 +487,94 @@ class OuterInterpreter(object):
                     self.inner.push_ds(addr)
                     continue
 
+                if tkey == "STATE":
+                    # STATE ( -- a-addr )
+                    # Return address of state variable
+                    # Allocate a cell for state if needed, or use a fixed location
+                    addr = W_IntObject(self.inner.here)
+                    # Store current state (0 = INTERPRET, -1 = COMPILE)
+                    state_val = W_IntObject(-1 if self.state == COMPILE else 0)
+                    self.inner.cell_store(addr, state_val)
+                    self.inner.push_ds(addr)
+                    continue
+
+                if tkey == "EVALUATE":
+                    # EVALUATE ( c-addr u -- )
+                    # Evaluate string as Forth code
+                    u = self.inner.pop_ds()
+                    c_addr = self.inner.pop_ds()
+                    assert isinstance(u, W_IntObject)
+
+                    # Extract string from buffer or memory
+                    if isinstance(c_addr, W_PtrObject):
+                        # String from S" - use buffer
+                        ptr = c_addr.ptrval
+                        length = u.intval
+                        eval_str = ''.join([self.inner.buf[ptr - length + i] for i in range(length)])
+                    elif isinstance(c_addr, W_IntObject):
+                        # String from memory
+                        length = u.intval
+                        chars = []
+                        for j in range(length):
+                            ch_obj = self.inner.cell_fetch(W_IntObject(c_addr.intval + j))
+                            chars.append(chr(ch_obj.intval))
+                        eval_str = ''.join(chars)
+                    else:
+                        print "EVALUATE: unexpected address type"
+                        continue
+
+                    # Evaluate the string
+                    self.interpret_line(eval_str)
+                    continue
+
+                if tkey == "ABORT":
+                    # ABORT ( -- )
+                    # Clear stacks and return to interpret state
+                    self.inner.ds_ptr = 0
+                    self.inner.rs_ptr = 0
+                    self.state = INTERPRET
+                    print "ABORT"
+                    return
+
+                if tkey == 'ABORT"':
+                    # ABORT" ( flag "ccc<quote>" -- )
+                    # If flag is non-zero, display message and abort
+                    # Parse the message string
+                    abort_msg_parts = []
+                    while i < toks_len:
+                        tok, i = self._read_tok(toks, i)
+                        tok_len = len(tok)
+                        if tok_len > 0 and tok[tok_len - 1] == '"':
+                            # Found closing quote
+                            stop = tok_len - 1
+                            if stop > 0:
+                                abort_msg_parts.append(tok[:stop])
+                            break
+                        abort_msg_parts.append(tok)
+
+                    abort_msg = ' '.join(abort_msg_parts)
+
+                    # Get the flag from stack
+                    flag = self.inner.pop_ds()
+                    assert isinstance(flag, W_IntObject)
+
+                    # If flag is non-zero, abort with message
+                    if flag.intval != 0:
+                        print "ABORT:", abort_msg
+                        self.inner.ds_ptr = 0
+                        self.inner.rs_ptr = 0
+                        self.state = INTERPRET
+                        return
+                    continue
+
+                if tkey == "QUIT":
+                    # QUIT ( -- )
+                    # Reset and enter interpret loop (simplified)
+                    self.inner.ds_ptr = 0
+                    self.inner.rs_ptr = 0
+                    self.state = INTERPRET
+                    return
+
             if self.state == COMPILE:
                 if tkey == "IF":
                     orig = self.cc_ptr

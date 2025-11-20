@@ -771,3 +771,71 @@ def test_sign_in_pno():
     outer = OuterInterpreter(inner)
     # Complete PNO example with SIGN
     outer.interpret_line("<# -5 SIGN 0 0 #>")
+    w_str = inner.pop_ds()
+    assert isinstance(w_str, W_StringObject)
+
+# System Tests
+
+def test_fill():
+    """Test FILL - fill memory with character"""
+    inner = InnerInterpreter()
+    outer = OuterInterpreter(inner)
+    # Fill 5 bytes starting at HERE with 'A' (65)
+    outer.interpret_line("HERE 5 65 FILL")
+
+def test_move():
+    """Test MOVE - copy memory region"""
+    inner = InnerInterpreter()
+    outer = OuterInterpreter(inner)
+    # Store values using VARIABLE to get proper addresses
+    outer.interpret_line("VARIABLE SRC1  VARIABLE SRC2  VARIABLE SRC3")
+    outer.interpret_line("10 SRC1 !  20 SRC2 !  30 SRC3 !")
+    # Get source address and create destination
+    outer.interpret_line("VARIABLE DST")
+    # Move 3 bytes from SRC1 to DST
+    outer.interpret_line("SRC1 DST 3 MOVE")
+    # Verify first value was copied
+    outer.interpret_line("DST @")
+    result = inner.pop_ds()
+    assert result.intval == 10
+
+def test_state():
+    """Test STATE - get interpreter state"""
+    inner = InnerInterpreter()
+    outer = OuterInterpreter(inner)
+    # In interpret mode, STATE should return address with 0
+    outer.interpret_line("STATE @")
+    state_val = inner.pop_ds()
+    assert state_val.intval == 0
+
+def test_evaluate():
+    """Test EVALUATE - evaluate string as Forth"""
+    inner = InnerInterpreter()
+    outer = OuterInterpreter(inner)
+    # Create a string and evaluate it
+    outer.interpret_line('S" 1 2 +"')
+    outer.interpret_line("EVALUATE")
+    result = inner.pop_ds()
+    assert result.intval == 3
+
+def test_abort_quote_false():
+    """Test ABORT\" with false condition - should not abort"""
+    inner = InnerInterpreter()
+    outer = OuterInterpreter(inner)
+    # Push some values
+    outer.interpret_line("1 2 3")
+    # False flag should not abort
+    outer.interpret_line('0 ABORT" This should not print"')
+    # Stack should still have values
+    assert inner.ds_ptr == 3
+
+def test_abort_quote_true():
+    """Test ABORT\" with true condition - should abort"""
+    inner = InnerInterpreter()
+    outer = OuterInterpreter(inner)
+    # Push some values
+    outer.interpret_line("1 2 3")
+    # True flag should abort and clear stack
+    outer.interpret_line('-1 ABORT" Error occurred"')
+    # Stack should be cleared
+    assert inner.ds_ptr == 0

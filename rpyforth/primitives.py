@@ -1022,6 +1022,53 @@ def prim_TOBODY(inner, cur, ip):
     return ip
 
 
+# System Operations
+
+# FILL ( c-addr u char -- )
+def prim_FILL(inner, cur, ip):
+    """GForth core 2012: fill u bytes of memory starting at c-addr with char."""
+    char = inner.pop_ds()
+    u = inner.pop_ds()
+    c_addr = inner.pop_ds()
+    assert isinstance(char, W_IntObject)
+    assert isinstance(u, W_IntObject)
+    assert isinstance(c_addr, W_IntObject)
+
+    # Fill memory with char
+    addr = c_addr.intval
+    count = u.intval
+    for i in range(count):
+        inner.cell_store(W_IntObject(addr + i), char)
+    return ip
+
+
+# MOVE ( addr1 addr2 u -- )
+def prim_MOVE(inner, cur, ip):
+    """GForth core 2012: copy u bytes from addr1 to addr2."""
+    u = inner.pop_ds()
+    addr2 = inner.pop_ds()
+    addr1 = inner.pop_ds()
+    assert isinstance(u, W_IntObject)
+    assert isinstance(addr2, W_IntObject)
+    assert isinstance(addr1, W_IntObject)
+
+    # Copy u bytes from addr1 to addr2
+    # Handle overlapping regions by using a temporary buffer
+    src = addr1.intval
+    dst = addr2.intval
+    count = u.intval
+
+    # Read all values first (in case of overlap)
+    values = []
+    for i in range(count):
+        values.append(inner.cell_fetch(W_IntObject(src + i)))
+
+    # Write to destination
+    for i in range(count):
+        inner.cell_store(W_IntObject(dst + i), values[i])
+    return ip
+
+
 # Memory Access Operations (additional)
 
 # +! ( n|u a-addr -- )
@@ -1204,6 +1251,8 @@ def install_primitives(outer):
 
     outer.define_prim("S>D", prim_S_TO_D)
     outer.define_prim("BL", prim_BL)
+    outer.define_prim("FILL", prim_FILL)
+    outer.define_prim("MOVE", prim_MOVE)
 
     outer.define_prim("2*", prim_2STAR)
     outer.define_prim("2/", prim_2SLASH)
