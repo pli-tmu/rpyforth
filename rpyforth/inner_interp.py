@@ -18,20 +18,49 @@ from rpython.rlib.rarithmetic import r_ulonglong, intmask
 from rpython.rlib.jit import JitDriver, promote, elidable, unroll_safe, promote_string
 from rpython.rlib.rfile import create_stdio
 
-STACK_SIZE = 64  # Increased for deeper nesting
+STACK_SIZE = 256 # Increased for deeper nesting
 BUF_SIZE = 1024
 HEAP_CELL_COUNT = 65536
 HEAP_SIZE_BYTES = HEAP_CELL_COUNT * CELL_SIZE_BYTES
 
+class CallStack:
+    _immutable_fields_ = ["thread", "ip", "next"]
+
+    def __init__(self, thread, ip, next):
+        self.thread = thread
+        self.ip = ip
+        self.next = next
+
+    def pop(self):
+        assert self is not None
+        return (self.thread, self.ip), self.next
+
+empty_stack = CallStack(None, -42, None)
+memoization = {}
+
+@elidable
+def push(thread, ip, next):
+    key = (thread, ip), next
+    if key in memoization:
+        return memoization[key]
+    result = CallStack(thread, ip, next)
+    memoization[key] = result
+    return result
+
+@elidable
+def is_empty(call_stack):
+    return call_stack is empty_stack
+
+
 class Exit(Exception):
     pass
 
-def get_printable_location(ip, thread):
+def get_printable_location(ip, thread, call_stack):
     return "ip=%d %s %s" % (ip, thread.code[ip].to_string(), thread.lits[ip].to_string())
 
 jitdriver = JitDriver(
-    greens=['ip', 'thread'],
-    reds=['self'],
+    greens=['ip', 'thread', 'call_stack'],
+    reds=['self',],
     virtualizables=['self'],
     get_printable_location=get_printable_location
 )
@@ -190,32 +219,49 @@ class InnerInterpreter(object):
         return W_FloatObject(floatval)
 
     def execute_thread(self, thread, ip=0):
+        call_stack = empty_stack
+
         while True:
             jitdriver.jit_merge_point(
                 ip=ip,
                 thread=thread,
+                call_stack=call_stack,
                 self=self
             )
             if ip >= len(thread.code):
-                break
+                if not is_empty(call_stack):
+                    (thread, ip), call_stack = call_stack.pop()
+                    continue
+                else:
+                    break
 
             # Promote the word to allow JIT to specialize on it
             w = promote(thread.code[ip])
             if w is None:
-                break
+                if not is_empty(call_stack):
+                    (thread, ip), call_stack = call_stack.pop()
+                    continue
+                else:
+                    break
             ip += 1
 
             # Promote the primitive function pointer for better inlining
-            try:
-                prim = promote(w.prim)
-                if prim is not None:
-                    ip = prim(self, thread, ip)
-                else:
-                    # Promote the nested thread for better inlining of colon definitions
-                    nested_thread = promote(w.thread)
-                    self.execute_thread(nested_thread)
-            except Exit:
-                break
+            prim = promote(w.prim)
+            if prim is not None:
+                try:
+                    ip = prim(self, thread, ip, call_stack)
+                except Exit:
+                    # EXIT - return to caller
+                    if not is_empty(call_stack):
+                        (thread, ip), call_stack = call_stack.pop()
+                    else:
+                        break
+            else:
+                # Colon definition - push current state and enter nested thread
+                nested_thread = promote(w.thread)
+                call_stack = push(thread, ip, call_stack)
+                thread = nested_thread
+                ip = 0
 
     def execute_word_now(self, w):
         code = [w]
