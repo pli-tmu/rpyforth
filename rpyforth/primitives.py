@@ -323,6 +323,17 @@ def prim_MUL(inner, cur, ip):
     inner.push_ds(W_IntObject(a.intval * b.intval))
     return ip
 
+# / ( n1 n2 -- n3 )
+def prim_DIV(inner, cur, ip):
+    """GForth core 2012: divide n1 by n2, giving the single-cell quotient n3."""
+    # top2_ds pops in correct order: second-to-top (a), then top (b)
+    a, b = inner.top2_ds()
+    assert isinstance(a, W_IntObject)
+    assert isinstance(b, W_IntObject)
+    # Direct field access for better JIT optimization
+    assert b.intval != 0, "Division by zero"
+    inner.push_ds(W_IntObject(a.intval // b.intval))
+    return ip
 
 # ABS ( n -- u )
 def prim_ABS(inner, cur, ip):
@@ -1212,6 +1223,7 @@ def install_primitives(outer):
     outer.define_prim("+", prim_ADD)
     outer.define_prim("-", prim_SUB)
     outer.define_prim("*", prim_MUL)
+    outer.define_prim("/", prim_DIV)
 
     outer.define_prim("ABS", prim_ABS)
     outer.define_prim("NEGATE", prim_NEGATE)

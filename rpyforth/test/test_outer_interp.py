@@ -211,6 +211,11 @@ def test_SDOUBLE_QUOTE():
     assert inner.pop_ds().intval == len(str)
     assert inner.pop_ds().ptrval == len(str) # Cheating!
 
+def test_DIV():
+    assert run_and_pop("10 3 /").intval == 3
+    assert run_and_pop("-20 6 /").intval == -4
+    assert run_and_pop("-9223372036854775808 -1 /").intval == 9223372036854775808
+
 # Floating point tests
 def test_float_literals():
     assert run_and_pop("1.0").floatval == 1.0
