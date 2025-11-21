@@ -635,7 +635,15 @@ class OuterInterpreter(object):
                 code = [self.current_code[idx] for idx in range(self.cc_ptr)]
                 lits = [self.current_lits[idx] for idx in range(self.lit_ptr)]
                 thread = CodeThread(code, lits)
-                self.define_colon(self.current_name, thread)
+
+                # Check if word already exists (RECURSIVE was used)
+                name_upper = to_upper(self.current_name)
+                if name_upper in self.dict:
+                    # Update existing word's thread
+                    existing_word = self.dict[name_upper]
+                    existing_word.thread = thread
+                else:
+                    self.define_colon(self.current_name, thread)
 
                 # reset
                 self.state = INTERPRET
@@ -763,6 +771,16 @@ class OuterInterpreter(object):
 
                 if tkey == "[CHAR]":
                     i = self._compile_char(toks, i)
+                    continue
+
+                if tkey == "RECURSIVE":
+                    # Make the current word visible to itself during compilation
+                    # Add word to dictionary now so it can reference itself
+                    # The thread will be finalized when ; is reached
+                    if self.current_name:
+                        # Create word with empty thread as placeholder
+                        thread = CodeThread([], [])
+                        self.define_colon(self.current_name, thread)
                     continue
 
             w = self.dict.get(tkey, None)
