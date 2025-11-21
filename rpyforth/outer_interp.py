@@ -192,6 +192,398 @@ class OuterInterpreter(object):
         stdin, stdout, stderr = create_stdio()
         stdout.write('\n')
 
+    # Helper methods for interpret_line refactoring
+
+    def _parse_string_until_quote(self, toks, i):
+        """Parse tokens until closing quote, return (parsed_string, new_index)."""
+        toks_len = len(toks)
+        parts = []
+        while i < toks_len:
+            t, i = self._read_tok(toks, i)
+            t_len = len(t)
+            if t_len > 0 and t[t_len - 1] == '"':
+                stop = t_len - 1
+                assert 0 <= stop <= len(t)
+                parts.append(t[:stop])
+                break
+            parts.append(t)
+        return ' '.join(parts), i
+
+    def _handle_s_quote(self, toks, i):
+        """Handle S" - parse string and push c-addr and length."""
+        parsed_str, i = self._parse_string_until_quote(toks, i)
+        size = len(parsed_str)
+        c_addr = self.inner.alloc_buf(parsed_str, size)
+        self.inner.push_ds(c_addr)
+        self.inner.push_ds(W_IntObject(size))
+        return i
+
+    def _handle_dot_quote(self, toks, i):
+        """Handle ." - parse string and print or compile."""
+        parsed_str, i = self._parse_string_until_quote(toks, i)
+        w_str = W_StringObject(parsed_str)
+        if self.state == INTERPRET:
+            self.inner.print_str(w_str)
+        else:
+            self._emit_lit(w_str)
+            self._emit_word(self.wTYPE)
+        return i
+
+    def _define_simple_word(self, name, val):
+        """Define a word that pushes a single value (for VARIABLE, CONSTANT, etc.)."""
+        code = [self.wLIT, self.wEXIT]
+        lits = [val, ZERO]
+        thread = CodeThread(code, lits)
+        self.define_colon(name, thread)
+
+    def _handle_variable(self, toks, i):
+        """Handle VARIABLE and FVARIABLE."""
+        toks_len = len(toks)
+        if i >= toks_len:
+            print "VARIABLE/FVARIABLE requires a name"
+            return -1
+        name, i = self._read_tok(toks, i)
+        addr = W_IntObject(self.inner.here)
+        self.inner.here += self.inner.cell_size_bytes
+        self._define_simple_word(name, addr)
+        return i
+
+    def _handle_2variable(self, toks, i):
+        """Handle 2VARIABLE."""
+        toks_len = len(toks)
+        if i >= toks_len:
+            print "2VARIABLE requires a name"
+            return -1
+        name, i = self._read_tok(toks, i)
+        addr = W_IntObject(self.inner.here)
+        self.inner.here += self.inner.cell_size_bytes
+        self.inner.here += self.inner.cell_size_bytes  # allocate 2 cells
+        self._define_simple_word(name, addr)
+        return i
+
+    def _handle_constant(self, toks, i):
+        """Handle CONSTANT and FCONSTANT."""
+        toks_len = len(toks)
+        if i >= toks_len:
+            print "CONSTANT requires a name"
+            return -1
+        name, i = self._read_tok(toks, i)
+        val = self.inner.pop_ds()
+        self._define_simple_word(name, val)
+        return i
+
+    def _handle_create(self, toks, i):
+        """Handle CREATE."""
+        toks_len = len(toks)
+        if i >= toks_len:
+            print "CREATE requires a name"
+            return -1
+        name, i = self._read_tok(toks, i)
+        addr = W_IntObject(self.inner.here)
+        self._define_simple_word(name, addr)
+        return i
+
+    # Control structure compilation helpers
+
+    def _compile_if(self):
+        """Compile IF."""
+        orig = self.cc_ptr
+        self._emit_with_target(self.w0BR, 0)
+        self.ctrl.append(CtrlEntry(CTRL_IF, orig))
+
+    def _compile_else(self):
+        """Compile ELSE."""
+        if not self.ctrl:
+            print "ELSE without IF"
+            return False
+        entry = self.ctrl.pop()
+        if entry.kind != CTRL_IF:
+            print "ELSE without IF"
+            return False
+        self._patch_here(entry.index)
+        orig2 = self.cc_ptr
+        self._emit_with_target(self.wBR, 0)
+        self.ctrl.append(CtrlEntry(CTRL_ELSE, orig2))
+        self._patch_here(entry.index)
+        return True
+
+    def _compile_then(self):
+        """Compile THEN."""
+        if not self.ctrl:
+            print "THEN without IF/ELSE"
+            return False
+        entry = self.ctrl.pop()
+        if entry.kind != CTRL_IF and entry.kind != CTRL_ELSE:
+            print "THEN without IF/ELSE"
+            return False
+        self._patch_here(entry.index)
+        return True
+
+    def _compile_do(self):
+        """Compile DO."""
+        self._emit_word(self.wDO)
+        do_body_start = self.cc_ptr
+        self.ctrl.append(CtrlEntry(CTRL_DO, do_body_start))
+
+    def _compile_loop(self):
+        """Compile LOOP."""
+        if not self.ctrl:
+            print "LOOP without DO"
+            return False
+        entry = self.ctrl.pop()
+        if entry.kind != CTRL_DO:
+            print "LOOP without DO"
+            return False
+        self._emit_with_target(self.wLOOP, entry.index)
+        loop_end = self.cc_ptr
+        for leave_addr in entry.leave_addrs:
+            self.current_lits[leave_addr] = W_IntObject(loop_end)
+        return True
+
+    def _compile_begin(self):
+        """Compile BEGIN."""
+        begin_addr = self.cc_ptr
+        self.ctrl.append(CtrlEntry(CTRL_BEGIN, begin_addr))
+
+    def _compile_while(self):
+        """Compile WHILE."""
+        if not self.ctrl:
+            print "WHILE without BEGIN"
+            return False
+        entry = self.ctrl.pop()
+        if entry.kind != CTRL_BEGIN:
+            print "WHILE without BEGIN"
+            return False
+        while_addr = self.cc_ptr
+        self._emit_with_target(self.w0BR, 0)
+        self.ctrl.append(CtrlEntry(CTRL_BEGIN, entry.index))
+        self.ctrl.append(CtrlEntry(CTRL_WHILE, while_addr))
+        return True
+
+    def _compile_repeat(self):
+        """Compile REPEAT."""
+        if len(self.ctrl) < 2:
+            print "REPEAT without BEGIN...WHILE"
+            return False
+        while_entry = self.ctrl.pop()
+        begin_entry = self.ctrl.pop()
+        if while_entry.kind != CTRL_WHILE or begin_entry.kind != CTRL_BEGIN:
+            print "REPEAT without proper BEGIN...WHILE"
+            return False
+        self._emit_with_target(self.wBR, begin_entry.index)
+        self._patch_here(while_entry.index)
+        return True
+
+    def _compile_char(self, toks, i):
+        """Compile [CHAR]."""
+        toks_len = len(toks)
+        if i >= toks_len:
+            print "[CHAR] requires a following character"
+            return i
+        char_tok = toks[i]
+        i += 1
+        if len(char_tok) > 0:
+            self._emit_lit(W_IntObject(ord(char_tok[0])))
+        else:
+            print "[CHAR] got empty token"
+        return i
+
+    # Word execution/compilation helpers
+
+    def _execute_or_push(self, w, t):
+        """Execute word or push number in INTERPRET mode."""
+        if w is not None:
+            self.inner.execute_word_now(w)
+        elif self._is_float(t):
+            self.inner.push_ds(self._to_float(t))
+        elif self._is_number(t):
+            self.inner.push_ds(self._to_number(t))
+        else:
+            print "UNKNOWN: " + t
+
+    def _compile_word_or_literal(self, w, t):
+        """Compile word or literal in COMPILE mode."""
+        if w is not None:
+            self._emit_word(w)
+        elif self._is_float(t):
+            self._emit_lit(self._to_float(t))
+        elif self._is_number(t):
+            self._emit_lit(self._to_number(t))
+        else:
+            print "UNKNOWN: " + t
+
+    # System word handlers
+
+    # FIND ( c-addr u -- c-addr 0 | xt 1 | xt -1 )
+    def _handle_find(self):
+        w_u = self.inner.pop_ds()
+        w_caddr = self.inner.pop_ds()
+
+        # Extract string from buffer
+        if isinstance(w_caddr, W_PtrObject):
+            ptr = w_caddr.ptrval
+            length = w_u.intval
+            name = ''.join([self.inner.buf[ptr - length + j] for j in range(length)])
+        elif isinstance(w_caddr, W_StringObject):
+            name = w_caddr.strval
+        else:
+            self.inner.push_ds(w_caddr)
+            self.inner.push_ds(w_u)
+            self.inner.push_ds(ZERO)
+            return
+
+        name_upper = to_upper(name)
+        if name_upper in self.dict:
+            word = self.dict[name_upper]
+            xt = W_WordObject(word)
+            self.inner.push_ds(xt)
+            if word.immediate:
+                self.inner.push_ds(TRUE)
+            else:
+                self.inner.push_ds(W_IntObject(1))
+        else:
+            self.inner.push_ds(w_caddr)
+            self.inner.push_ds(w_u)
+            self.inner.push_ds(ZERO)
+
+    # SOURCE ( -- c-addr u )
+    def _handle_source(self):
+        size = len(self.source_buffer)
+        c_addr = self.inner.alloc_buf(self.source_buffer, size)
+        self.inner.push_ds(c_addr)
+        self.inner.push_ds(W_IntObject(size))
+
+    # >IN ( -- a-addr )
+    def _handle_to_in(self):
+        addr = W_IntObject(self.inner.here)
+        self.inner.cell_store(addr, W_IntObject(self.source_index))
+        self.inner.push_ds(addr)
+
+    # ' (tick) ( "<spaces>name" -- xt )
+    def _handle_tick(self, toks, i):
+        toks_len = len(toks)
+        if i >= toks_len:
+            print "' requires a following word"
+            return i
+        name, i = self._read_tok(toks, i)
+        name_upper = to_upper(name)
+        if name_upper in self.dict:
+            word = self.dict[name_upper]
+            xt = W_WordObject(word)
+            self.inner.push_ds(xt)
+        else:
+            print "' cannot find word:", name
+        return i
+
+    # ( - skip until )
+    def _handle_paren_comment(self, toks, i):
+        toks_len = len(toks)
+        while i < toks_len:
+            tok, i = self._read_tok(toks, i)
+            if ')' in tok:
+                break
+        return i
+
+    # COUNT ( c-addr1 -- c-addr2 u )
+    def _handle_count(self):
+        c_addr1 = self.inner.pop_ds()
+        assert isinstance(c_addr1, W_IntObject)
+        count = self.inner.cell_fetch(c_addr1)
+        assert isinstance(count, W_IntObject)
+        c_addr2 = W_IntObject(c_addr1.intval + self.inner.cell_size_bytes)
+        self.inner.push_ds(c_addr2)
+        self.inner.push_ds(count)
+
+    # WORD ( char "<chars>ccc<char>" -- c-addr )
+    def _handle_word(self, toks, i):
+        toks_len = len(toks)
+        char_obj = self.inner.pop_ds()
+        assert isinstance(char_obj, W_IntObject)
+
+        if i >= toks_len:
+            word_str = ''
+        else:
+            word_str, i = self._read_tok(toks, i)
+
+        length = len(word_str)
+        addr = W_IntObject(self.inner.here)
+        self.inner.cell_store(addr, W_IntObject(length))
+        self.inner.here += self.inner.cell_size_bytes
+        for ch in word_str:
+            ch_addr = W_IntObject(self.inner.here)
+            self.inner.cell_store(ch_addr, W_IntObject(ord(ch)))
+            self.inner.here += 1
+        self.inner.push_ds(addr)
+        return i
+
+    # STATE ( -- a-addr )
+    def _handle_state(self):
+        addr = W_IntObject(self.inner.here)
+        state_val = W_IntObject(-1 if self.state == COMPILE else 0)
+        self.inner.cell_store(addr, state_val)
+        self.inner.push_ds(addr)
+
+    # EVALUATE ( c-addr u -- )
+    def _handle_evaluate(self):
+        u = self.inner.pop_ds()
+        c_addr = self.inner.pop_ds()
+        assert isinstance(u, W_IntObject)
+
+        if isinstance(c_addr, W_PtrObject):
+            ptr = c_addr.ptrval
+            length = u.intval
+            eval_str = ''.join([self.inner.buf[ptr - length + j] for j in range(length)])
+        elif isinstance(c_addr, W_IntObject):
+            length = u.intval
+            chars = []
+            for j in range(length):
+                ch_obj = self.inner.cell_fetch(W_IntObject(c_addr.intval + j))
+                chars.append(chr(ch_obj.intval))
+            eval_str = ''.join(chars)
+        else:
+            print "EVALUATE: unexpected address type"
+            return
+
+        self.interpret_line(eval_str)
+
+    # ABORT ( -- )
+    def _handle_abort(self):
+        self.inner.ds_ptr = 0
+        self.inner.rs_ptr = 0
+        self.state = INTERPRET
+        print "ABORT"
+
+    # ABORT" ( flag "ccc<quote>" -- )
+    def _handle_abort_quote(self, toks, i):
+        toks_len = len(toks)
+        abort_msg_parts = []
+        while i < toks_len:
+            tok, i = self._read_tok(toks, i)
+            tok_len = len(tok)
+            if tok_len > 0 and tok[tok_len - 1] == '"':
+                stop = tok_len - 1
+                if stop > 0:
+                    abort_msg_parts.append(tok[:stop])
+                break
+            abort_msg_parts.append(tok)
+
+        abort_msg = ' '.join(abort_msg_parts)
+        flag = self.inner.pop_ds()
+        assert isinstance(flag, W_IntObject)
+
+        if flag.intval != 0:
+            print "ABORT:", abort_msg
+            self.inner.ds_ptr = 0
+            self.inner.rs_ptr = 0
+            self.state = INTERPRET
+            return i, True  # Signal to return from interpret_line
+        return i, False
+
+    # QUIT ( -- )
+    def _handle_quit(self):
+        self.inner.ds_ptr = 0
+        self.inner.rs_ptr = 0
+        self.state = INTERPRET
 
     # main outer interpreter
     def interpret_line(self, line):
@@ -206,42 +598,11 @@ class OuterInterpreter(object):
             t, i = self._read_tok(toks, i)
 
             if t == 'S"':
-                sdouble_quote_str = []
-                while i < toks_len:
-                    t, i = self._read_tok(toks, i)
-                    t_len = len(t)
-                    if t_len > 0 and t[t_len - 1] == '"':
-                        stop = t_len - 1
-                        assert 0 <= stop < len(t)
-                        t = t[:stop]
-                        sdouble_quote_str.append(t)
-                        break
-                    sdouble_quote_str.append(t)
-                parsed_str = ' '.join(sdouble_quote_str)
-                size = len(parsed_str)
-                c_addr = self.inner.alloc_buf(parsed_str, size)
-                self.inner.push_ds(c_addr)
-                self.inner.push_ds(W_IntObject(size))
+                i = self._handle_s_quote(toks, i)
                 continue
 
             if t == '."':
-                parts = []
-                while i < toks_len:
-                    token, i = self._read_tok(toks, i)
-                    token_len = len(token)
-                    if token_len > 0 and token[token_len - 1] == '"':
-                        stop = token_len - 1
-                        assert 0 <= stop <= len(token)
-                        parts.append(token[:stop])
-                        break
-                    parts.append(token)
-                parsed_str = ' '.join(parts)
-                w_str = W_StringObject(parsed_str)
-                if self.state == INTERPRET:
-                    self.inner.print_str(w_str)
-                else:
-                    self._emit_lit(w_str)
-                    self._emit_word(self.wTYPE)
+                i = self._handle_dot_quote(toks, i)
                 continue
 
             if t == "CHAR":
@@ -285,404 +646,130 @@ class OuterInterpreter(object):
             tkey = to_upper(t)
             if self.state == INTERPRET:
                 if tkey == "VARIABLE" or tkey == "FVARIABLE":
-                   if i >= toks_len:
-                       print "VARIABLE/FVARIABLE requires a name"
-                       return
-                   name, i = self._read_tok(toks, i)
-
-                   addr = W_IntObject(self.inner.here)
-                   self.inner.here += self.inner.cell_size_bytes
-
-                   code = [self.wLIT, self.wEXIT]
-                   lits = [addr, ZERO]
-                   thread = CodeThread(code, lits)
-                   self.define_colon(name, thread)
-                   continue
+                    result = self._handle_variable(toks, i)
+                    if result < 0:
+                        return
+                    i = result
+                    continue
 
                 if tkey == "2VARIABLE":
-                    if i >= toks_len:
-                        print "VARIABLE/FVARIABLE requires a name"
+                    result = self._handle_2variable(toks, i)
+                    if result < 0:
                         return
-                    name, i = self._read_tok(toks, i)
-
-                    addr = W_IntObject(self.inner.here)
-                    self.inner.here += self.inner.cell_size_bytes
-
-                    addr2 = W_IntObject(self.inner.here)
-                    self.inner.here += self.inner.cell_size_bytes
-
-                    code = [self.wLIT, self.wEXIT]
-                    lits = [addr, ZERO]
-                    thread = CodeThread(code, lits)
-                    self.define_colon(name, thread)
+                    i = result
                     continue
 
-                if tkey == "CONSTANT":
-                    if i >= toks_len:
-                        print "CONSTANT requires a name"
+                if tkey == "CONSTANT" or tkey == "FCONSTANT":
+                    result = self._handle_constant(toks, i)
+                    if result < 0:
                         return
-                    name, i = self._read_tok(toks, i)
-                    val = self.inner.pop_ds()
-
-                    code = [self.wLIT, self.wEXIT]
-                    lits = [val, ZERO]
-                    thread = CodeThread(code, lits)
-                    self.define_colon(name, thread)
-                    continue
-
-                if tkey == "FCONSTANT":
-                    if i >= toks_len:
-                        print "FCONSTANT requires a name"
-                        return
-                    name, i = self._read_tok(toks, i)
-                    val = self.inner.pop_ds()
-
-                    code = [self.wLIT, self.wEXIT]
-                    lits = [val, ZERO]
-                    thread = CodeThread(code, lits)
-                    self.define_colon(name, thread)
+                    i = result
                     continue
 
                 if tkey == "CREATE":
-                    if i >= toks_len:
-                        print "CREATE requires a name"
+                    result = self._handle_create(toks, i)
+                    if result < 0:
                         return
-                    name, i = self._read_tok(toks, i)
-
-                    # Allocate data space for the body
-                    addr = W_IntObject(self.inner.here)
-                    # Don't increment here yet - let user use ALLOT or , to allocate
-
-                    # Create a word that pushes the body address
-                    code = [self.wLIT, self.wEXIT]
-                    lits = [addr, ZERO]
-                    thread = CodeThread(code, lits)
-                    self.define_colon(name, thread)
+                    i = result
                     continue
 
                 if tkey == "FIND":
-                    # FIND ( c-addr u -- c-addr 0 | xt 1 | xt -1 )
-                    # Expects ( c-addr u ) format from S"
-                    w_u = self.inner.pop_ds()
-                    w_caddr = self.inner.pop_ds()
-
-                    # Extract string from buffer
-                    if isinstance(w_caddr, W_PtrObject):
-                        ptr = w_caddr.ptrval
-                        length = w_u.intval
-                        # Reconstruct string from buffer
-                        name = ''.join([self.inner.buf[ptr - length + i] for i in range(length)])
-                    elif isinstance(w_caddr, W_StringObject):
-                        # Also support W_StringObject for convenience
-                        name = w_caddr.strval
-                    else:
-                        # Unexpected type, push back and return 0
-                        self.inner.push_ds(w_caddr)
-                        self.inner.push_ds(w_u)
-                        self.inner.push_ds(ZERO)
-                        continue
-
-                    name_upper = to_upper(name)
-
-                    if name_upper in self.dict:
-                        word = self.dict[name_upper]
-                        xt = W_WordObject(word)
-                        self.inner.push_ds(xt)
-                        # Push 1 if not immediate, -1 if immediate
-                        if word.immediate:
-                            self.inner.push_ds(TRUE)  # -1 for immediate
-                        else:
-                            self.inner.push_ds(W_IntObject(1))  # 1 for non-immediate
-                    else:
-                        # Word not found, push string back and 0
-                        self.inner.push_ds(w_caddr)
-                        self.inner.push_ds(w_u)
-                        self.inner.push_ds(ZERO)
+                    self._handle_find()
                     continue
 
                 if tkey == "SOURCE":
-                    # SOURCE ( -- c-addr u )
-                    # Return address and length of current input buffer
-                    size = len(self.source_buffer)
-                    c_addr = self.inner.alloc_buf(self.source_buffer, size)
-                    self.inner.push_ds(c_addr)
-                    self.inner.push_ds(W_IntObject(size))
+                    self._handle_source()
                     continue
 
                 if tkey == ">IN":
-                    # >IN ( -- a-addr )
-                    # Return address of variable containing parse position
-                    # For simplicity, we'll allocate a cell and store the current index
-                    addr = W_IntObject(self.inner.here)
-                    self.inner.cell_store(addr, W_IntObject(self.source_index))
-                    self.inner.push_ds(addr)
+                    self._handle_to_in()
                     continue
 
                 if tkey == "'":
-                    # ' (tick) ( "<spaces>name" -- xt )
-                    # Parse next word and return its execution token
-                    if i >= toks_len:
-                        print "' requires a following word"
-                        continue
-                    name, i = self._read_tok(toks, i)
-                    name_upper = to_upper(name)
-                    if name_upper in self.dict:
-                        word = self.dict[name_upper]
-                        xt = W_WordObject(word)
-                        self.inner.push_ds(xt)
-                    else:
-                        print "' cannot find word:", name
+                    i = self._handle_tick(toks, i)
                     continue
 
                 if tkey == "(":
-                    # ( (paren) - comment, skip until )
-                    # Note: This is usually preprocessed by remove_comments,
-                    # but we provide it here for completeness
-                    while i < toks_len:
-                        tok, i = self._read_tok(toks, i)
-                        if ')' in tok:
-                            break
+                    i = self._handle_paren_comment(toks, i)
                     continue
 
                 if tkey == "COUNT":
-                    # COUNT ( c-addr1 -- c-addr2 u )
-                    # Convert counted string to ( addr len ) format
-                    # In our implementation, count is stored in a full cell
-                    c_addr1 = self.inner.pop_ds()
-                    assert isinstance(c_addr1, W_IntObject)
-                    # Fetch the count (stored in a cell)
-                    count = self.inner.cell_fetch(c_addr1)
-                    assert isinstance(count, W_IntObject)
-                    # c-addr2 is c-addr1 + cell_size (skip the count cell)
-                    c_addr2 = W_IntObject(c_addr1.intval + self.inner.cell_size_bytes)
-                    self.inner.push_ds(c_addr2)
-                    self.inner.push_ds(count)
+                    self._handle_count()
                     continue
 
                 if tkey == "WORD":
-                    # WORD ( char "<chars>ccc<char>" -- c-addr )
-                    # Simplified: parse next token and return as counted string
-                    char_obj = self.inner.pop_ds()
-                    assert isinstance(char_obj, W_IntObject)
-
-                    # Parse next token (simplified implementation)
-                    if i >= toks_len:
-                        # No more tokens, return empty string
-                        word_str = ''
-                    else:
-                        word_str, i = self._read_tok(toks, i)
-
-                    # Create counted string: length byte followed by string
-                    length = len(word_str)
-                    addr = W_IntObject(self.inner.here)
-                    # Store length at HERE
-                    self.inner.cell_store(addr, W_IntObject(length))
-                    self.inner.here += self.inner.cell_size_bytes
-                    # Store string characters
-                    for ch in word_str:
-                        ch_addr = W_IntObject(self.inner.here)
-                        self.inner.cell_store(ch_addr, W_IntObject(ord(ch)))
-                        self.inner.here += 1
-                    # Push the address (pointing to the count)
-                    self.inner.push_ds(addr)
+                    i = self._handle_word(toks, i)
                     continue
 
                 if tkey == "STATE":
-                    # STATE ( -- a-addr )
-                    # Return address of state variable
-                    # Allocate a cell for state if needed, or use a fixed location
-                    addr = W_IntObject(self.inner.here)
-                    # Store current state (0 = INTERPRET, -1 = COMPILE)
-                    state_val = W_IntObject(-1 if self.state == COMPILE else 0)
-                    self.inner.cell_store(addr, state_val)
-                    self.inner.push_ds(addr)
+                    self._handle_state()
                     continue
 
                 if tkey == "EVALUATE":
-                    # EVALUATE ( c-addr u -- )
-                    # Evaluate string as Forth code
-                    u = self.inner.pop_ds()
-                    c_addr = self.inner.pop_ds()
-                    assert isinstance(u, W_IntObject)
-
-                    # Extract string from buffer or memory
-                    if isinstance(c_addr, W_PtrObject):
-                        # String from S" - use buffer
-                        ptr = c_addr.ptrval
-                        length = u.intval
-                        eval_str = ''.join([self.inner.buf[ptr - length + i] for i in range(length)])
-                    elif isinstance(c_addr, W_IntObject):
-                        # String from memory
-                        length = u.intval
-                        chars = []
-                        for j in range(length):
-                            ch_obj = self.inner.cell_fetch(W_IntObject(c_addr.intval + j))
-                            chars.append(chr(ch_obj.intval))
-                        eval_str = ''.join(chars)
-                    else:
-                        print "EVALUATE: unexpected address type"
-                        continue
-
-                    # Evaluate the string
-                    self.interpret_line(eval_str)
+                    self._handle_evaluate()
                     continue
 
                 if tkey == "ABORT":
-                    # ABORT ( -- )
-                    # Clear stacks and return to interpret state
-                    self.inner.ds_ptr = 0
-                    self.inner.rs_ptr = 0
-                    self.state = INTERPRET
-                    print "ABORT"
+                    self._handle_abort()
                     return
 
                 if tkey == 'ABORT"':
-                    # ABORT" ( flag "ccc<quote>" -- )
-                    # If flag is non-zero, display message and abort
-                    # Parse the message string
-                    abort_msg_parts = []
-                    while i < toks_len:
-                        tok, i = self._read_tok(toks, i)
-                        tok_len = len(tok)
-                        if tok_len > 0 and tok[tok_len - 1] == '"':
-                            # Found closing quote
-                            stop = tok_len - 1
-                            if stop > 0:
-                                abort_msg_parts.append(tok[:stop])
-                            break
-                        abort_msg_parts.append(tok)
-
-                    abort_msg = ' '.join(abort_msg_parts)
-
-                    # Get the flag from stack
-                    flag = self.inner.pop_ds()
-                    assert isinstance(flag, W_IntObject)
-
-                    # If flag is non-zero, abort with message
-                    if flag.intval != 0:
-                        print "ABORT:", abort_msg
-                        self.inner.ds_ptr = 0
-                        self.inner.rs_ptr = 0
-                        self.state = INTERPRET
+                    i, should_return = self._handle_abort_quote(toks, i)
+                    if should_return:
                         return
                     continue
 
                 if tkey == "QUIT":
-                    # QUIT ( -- )
-                    # Reset and enter interpret loop (simplified)
-                    self.inner.ds_ptr = 0
-                    self.inner.rs_ptr = 0
-                    self.state = INTERPRET
+                    self._handle_quit()
                     return
 
             if self.state == COMPILE:
                 if tkey == "IF":
-                    orig = self.cc_ptr
-                    self._emit_with_target(self.w0BR, 0)
-                    self.ctrl.append(CtrlEntry(CTRL_IF, orig))
+                    self._compile_if()
                     continue
 
                 if tkey == "ELSE":
-                    entry = self.ctrl.pop()
-                    if entry.kind != CTRL_IF:
-                        print "ELSE without IF"
+                    if not self._compile_else():
                         return
-                    self._patch_here(entry.index)
-                    orig2 = self.cc_ptr
-                    self._emit_with_target(self.wBR, 0)
-
-                    self.ctrl.append(CtrlEntry(CTRL_ELSE, orig2))
-
-                    self._patch_here(entry.index)
                     continue
 
                 if tkey == "THEN":
-                    entry = self.ctrl.pop()
-                    if entry.kind != CTRL_IF and entry.kind != CTRL_ELSE:
-                        print "THEN without IF/ELSE"
+                    if not self._compile_then():
                         return
-                    self._patch_here(entry.index)
                     continue
 
                 if tkey == "DO":
-                    self._emit_word(self.wDO)
-                    do_body_start = self.cc_ptr
-                    self.ctrl.append(CtrlEntry(CTRL_DO, do_body_start))
+                    self._compile_do()
                     continue
 
                 if tkey == "LOOP":
-                    entry = self.ctrl.pop()
-                    if entry.kind != CTRL_DO:
-                        print "LOOP without DO"
+                    if not self._compile_loop():
                         return
-                    self._emit_with_target(self.wLOOP, entry.index)
-                    loop_end = self.cc_ptr
-                    for leave_addr in entry.leave_addrs:
-                        self.current_lits[leave_addr] = W_IntObject(loop_end)
                     continue
 
                 if tkey == "BEGIN":
-                    begin_addr = self.cc_ptr
-                    self.ctrl.append(CtrlEntry(CTRL_BEGIN, begin_addr))
+                    self._compile_begin()
                     continue
 
                 if tkey == "WHILE":
-                    entry = self.ctrl.pop()
-                    if entry.kind != CTRL_BEGIN:
-                        print "WHILE without BEGIN"
+                    if not self._compile_while():
                         return
-                    while_addr = self.cc_ptr
-                    self._emit_with_target(self.w0BR, 0)
-                    self.ctrl.append(CtrlEntry(CTRL_BEGIN, entry.index))
-                    self.ctrl.append(CtrlEntry(CTRL_WHILE, while_addr))
                     continue
 
                 if tkey == "REPEAT":
-                    if len(self.ctrl) < 2:
-                        print "REPEAT without BEGIN...WHILE"
+                    if not self._compile_repeat():
                         return
-                    while_entry = self.ctrl.pop()
-                    begin_entry = self.ctrl.pop()
-                    if while_entry.kind != CTRL_WHILE or begin_entry.kind != CTRL_BEGIN:
-                        print "REPEAT without proper BEGIN...WHILE"
-                        return
-                    self._emit_with_target(self.wBR, begin_entry.index)
-                    self._patch_here(while_entry.index)
                     continue
 
                 if tkey == "[CHAR]":
-                    if i >= toks_len:
-                        print "[CHAR] requires a following character"
-                        continue
-                    char_tok = toks[i]
-                    i += 1
-                    char_tok_len = len(char_tok)
-                    if char_tok_len > 0:
-                        char_code = ord(char_tok[0])
-                        self._emit_lit(W_IntObject(char_code))
-                    else:
-                        print "[CHAR] got empty token"
+                    i = self._compile_char(toks, i)
                     continue
 
             w = self.dict.get(tkey, None)
             w = promote(w)
             if self.state == INTERPRET:
-                if w is not None:
-                    self.inner.execute_word_now(w)
-                elif self._is_float(t):
-                    self.inner.push_ds(self._to_float(t))
-                elif self._is_number(t):
-                    self.inner.push_ds(self._to_number(t))
-                else:
-                    print "UNKNOWN: " + t
+                self._execute_or_push(w, t)
             elif self.state == COMPILE:
-                if w is not None:
-                    self._emit_word(w)
-                elif self._is_float(t):
-                    self._emit_lit(self._to_float(t))
-                elif self._is_number(t):
-                    self._emit_lit(self._to_number(t))
-                else:
-                    print "UNKNOWN: " + t
+                self._compile_word_or_literal(w, t)
             else:
                 assert 0, "unreachable state"
