@@ -23,51 +23,24 @@ BUF_SIZE = 1024
 HEAP_CELL_COUNT = 65536
 HEAP_SIZE_BYTES = HEAP_CELL_COUNT * CELL_SIZE_BYTES
 
-class CallStack:
-    _immutable_fields_ = ["thread", "ip", "next"]
-
-    def __init__(self, thread, ip, next):
-        self.thread = thread
-        self.ip = ip
-        self.next = next
-
-    def pop(self):
-        assert self is not None
-        return (self.thread, self.ip), self.next
-
-empty_stack = CallStack(None, -42, None)
-memoization = {}
-
-@elidable
-def push(thread, ip, next):
-    key = (thread, ip), next
-    if key in memoization:
-        return memoization[key]
-    result = CallStack(thread, ip, next)
-    memoization[key] = result
-    return result
-
-@elidable
-def is_empty(call_stack):
-    return call_stack is empty_stack
-
 
 class Exit(Exception):
     pass
 
-def get_printable_location(ip, thread, call_stack):
+def get_printable_location(ip, thread):
     return "ip=%d %s %s" % (ip, thread.code[ip].to_string(), thread.lits[ip].to_string())
 
 jitdriver = JitDriver(
-    greens=['ip', 'thread', 'call_stack'],
-    reds=['self',],
+    greens=['ip', 'thread'],
+    reds=['self'],
     virtualizables=['self'],
     get_printable_location=get_printable_location
 )
 
 class InnerInterpreter(object):
     _immutable_fields_ = ["cell_size", "cell_size_bytes", "base"]
-    _virtualizable_ = ["ds_ptr", "ds[*]", "rs_ptr", "rs[*]"]
+    _virtualizable_ = ["ds_ptr", "ds[*]", "rs_ptr", "rs[*]",
+                       "cs_ptr", "cs_threads[*]", "cs_ips[*]"]
 
 
     def __init__(self):
@@ -77,6 +50,11 @@ class InnerInterpreter(object):
 
         self.rs = [None] * STACK_SIZE  # return stack
         self.rs_ptr = 0
+
+        # Virtualized call stack for JIT optimization
+        self.cs_threads = [None] * STACK_SIZE  # return threads
+        self.cs_ips = [0] * STACK_SIZE         # return IPs
+        self.cs_ptr = 0
 
         self.mem = [0] * HEAP_SIZE_BYTES
         self.here = 0
@@ -89,6 +67,27 @@ class InnerInterpreter(object):
         self.base = DECIMAL
         self._pno_active = False      # inside <# ... #> or not
         self._pno_buf = []            # buffer for pno (pictured numeric output)
+
+    def push_call(self, thread, ip):
+        """Push return address onto virtualized call stack."""
+        ptr = self.cs_ptr
+        self.cs_threads[ptr] = thread
+        self.cs_ips[ptr] = ip
+        self.cs_ptr = ptr + 1
+
+    def pop_call(self):
+        """Pop return address from virtualized call stack."""
+        ptr = self.cs_ptr - 1
+        assert ptr >= 0
+        self.cs_ptr = ptr
+        thread = self.cs_threads[ptr]
+        ip = self.cs_ips[ptr]
+        self.cs_threads[ptr] = None
+        return thread, ip
+
+    def is_call_stack_empty(self):
+        """Check if call stack is empty."""
+        return self.cs_ptr == 0
 
     def push_ds(self, w_x):
         ds_ptr = self.ds_ptr
@@ -219,18 +218,15 @@ class InnerInterpreter(object):
         return W_FloatObject(floatval)
 
     def execute_thread(self, thread, ip=0):
-        call_stack = empty_stack
-
         while True:
             jitdriver.jit_merge_point(
                 ip=ip,
                 thread=thread,
-                call_stack=call_stack,
                 self=self
             )
             if ip >= len(thread.code):
-                if not is_empty(call_stack):
-                    (thread, ip), call_stack = call_stack.pop()
+                if not self.is_call_stack_empty():
+                    thread, ip = self.pop_call()
                     continue
                 else:
                     break
@@ -238,8 +234,8 @@ class InnerInterpreter(object):
             # Promote the word to allow JIT to specialize on it
             w = promote(thread.code[ip])
             if w is None:
-                if not is_empty(call_stack):
-                    (thread, ip), call_stack = call_stack.pop()
+                if not self.is_call_stack_empty():
+                    thread, ip = self.pop_call()
                     continue
                 else:
                     break
@@ -249,19 +245,25 @@ class InnerInterpreter(object):
             prim = promote(w.prim)
             if prim is not None:
                 try:
-                    ip = prim(self, thread, ip, call_stack)
+                    ip = prim(self, thread, ip)
                 except Exit:
                     # EXIT - return to caller
-                    if not is_empty(call_stack):
-                        (thread, ip), call_stack = call_stack.pop()
+                    if not self.is_call_stack_empty():
+                        thread, ip = self.pop_call()
                     else:
                         break
             else:
                 # Colon definition - push current state and enter nested thread
                 nested_thread = promote(w.thread)
-                call_stack = push(thread, ip, call_stack)
+                self.push_call(thread, ip)
                 thread = nested_thread
                 ip = 0
+                # Signal JIT that this is a potential loop entry point (for recursion)
+                jitdriver.can_enter_jit(
+                    ip=ip,
+                    thread=thread,
+                    self=self
+                )
 
     def execute_word_now(self, w):
         code = [w]
