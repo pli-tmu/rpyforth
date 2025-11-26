@@ -216,6 +216,10 @@ def test_DIV():
     assert run_and_pop("-20 6 /").intval == -4
     assert run_and_pop("-9223372036854775808 -1 /").intval == 9223372036854775808
 
+def test_mul_slash():
+    assert run_and_pop("10 3 2 */").intval == 15
+    assert run_and_pop("-20 6 7 */").intval == -18
+
 # Floating point tests
 def test_float_literals():
     assert run_and_pop("1.0").floatval == 1.0
