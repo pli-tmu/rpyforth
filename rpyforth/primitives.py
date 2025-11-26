@@ -362,6 +362,23 @@ def prim_DIV_MOD(inner, cur, ip):
     inner.push_ds(W_IntObject(a.intval // b.intval))
     return ip
 
+# */MOD ( n1 n2 n3 -- n4 n5 )
+def prim_MUL_DIV_MOD(inner, cur, ip):
+    """GForth core 2012: multiply n1 by n2 producing the intermediate double-cell result d. divide d by n3 giving the single-cell remainder n4 and the single-cell quotient n5."""
+    a = inner.pop_ds()  
+    b = inner.pop_ds()
+    c = inner.pop_ds()
+    assert isinstance(a, W_IntObject)
+    assert isinstance(b, W_IntObject)
+    assert isinstance(c, W_IntObject)
+    d = b.intval * c.intval #d is 128bits
+    assert a.intval != 0, "Division by zero"
+    e = d // a.intval #e is 64bits
+    assert  (e >> LONG_BIT) == 0 or (e >> LONG_BIT) == -1, "Overflow in */mod"
+    inner.push_ds(W_IntObject(d % a.intval))
+    inner.push_ds(W_IntObject(e))
+    return ip
+
 # ABS ( n -- u )
 def prim_ABS(inner, cur, ip):
     """GForth core 2012: u is the absolute value of n."""
@@ -1253,6 +1270,7 @@ def install_primitives(outer):
     outer.define_prim("/", prim_DIV)
     outer.define_prim("*/", prim_MUL_SLASH)
     outer.define_prim("/MOD", prim_DIV_MOD)
+    outer.define_prim("*/MOD", prim_MUL_DIV_MOD)
 
     outer.define_prim("ABS", prim_ABS)
     outer.define_prim("NEGATE", prim_NEGATE)

@@ -228,6 +228,14 @@ def test_div_mod():
     assert inner.pop_ds().intval == -4
     assert inner.pop_ds().intval == 4
 
+def test_mul_div_mod():
+    inner = run("10 2 3 */MOD")
+    assert inner.pop_ds().intval == 6
+    assert inner.pop_ds().intval == 2
+    inner = run("-20 4 6 */MOD")
+    assert inner.pop_ds().intval == -14
+    assert inner.pop_ds().intval == 4
+
 # Floating point tests
 def test_float_literals():
     assert run_and_pop("1.0").floatval == 1.0
