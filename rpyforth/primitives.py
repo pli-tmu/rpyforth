@@ -491,6 +491,24 @@ def prim_XOR(inner, cur, ip):
     inner.push_ds(W_IntObject(a.intval ^ b.intval))
     return ip
 
+# FM/MOD ( d1 n1 -- n2 n3 )
+def prim_FM_DIV_MOD(inner, cur, ip):
+    """GForth core 2012: divide d1 by n1, giving the floored quotient n3 and the remainder n2."""
+    a = inner.pop_ds()  
+    b = inner.pop_ds() # d1's high 64bits
+    c = inner.pop_ds() # d1's low 64bits
+    assert isinstance(a, W_IntObject)
+    assert isinstance(b, W_IntObject)
+    assert isinstance(c, W_IntObject)
+    BIT_MASK = (1 << LONG_BIT) - 1   #111...11 64bits
+    d = (b.intval << LONG_BIT) | (c.intval & BIT_MASK) #d is 128bits
+    assert a.intval != 0, "Division by zero"
+    e = d // a.intval #e is 64bits
+    assert  (e >> LONG_BIT) == 0 or (e >> LONG_BIT) == -1, "Overflow in fm/mod"
+    inner.push_ds(W_IntObject(d % a.intval))
+    inner.push_ds(W_IntObject(e))
+    return ip
+
 # memory management
 
 
@@ -1285,6 +1303,8 @@ def install_primitives(outer):
     outer.define_prim("AND", prim_AND)
     outer.define_prim("OR", prim_OR)
     outer.define_prim("XOR", prim_XOR)
+
+    outer.define_prim("FM/MOD", prim_FM_DIV_MOD)
 
     # I/O
     outer.define_prim(".", prim_DOT)
