@@ -902,6 +902,18 @@ def prim_DOT(inner, cur, ip):
     #stdout.flush()
     return ip
 
+def prim_U_DOT(inner, cur, ip):
+    """GForth core 2012: display u in field format according to current BASE."""
+    x = inner.pop_ds()
+    assert isinstance(x, W_IntObject)
+    stdin, stdout, stderr = create_stdio()
+    BIT_MASK = (1 << LONG_BIT) - 1  #111...11 64bits
+    u_value = x.intval & BIT_MASK
+    stdout.write(str(u_value))
+    stdout.write(' ')
+    #stdout.flush()
+    return ip
+
 
 # EMIT ( char -- )
 def prim_EMIT(inner, cur, ip):
@@ -1374,6 +1386,7 @@ def install_primitives(outer):
 
     # I/O
     outer.define_prim(".", prim_DOT)
+    outer.define_prim("U.", prim_U_DOT)
     outer.define_prim("EMIT", prim_EMIT)
 
     # memory management

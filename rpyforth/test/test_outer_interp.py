@@ -281,7 +281,10 @@ def test_u_less():
     assert run_and_pop("18446744073709551615 0 U<").intval == 0  # False
     assert run_and_pop("0 18446744073709551615 U<").intval == -1  # True
     assert run_and_pop("-1 0 U<").intval == 0  # False
-    assert run_and_pop("0 -1 U<").intval == -1
+    assert run_and_pop("0 -1 U<").intval == -1 # True
+
+def test_u_dot():
+    assert run_and_pop("10 10 U.").intval == 10
 
 # Floating point tests
 def test_float_literals():
