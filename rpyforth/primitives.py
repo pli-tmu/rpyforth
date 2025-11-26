@@ -533,6 +533,30 @@ def prim_UM_DIV_MOD(inner, cur, ip):
     inner.push_ds(W_IntObject(e))
     return ip
 
+# SM/REM ( d1 n1 -- n2 n3 )
+def prim_SM_DIV_REM(inner, cur, ip):
+    """GForth core 2012: divide d1 by n1, giving the symmetric quotient n3 and the remainder n2."""
+    a = inner.pop_ds()  
+    b = inner.pop_ds() # d1's high 64bits
+    c = inner.pop_ds() # d1's low 64bits
+    assert isinstance(a, W_IntObject)
+    assert isinstance(b, W_IntObject)
+    assert isinstance(c, W_IntObject)
+    BIT_MASK = (1 << LONG_BIT) - 1   #111...11 64bits
+    d = (b.intval << LONG_BIT) | (c.intval & BIT_MASK) #d is 128bits
+    assert a.intval != 0, "Division by zero"
+    a_abs = abs(a.intval)
+    d_abs = abs(d)
+    e = d_abs // a_abs
+    f = d_abs % a_abs
+    if (d < 0) ^ (a.intval < 0):  # if signs of d and a are different
+        e = -e
+    if d < 0:
+        f = -f
+    inner.push_ds(W_IntObject(f))
+    inner.push_ds(W_IntObject(e))
+    return ip
+
 # memory management
 
 
@@ -1330,6 +1354,7 @@ def install_primitives(outer):
 
     outer.define_prim("FM/MOD", prim_FM_DIV_MOD)
     outer.define_prim("UM/MOD", prim_UM_DIV_MOD)
+    outer.define_prim("SM/REM", prim_SM_DIV_REM)
 
     # I/O
     outer.define_prim(".", prim_DOT)

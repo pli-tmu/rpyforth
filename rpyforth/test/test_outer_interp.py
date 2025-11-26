@@ -261,6 +261,20 @@ def test_um_div_mod():
     assert inner.pop_ds().intval == -1
     assert inner.pop_ds().intval == 1
 
+def test_sm_div_rem():
+    inner = run("7 S>D 3 SM/REM")
+    assert inner.pop_ds().intval == 2
+    assert inner.pop_ds().intval == 1
+    inner = run("-7 S>D 3 SM/REM")
+    assert inner.pop_ds().intval == -2
+    assert inner.pop_ds().intval == -1
+    inner = run("7 S>D -3 SM/REM")
+    assert inner.pop_ds().intval == -2
+    assert inner.pop_ds().intval == 1
+    inner = run("-7 S>D -3 SM/REM")
+    assert inner.pop_ds().intval == 2
+    assert inner.pop_ds().intval == -1
+
 # Floating point tests
 def test_float_literals():
     assert run_and_pop("1.0").floatval == 1.0
