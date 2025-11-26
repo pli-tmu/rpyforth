@@ -27,7 +27,7 @@ class CtrlEntry(object):
         self.leave_addrs = []  # list of LEAVE positions to patch (for DO loops)
 
 class OuterInterpreter(object):
-    _immutable_fields_ = ['wBR', 'w0BR', 'wLIT', 'wEXIT', 'wDO', 'wLOOP', 'wLEAVE', 'wTYPE']
+    _immutable_fields_ = ['wBR', 'w0BR', 'wLIT', 'wEXIT', 'wDO', 'wLOOP', 'wPLUSLOOP', 'wLEAVE', 'wTYPE', 'wUNLOOP']
 
     def __init__(self, inner):
         self.inner = inner
@@ -35,10 +35,14 @@ class OuterInterpreter(object):
         self.state = INTERPRET # state for compilation
         self.comment = False
         self.current_name = ''
+        self.last_word = None  # Last defined word (for IMMEDIATE)
 
         # Input source tracking for SOURCE and >IN
         self.source_buffer = ''  # Current input line
         self.source_index = 0    # Current parse position (>IN)
+
+        # BASE variable address
+        self.base_addr = 0  # Will be set after initialization
 
         self.reset_code()
 
@@ -53,6 +57,8 @@ class OuterInterpreter(object):
         self.wEXIT = self.dict["EXIT"]
         self.wDO = self.dict["(DO)"]
         self.wLOOP = self.dict["(LOOP)"]
+        self.wPLUSLOOP = self.dict["(+LOOP)"]
+        self.wUNLOOP = self.dict["UNLOOP"]
         self.wLEAVE = self.dict["LEAVE"]
         self.wTYPE = self.dict["TYPE"]
 
@@ -90,6 +96,7 @@ class OuterInterpreter(object):
     def define_colon(self, name, thread):
         w = Word(name, prim=None, immediate=False, thread=thread)
         self.dict[to_upper(name)] = w
+        self.last_word = w
         return w
 
     def _emit_word(self, w):
@@ -372,6 +379,45 @@ class OuterInterpreter(object):
             return False
         self._emit_with_target(self.wBR, begin_entry.index)
         self._patch_here(while_entry.index)
+        return True
+
+    def _compile_plusloop(self):
+        """Compile +LOOP."""
+        if not self.ctrl:
+            print "+LOOP without DO"
+            return False
+        entry = self.ctrl.pop()
+        if entry.kind != CTRL_DO:
+            print "+LOOP without DO"
+            return False
+        self._emit_with_target(self.wPLUSLOOP, entry.index)
+        loop_end = self.cc_ptr
+        for leave_addr in entry.leave_addrs:
+            self.current_lits[leave_addr] = W_IntObject(loop_end)
+        return True
+
+    def _compile_again(self):
+        """Compile AGAIN (unconditional branch back to BEGIN)."""
+        if not self.ctrl:
+            print "AGAIN without BEGIN"
+            return False
+        entry = self.ctrl.pop()
+        if entry.kind != CTRL_BEGIN:
+            print "AGAIN without BEGIN"
+            return False
+        self._emit_with_target(self.wBR, entry.index)
+        return True
+
+    def _compile_until(self):
+        """Compile UNTIL (conditional branch back to BEGIN if false)."""
+        if not self.ctrl:
+            print "UNTIL without BEGIN"
+            return False
+        entry = self.ctrl.pop()
+        if entry.kind != CTRL_BEGIN:
+            print "UNTIL without BEGIN"
+            return False
+        self._emit_with_target(self.w0BR, entry.index)
         return True
 
     def _compile_char(self, toks, i):
@@ -731,6 +777,141 @@ class OuterInterpreter(object):
                     self._handle_quit()
                     return
 
+                if tkey == "IMMEDIATE":
+                    if self.last_word is not None:
+                        self.last_word.immediate = True
+                    else:
+                        print "IMMEDIATE: no word to mark"
+                    continue
+
+                if tkey == "]":
+                    self.state = COMPILE
+                    continue
+
+                if tkey == "BASE":
+                    # BASE returns an address; we use a special cell in memory
+                    if self.base_addr == 0:
+                        # Allocate a cell for BASE
+                        self.base_addr = self.inner.here
+                        self.inner.here += self.inner.cell_size_bytes
+                    # Store the current base at that address
+                    self.inner.cell_store(W_IntObject(self.base_addr), self.inner.base)
+                    self.inner.push_ds(W_IntObject(self.base_addr))
+                    continue
+
+                if tkey == ">NUMBER":
+                    # >NUMBER ( ud1 c-addr1 u1 -- ud2 c-addr2 u2 )
+                    # Convert string to number according to BASE
+                    u1 = self.inner.pop_ds()
+                    c_addr1 = self.inner.pop_ds()
+                    ud1_hi = self.inner.pop_ds()
+                    ud1_lo = self.inner.pop_ds()
+
+                    assert isinstance(u1, W_IntObject)
+                    assert isinstance(c_addr1, W_IntObject)
+                    assert isinstance(ud1_hi, W_IntObject)
+                    assert isinstance(ud1_lo, W_IntObject)
+
+                    base = self.inner.base.intval
+                    addr = c_addr1.intval
+                    length = u1.intval
+                    value = ud1_lo.intval
+
+                    # Process each character
+                    chars_processed = 0
+                    for j in range(length):
+                        ch_obj = self.inner.cell_fetch(W_IntObject(addr + j))
+                        ch = chr(ch_obj.intval)
+
+                        # Convert character to digit value
+                        digit = -1
+                        if '0' <= ch <= '9':
+                            digit = ord(ch) - ord('0')
+                        elif 'A' <= ch <= 'Z':
+                            digit = ord(ch) - ord('A') + 10
+                        elif 'a' <= ch <= 'z':
+                            digit = ord(ch) - ord('a') + 10
+
+                        if digit < 0 or digit >= base:
+                            # Invalid character, stop conversion
+                            break
+
+                        value = value * base + digit
+                        chars_processed += 1
+
+                    # Return updated values
+                    self.inner.push_ds(W_IntObject(value))
+                    self.inner.push_ds(W_IntObject(0))  # ud2 high
+                    self.inner.push_ds(W_IntObject(addr + chars_processed))
+                    self.inner.push_ds(W_IntObject(length - chars_processed))
+                    continue
+
+                if tkey == "ENVIRONMENT?":
+                    # ENVIRONMENT? ( c-addr u -- false | i*x true )
+                    # Query environmental information
+                    u = self.inner.pop_ds()
+                    c_addr = self.inner.pop_ds()
+                    assert isinstance(u, W_IntObject)
+
+                    # Extract the query string
+                    if isinstance(c_addr, W_PtrObject):
+                        ptr = c_addr.ptrval
+                        length = u.intval
+                        query = ''.join([self.inner.buf[ptr - length + j] for j in range(length)])
+                    elif isinstance(c_addr, W_IntObject):
+                        length = u.intval
+                        chars = []
+                        for j in range(length):
+                            ch_obj = self.inner.cell_fetch(W_IntObject(c_addr.intval + j))
+                            chars.append(chr(ch_obj.intval))
+                        query = ''.join(chars)
+                    else:
+                        self.inner.push_ds(ZERO)  # false - unknown query
+                        continue
+
+                    query_upper = to_upper(query)
+
+                    # Handle known queries
+                    if query_upper == "/COUNTED-STRING":
+                        self.inner.push_ds(W_IntObject(255))  # max counted string length
+                        self.inner.push_ds(TRUE)
+                    elif query_upper == "/HOLD":
+                        self.inner.push_ds(W_IntObject(128))  # hold buffer size
+                        self.inner.push_ds(TRUE)
+                    elif query_upper == "/PAD":
+                        self.inner.push_ds(W_IntObject(256))  # pad buffer size
+                        self.inner.push_ds(TRUE)
+                    elif query_upper == "ADDRESS-UNIT-BITS":
+                        self.inner.push_ds(W_IntObject(8))  # bits per address unit
+                        self.inner.push_ds(TRUE)
+                    elif query_upper == "CORE":
+                        self.inner.push_ds(TRUE)  # CORE wordset is present
+                        self.inner.push_ds(TRUE)
+                    elif query_upper == "CORE-EXT":
+                        self.inner.push_ds(ZERO)  # CORE-EXT not fully present
+                        self.inner.push_ds(TRUE)
+                    elif query_upper == "FLOORED":
+                        self.inner.push_ds(ZERO)  # division is symmetric, not floored
+                        self.inner.push_ds(TRUE)
+                    elif query_upper == "MAX-CHAR":
+                        self.inner.push_ds(W_IntObject(255))  # max character value
+                        self.inner.push_ds(TRUE)
+                    elif query_upper == "MAX-N":
+                        self.inner.push_ds(W_IntObject(2147483647))  # max signed single
+                        self.inner.push_ds(TRUE)
+                    elif query_upper == "MAX-U":
+                        self.inner.push_ds(W_IntObject(-1))  # max unsigned (all bits set)
+                        self.inner.push_ds(TRUE)
+                    elif query_upper == "RETURN-STACK-CELLS":
+                        self.inner.push_ds(W_IntObject(64))  # return stack size
+                        self.inner.push_ds(TRUE)
+                    elif query_upper == "STACK-CELLS":
+                        self.inner.push_ds(W_IntObject(64))  # data stack size
+                        self.inner.push_ds(TRUE)
+                    else:
+                        self.inner.push_ds(ZERO)  # false - unknown query
+                    continue
+
             if self.state == COMPILE:
                 if tkey == "IF":
                     self._compile_if()
@@ -755,6 +936,11 @@ class OuterInterpreter(object):
                         return
                     continue
 
+                if tkey == "+LOOP":
+                    if not self._compile_plusloop():
+                        return
+                    continue
+
                 if tkey == "BEGIN":
                     self._compile_begin()
                     continue
@@ -766,6 +952,16 @@ class OuterInterpreter(object):
 
                 if tkey == "REPEAT":
                     if not self._compile_repeat():
+                        return
+                    continue
+
+                if tkey == "AGAIN":
+                    if not self._compile_again():
+                        return
+                    continue
+
+                if tkey == "UNTIL":
+                    if not self._compile_until():
                         return
                     continue
 
@@ -781,6 +977,64 @@ class OuterInterpreter(object):
                         # Create word with empty thread as placeholder
                         thread = CodeThread([], [])
                         self.define_colon(self.current_name, thread)
+                    continue
+
+                if tkey == "[":
+                    # Switch to interpret mode during compilation
+                    self.state = INTERPRET
+                    continue
+
+                if tkey == "LITERAL":
+                    # Compile the value on stack as a literal
+                    val = self.inner.pop_ds()
+                    self._emit_lit(val)
+                    continue
+
+                if tkey == "POSTPONE":
+                    # Compile execution of the next word (even if immediate)
+                    if i >= toks_len:
+                        print "POSTPONE requires a following word"
+                        return
+                    name, i = self._read_tok(toks, i)
+                    name_upper = to_upper(name)
+                    if name_upper in self.dict:
+                        word = self.dict[name_upper]
+                        if word.immediate:
+                            # For immediate words, compile them directly
+                            self._emit_word(word)
+                        else:
+                            # For non-immediate words, compile code to compile them
+                            # Push the xt and compile EXECUTE
+                            self._emit_lit(W_WordObject(word))
+                            self._emit_word(self.dict["EXECUTE"])
+                    else:
+                        print "POSTPONE: word not found:", name
+                    continue
+
+                if tkey == "[']":
+                    # Compile the xt of the next word as a literal
+                    if i >= toks_len:
+                        print "['] requires a following word"
+                        return
+                    name, i = self._read_tok(toks, i)
+                    name_upper = to_upper(name)
+                    if name_upper in self.dict:
+                        word = self.dict[name_upper]
+                        self._emit_lit(W_WordObject(word))
+                    else:
+                        print "['] word not found:", name
+                    continue
+
+                if tkey == "DOES>":
+                    # DOES> ends the CREATE part and starts the DOES> behavior
+                    # Compile EXIT to end the CREATE-time behavior
+                    self._emit_word(self.wEXIT)
+                    # Mark the current position as the DOES> entry point
+                    # Store the does_ip for the last defined word
+                    does_ip = self.cc_ptr
+                    if self.last_word is not None:
+                        # Store does_ip in the word for later use
+                        self.last_word.does_ip = does_ip
                     continue
 
             w = self.dict.get(tkey, None)

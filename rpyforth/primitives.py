@@ -348,6 +348,162 @@ def prim_MOD(inner, cur, ip):
     return ip
 
 
+# / ( n1 n2 -- n3 )
+def prim_DIV(inner, cur, ip):
+    """GForth core 2012: divide n1 by n2, giving the single-cell quotient n3."""
+    a, b = inner.top2_ds()
+    assert isinstance(a, W_IntObject)
+    assert isinstance(b, W_IntObject)
+    # Forth 2012 specifies symmetric/truncated division for /
+    # Truncate toward zero (symmetric division)
+    dividend = a.intval
+    divisor = b.intval
+    if (dividend < 0) != (divisor < 0):
+        # Different signs - result should be negative, truncate toward zero
+        result = -(abs(dividend) // abs(divisor))
+    else:
+        # Same signs - result is positive
+        result = abs(dividend) // abs(divisor)
+    inner.push_ds(W_IntObject(result))
+    return ip
+
+
+# /MOD ( n1 n2 -- n3 n4 )
+def prim_DIVMOD(inner, cur, ip):
+    """GForth core 2012: divide n1 by n2, giving remainder n3 and quotient n4."""
+    a, b = inner.top2_ds()
+    assert isinstance(a, W_IntObject)
+    assert isinstance(b, W_IntObject)
+    # Symmetric division
+    q = int(a.intval / b.intval)
+    r = a.intval - (q * b.intval)
+    inner.push_ds(W_IntObject(r))
+    inner.push_ds(W_IntObject(q))
+    return ip
+
+
+# */ ( n1 n2 n3 -- n4 )
+def prim_STARSLASH(inner, cur, ip):
+    """GForth core 2012: multiply n1 by n2 producing intermediate double-cell result, divide by n3."""
+    n3 = inner.pop_ds()
+    n2 = inner.pop_ds()
+    n1 = inner.pop_ds()
+    assert isinstance(n1, W_IntObject)
+    assert isinstance(n2, W_IntObject)
+    assert isinstance(n3, W_IntObject)
+    # Use intermediate double-cell precision
+    product = n1.intval * n2.intval
+    result = int(product / n3.intval)
+    inner.push_ds(W_IntObject(result))
+    return ip
+
+
+# */MOD ( n1 n2 n3 -- n4 n5 )
+def prim_STARSLASHMOD(inner, cur, ip):
+    """GForth core 2012: multiply n1 by n2, divide by n3, giving remainder n4 and quotient n5."""
+    n3 = inner.pop_ds()
+    n2 = inner.pop_ds()
+    n1 = inner.pop_ds()
+    assert isinstance(n1, W_IntObject)
+    assert isinstance(n2, W_IntObject)
+    assert isinstance(n3, W_IntObject)
+    # Use intermediate double-cell precision
+    product = n1.intval * n2.intval
+    q = int(product / n3.intval)
+    r = product - (q * n3.intval)
+    inner.push_ds(W_IntObject(r))
+    inner.push_ds(W_IntObject(q))
+    return ip
+
+
+# FM/MOD ( d n1 -- n2 n3 )
+def prim_FMSLASHMOD(inner, cur, ip):
+    """GForth core 2012: floored division of double d by n1, giving remainder n2 and quotient n3."""
+    n1 = inner.pop_ds()
+    d_hi = inner.pop_ds()
+    d_lo = inner.pop_ds()
+    assert isinstance(n1, W_IntObject)
+    assert isinstance(d_hi, W_IntObject)
+    assert isinstance(d_lo, W_IntObject)
+
+    # Reconstruct double-cell dividend (simplified: use d_lo for single-cell)
+    dividend = d_lo.intval
+    divisor = n1.intval
+
+    # Floored division: quotient rounded toward negative infinity
+    if divisor == 0:
+        inner.push_ds(ZERO)
+        inner.push_ds(ZERO)
+        return ip
+
+    # Python's // is floored division
+    q = dividend // divisor
+    r = dividend - (q * divisor)
+
+    inner.push_ds(W_IntObject(r))
+    inner.push_ds(W_IntObject(q))
+    return ip
+
+
+# SM/REM ( d n1 -- n2 n3 )
+def prim_SMSLASHREM(inner, cur, ip):
+    """GForth core 2012: symmetric division of double d by n1, giving remainder n2 and quotient n3."""
+    n1 = inner.pop_ds()
+    d_hi = inner.pop_ds()
+    d_lo = inner.pop_ds()
+    assert isinstance(n1, W_IntObject)
+    assert isinstance(d_hi, W_IntObject)
+    assert isinstance(d_lo, W_IntObject)
+
+    # Reconstruct double-cell dividend (simplified: use d_lo for single-cell)
+    dividend = d_lo.intval
+    divisor = n1.intval
+
+    if divisor == 0:
+        inner.push_ds(ZERO)
+        inner.push_ds(ZERO)
+        return ip
+
+    # Symmetric division: quotient rounded toward zero
+    q = int(dividend / divisor)
+    r = dividend - (q * divisor)
+
+    inner.push_ds(W_IntObject(r))
+    inner.push_ds(W_IntObject(q))
+    return ip
+
+
+# UM/MOD ( ud u1 -- u2 u3 )
+def prim_UMSLASHMOD(inner, cur, ip):
+    """GForth core 2012: unsigned division of double ud by u1, giving remainder u2 and quotient u3."""
+    u1 = inner.pop_ds()
+    ud_hi = inner.pop_ds()
+    ud_lo = inner.pop_ds()
+    assert isinstance(u1, W_IntObject)
+    assert isinstance(ud_hi, W_IntObject)
+    assert isinstance(ud_lo, W_IntObject)
+
+    # For unsigned division, treat values as unsigned
+    # Reconstruct the double-cell unsigned value
+    BIT_MASK = (1 << LONG_BIT) - 1
+    lo = ud_lo.intval & BIT_MASK
+    hi = ud_hi.intval & BIT_MASK
+    dividend = (hi << LONG_BIT) | lo
+    divisor = u1.intval & BIT_MASK
+
+    if divisor == 0:
+        inner.push_ds(ZERO)
+        inner.push_ds(ZERO)
+        return ip
+
+    q = dividend // divisor
+    r = dividend % divisor
+
+    inner.push_ds(W_IntObject(r))
+    inner.push_ds(W_IntObject(q))
+    return ip
+
+
 # 1+ ( n1 -- n2 )
 def prim_INC(inner, cur, ip):
     """GForth core 2012: add one to n1."""
@@ -434,6 +590,33 @@ def prim_XOR(inner, cur, ip):
     assert isinstance(a, W_IntObject)
     assert isinstance(b, W_IntObject)
     inner.push_ds(W_IntObject(a.intval ^ b.intval))
+    return ip
+
+
+# INVERT ( x1 -- x2 )
+def prim_INVERT(inner, cur, ip):
+    """GForth core 2012: invert all bits of x1, giving x2 (one's complement)."""
+    x = inner.pop_ds()
+    assert isinstance(x, W_IntObject)
+    inner.push_ds(W_IntObject(~x.intval))
+    return ip
+
+
+# U< ( u1 u2 -- flag )
+def prim_ULESS(inner, cur, ip):
+    """GForth core 2012: flag is true if and only if u1 is less than u2 (unsigned comparison)."""
+    u2 = inner.pop_ds()
+    u1 = inner.pop_ds()
+    assert isinstance(u1, W_IntObject)
+    assert isinstance(u2, W_IntObject)
+    # Treat values as unsigned for comparison
+    BIT_MASK = (1 << LONG_BIT) - 1
+    val1 = u1.intval & BIT_MASK
+    val2 = u2.intval & BIT_MASK
+    if val1 < val2:
+        inner.push_ds(TRUE)
+    else:
+        inner.push_ds(ZERO)
     return ip
 
 # memory management
@@ -562,6 +745,60 @@ def prim_LOOP_RUNTIME(inner, cur, ip):
         ip = target_ip
         _maybe_enter_jit(inner, target_ip, origin_ip, cur)
     return ip
+
+# (+LOOP) ( n -- ) ( R: limit counter -- limit counter+n | )
+def prim_PLUSLOOP_RUNTIME(inner, cur, ip):
+    """Runtime for +LOOP: increment counter by n and conditionally branch back."""
+    increment = inner.pop_ds()
+    counter = inner.pop_rs()
+    limit = inner.pop_rs()
+
+    assert isinstance(increment, W_IntObject)
+    assert isinstance(counter, W_IntObject)
+    assert isinstance(limit, W_IntObject)
+
+    counter_val = counter.intval
+    limit_val = limit.intval
+    inc_val = increment.intval
+    new_counter_val = counter_val + inc_val
+
+    # Check if loop should continue based on crossing the boundary
+    # For positive increment: continue while new_counter < limit
+    # For negative increment: continue while new_counter >= limit
+    continue_loop = False
+    if inc_val >= 0:
+        # Positive increment: continue if we haven't reached limit
+        if counter_val < limit_val and new_counter_val < limit_val:
+            continue_loop = True
+        elif counter_val >= limit_val:
+            # Already past limit, check wrap-around
+            continue_loop = False
+    else:
+        # Negative increment: continue if we haven't gone below limit
+        if counter_val >= limit_val and new_counter_val >= limit_val:
+            continue_loop = True
+
+    if continue_loop:
+        # Continue loop: push back to return stack and branch
+        new_counter = W_IntObject(new_counter_val)
+        inner.push_rs(limit)
+        inner.push_rs(new_counter)
+        origin_ip = ip - 1
+        target = promote(cur.lits[origin_ip])
+        assert isinstance(target, W_IntObject)
+        target_ip = target.intval
+        ip = target_ip
+        _maybe_enter_jit(inner, target_ip, origin_ip, cur)
+    return ip
+
+
+# UNLOOP ( -- ) ( R: limit counter -- )
+def prim_UNLOOP(inner, cur, ip):
+    """GForth core 2012: discard loop parameters from return stack."""
+    inner.pop_rs()  # counter
+    inner.pop_rs()  # limit
+    return ip
+
 
 # LEAVE ( -- ) ( R: limit counter -- )
 def prim_LEAVE(inner, cur, ip):
@@ -775,6 +1012,87 @@ def prim_EMIT(inner, cur, ip):
     stdin, stdout, stderr = create_stdio()
     stdout.write(chr(x.getvalue()))
     stdout.flush()
+    return ip
+
+
+# SPACE ( -- )
+def prim_SPACE(inner, cur, ip):
+    """GForth core 2012: display one space."""
+    stdin, stdout, stderr = create_stdio()
+    stdout.write(' ')
+    return ip
+
+
+# SPACES ( n -- )
+def prim_SPACES(inner, cur, ip):
+    """GForth core 2012: display n spaces."""
+    n = inner.pop_ds()
+    assert isinstance(n, W_IntObject)
+    count = n.intval
+    if count > 0:
+        stdin, stdout, stderr = create_stdio()
+        for i in range(count):
+            stdout.write(' ')
+    return ip
+
+
+# U. ( u -- )
+def prim_UDOT(inner, cur, ip):
+    """GForth core 2012: display u as unsigned according to current BASE."""
+    x = inner.pop_ds()
+    assert isinstance(x, W_IntObject)
+    # Treat as unsigned
+    BIT_MASK = (1 << LONG_BIT) - 1
+    val = x.intval & BIT_MASK
+    stdin, stdout, stderr = create_stdio()
+    stdout.write(str(val))
+    stdout.write(' ')
+    return ip
+
+
+# KEY ( -- char )
+def prim_KEY(inner, cur, ip):
+    """GForth core 2012: receive one character from input device."""
+    stdin, stdout, stderr = create_stdio()
+    ch = stdin.read(1)
+    if len(ch) > 0:
+        # Index into string to get a single character for ord()
+        inner.push_ds(W_IntObject(ord(ch[0])))
+    else:
+        inner.push_ds(W_IntObject(0))
+    return ip
+
+
+# ACCEPT ( c-addr +n1 -- +n2 )
+def prim_ACCEPT(inner, cur, ip):
+    """GForth core 2012: receive a string of at most +n1 characters from input."""
+    max_len = inner.pop_ds()
+    c_addr = inner.pop_ds()
+    assert isinstance(max_len, W_IntObject)
+    assert isinstance(c_addr, W_IntObject)
+
+    stdin, stdout, stderr = create_stdio()
+    line = stdin.readline()
+    # Remove trailing newline if present
+    line_len = len(line)
+    if line_len > 0 and line[line_len - 1] == '\n':
+        new_len = line_len - 1
+        assert new_len >= 0  # Help RPython prove non-negative
+        line = line[:new_len]
+
+    # Limit to max_len
+    max_count = max_len.intval
+    line_len = len(line)
+    if line_len > max_count and max_count >= 0:
+        line = line[:max_count]
+
+    # Store characters at c-addr
+    addr = c_addr.intval
+    final_len = len(line)
+    for j in range(final_len):
+        inner.cell_store(W_IntObject(addr + j), W_IntObject(ord(line[j])))
+
+    inner.push_ds(W_IntObject(final_len))
     return ip
 
 # CodeThread-aware primitives
@@ -1265,6 +1583,13 @@ def install_primitives(outer):
     outer.define_prim("ABS", prim_ABS)
     outer.define_prim("NEGATE", prim_NEGATE)
     outer.define_prim("MOD", prim_MOD)
+    outer.define_prim("/", prim_DIV)
+    outer.define_prim("/MOD", prim_DIVMOD)
+    outer.define_prim("*/", prim_STARSLASH)
+    outer.define_prim("*/MOD", prim_STARSLASHMOD)
+    outer.define_prim("FM/MOD", prim_FMSLASHMOD)
+    outer.define_prim("SM/REM", prim_SMSLASHREM)
+    outer.define_prim("UM/MOD", prim_UMSLASHMOD)
 
     outer.define_prim("1+", prim_INC)
     outer.define_prim("1-", prim_DEC)
@@ -1275,10 +1600,19 @@ def install_primitives(outer):
     outer.define_prim("AND", prim_AND)
     outer.define_prim("OR", prim_OR)
     outer.define_prim("XOR", prim_XOR)
+    outer.define_prim("INVERT", prim_INVERT)
+
+    # comparison
+    outer.define_prim("U<", prim_ULESS)
 
     # I/O
     outer.define_prim(".", prim_DOT)
     outer.define_prim("EMIT", prim_EMIT)
+    outer.define_prim("SPACE", prim_SPACE)
+    outer.define_prim("SPACES", prim_SPACES)
+    outer.define_prim("U.", prim_UDOT)
+    outer.define_prim("KEY", prim_KEY)
+    outer.define_prim("ACCEPT", prim_ACCEPT)
 
     # memory management
     outer.define_prim("!", prim_STORE)
@@ -1318,6 +1652,8 @@ def install_primitives(outer):
     outer.define_prim("BRANCH", prim_BRANCH)
     outer.define_prim("(DO)", prim_DO_RUNTIME)
     outer.define_prim("(LOOP)", prim_LOOP_RUNTIME)
+    outer.define_prim("(+LOOP)", prim_PLUSLOOP_RUNTIME)
+    outer.define_prim("UNLOOP", prim_UNLOOP)
     outer.define_prim("LEAVE", prim_LEAVE)
     outer.define_prim("I", prim_I)
     outer.define_prim("J", prim_J)
