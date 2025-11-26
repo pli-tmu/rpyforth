@@ -105,6 +105,21 @@ def prim_ZERONOTEQUAL(inner, cur, ip):
         inner.push_ds(ZERO)
     return ip
 
+# def U< (n1 n2 -- flag )
+def prim_U_LESS(inner, cur, ip):
+    """GForth core 2012: flag is true if and only if u1 is less than u2."""
+    w_n2 = inner.pop_ds()
+    w_n1 = inner.pop_ds()
+    assert isinstance(w_n1, W_IntObject)
+    assert isinstance(w_n2, W_IntObject)
+    BIT_MASK = (1 << LONG_BIT) - 1   #111...11 64bits
+    u1 = w_n1.intval & BIT_MASK
+    u2 = w_n2.intval & BIT_MASK
+    if u1 < u2:
+        inner.push_ds(TRUE)
+    else:
+        inner.push_ds(ZERO)
+    return ip
 
 # DUP ( x -- x x )
 def prim_DUP(inner, cur, ip):
@@ -1301,6 +1316,7 @@ def install_primitives(outer):
     outer.define_prim(">",  prim_GREATER)
     outer.define_prim("<",  prim_LESS)
     outer.define_prim("0<>", prim_ZERONOTEQUAL)
+    outer.define_prim("U<", prim_U_LESS)
     # stack manipulation
     outer.define_prim("DUP", prim_DUP)
     outer.define_prim("DROP", prim_DROP)

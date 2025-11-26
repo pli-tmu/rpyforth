@@ -275,6 +275,14 @@ def test_sm_div_rem():
     assert inner.pop_ds().intval == 2
     assert inner.pop_ds().intval == -1
 
+def test_u_less():
+    assert run_and_pop("3 5 U<").intval == -1  # True
+    assert run_and_pop("5 3 U<").intval == 0   # False
+    assert run_and_pop("18446744073709551615 0 U<").intval == 0  # False
+    assert run_and_pop("0 18446744073709551615 U<").intval == -1  # True
+    assert run_and_pop("-1 0 U<").intval == 0  # False
+    assert run_and_pop("0 -1 U<").intval == -1
+
 # Floating point tests
 def test_float_literals():
     assert run_and_pop("1.0").floatval == 1.0
