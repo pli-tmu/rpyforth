@@ -1112,6 +1112,33 @@ def prim_EXIT(inner, cur, ip):
     raise Exit
 
 
+# (ABORT") ( flag c-addr u -- )
+def prim_ABORT_QUOTE_RUNTIME(inner, cur, ip):
+    """Runtime for ABORT" - abort if flag is non-zero, printing message."""
+    u = inner.pop_ds()
+    c_addr = inner.pop_ds()
+    flag = inner.pop_ds()
+    assert isinstance(flag, W_IntObject)
+
+    if flag.intval != 0:
+        # Print the abort message
+        if isinstance(c_addr, W_StringObject):
+            msg = c_addr.strval
+        else:
+            msg = "ABORT"
+        stdin, stdout, stderr = create_stdio()
+        stdout.write("ABORT: ")
+        stdout.write(msg)
+        stdout.write("\n")
+        # Clear stacks
+        inner.ds_ptr = 0
+        inner.rs_ptr = 0
+        # Signal abort by raising Exit
+        from rpyforth.inner_interp import Exit
+        raise Exit
+    return ip
+
+
 # Floating point operations
 
 # F* ( f1 f2 -- f3 )
@@ -1661,6 +1688,7 @@ def install_primitives(outer):
     # thread ops
     outer.define_prim("LIT", prim_LIT)
     outer.define_prim("EXIT", prim_EXIT)
+    outer.define_prim("(ABORT\")", prim_ABORT_QUOTE_RUNTIME)
 
     # floating point
     outer.define_prim("F*", prim_FMUL)

@@ -1033,3 +1033,38 @@ def test_environment_unknown():
     outer.interpret_line('S" UNKNOWN-QUERY" ENVIRONMENT?')
     flag = inner.pop_ds()
     assert flag.intval == 0  # False - unknown
+
+
+# RECURSE Tests
+
+def test_recurse_factorial():
+    """Test RECURSE for recursive factorial"""
+    result = run_and_pop(": FACT DUP 1 > IF DUP 1- RECURSE * THEN ; 5 FACT")
+    assert result.intval == 120  # 5! = 120
+
+def test_recurse_countdown():
+    """Test RECURSE for countdown"""
+    result = run_and_pop(": COUNTDOWN DUP 0 > IF 1- RECURSE THEN ; 5 COUNTDOWN")
+    assert result.intval == 0
+
+# Compiled ABORT" Tests
+
+def test_abort_quote_compiled_false():
+    """Test compiled ABORT\" with false condition"""
+    inner = InnerInterpreter()
+    outer = OuterInterpreter(inner)
+    outer.interpret_line(': TEST 0 ABORT" Should not abort" 42 ;')
+    outer.interpret_line("TEST")
+    result = inner.pop_ds()
+    assert result.intval == 42
+
+def test_abort_quote_compiled_true():
+    """Test compiled ABORT\" with true condition"""
+    inner = InnerInterpreter()
+    outer = OuterInterpreter(inner)
+    outer.interpret_line(': TEST -1 ABORT" Aborted!" 42 ;')
+    # Push a marker to verify stack gets cleared
+    outer.interpret_line("99")
+    outer.interpret_line("TEST")
+    # After abort, stack should be cleared
+    assert inner.ds_ptr == 0

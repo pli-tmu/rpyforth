@@ -27,7 +27,7 @@ class CtrlEntry(object):
         self.leave_addrs = []  # list of LEAVE positions to patch (for DO loops)
 
 class OuterInterpreter(object):
-    _immutable_fields_ = ['wBR', 'w0BR', 'wLIT', 'wEXIT', 'wDO', 'wLOOP', 'wPLUSLOOP', 'wLEAVE', 'wTYPE', 'wUNLOOP']
+    _immutable_fields_ = ['wBR', 'w0BR', 'wLIT', 'wEXIT', 'wDO', 'wLOOP', 'wPLUSLOOP', 'wLEAVE', 'wTYPE', 'wUNLOOP', 'wABORTQUOTE']
 
     def __init__(self, inner):
         self.inner = inner
@@ -61,6 +61,7 @@ class OuterInterpreter(object):
         self.wUNLOOP = self.dict["UNLOOP"]
         self.wLEAVE = self.dict["LEAVE"]
         self.wTYPE = self.dict["TYPE"]
+        self.wABORTQUOTE = self.dict['(ABORT")']
 
     def reset_code(self):
         self.current_code = [None] * 128
@@ -977,6 +978,33 @@ class OuterInterpreter(object):
                         # Create word with empty thread as placeholder
                         thread = CodeThread([], [])
                         self.define_colon(self.current_name, thread)
+                    continue
+
+                if tkey == "RECURSE":
+                    # Compile a call to the current word being defined
+                    if self.current_name:
+                        name_upper = to_upper(self.current_name)
+                        if name_upper in self.dict:
+                            # Word already exists (RECURSIVE was used)
+                            self._emit_word(self.dict[name_upper])
+                        else:
+                            # Create word now so we can compile a reference to it
+                            thread = CodeThread([], [])
+                            word = self.define_colon(self.current_name, thread)
+                            self._emit_word(word)
+                    else:
+                        print "RECURSE outside of definition"
+                    continue
+
+                if tkey == 'ABORT"':
+                    # Compile ABORT" in compile mode
+                    # Parse the message string
+                    parsed_str, i = self._parse_string_until_quote(toks, i)
+                    w_str = W_StringObject(parsed_str)
+                    # Compile: push string, push length, call (ABORT")
+                    self._emit_lit(w_str)
+                    self._emit_lit(W_IntObject(len(parsed_str)))
+                    self._emit_word(self.wABORTQUOTE)
                     continue
 
                 if tkey == "[":
