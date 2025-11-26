@@ -250,6 +250,17 @@ def test_fm_div_mod():
     assert inner.pop_ds().intval == -17
     assert inner.pop_ds().intval == 2
 
+def test_um_div_mod():
+    inner = run("0 1 2 UM/MOD")
+    assert inner.pop_ds().intval == -9223372036854775808
+    assert inner.pop_ds().intval == 0
+    inner = run("3 0 2 UM/MOD")
+    assert inner.pop_ds().intval == 1
+    assert inner.pop_ds().intval == 1
+    inner = run("18446744073709551615 2 UM* 2 UM/MOD")
+    assert inner.pop_ds().intval == -1
+    assert inner.pop_ds().intval == 1
+
 # Floating point tests
 def test_float_literals():
     assert run_and_pop("1.0").floatval == 1.0
