@@ -220,6 +220,14 @@ def test_mul_slash():
     assert run_and_pop("10 3 2 */").intval == 15
     assert run_and_pop("-20 6 7 */").intval == -18
 
+def test_div_mod():
+    inner = run("10 3 /MOD")
+    assert inner.pop_ds().intval == 3
+    assert inner.pop_ds().intval == 1
+    inner = run("-20 6 /MOD")
+    assert inner.pop_ds().intval == -4
+    assert inner.pop_ds().intval == 4
+
 # Floating point tests
 def test_float_literals():
     assert run_and_pop("1.0").floatval == 1.0
