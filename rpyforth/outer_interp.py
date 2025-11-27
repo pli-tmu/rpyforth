@@ -203,6 +203,7 @@ class OuterInterpreter(object):
 
     # Helper methods for interpret_line refactoring
 
+    @unroll_safe
     def _parse_string_until_quote(self, toks, i):
         """Parse tokens until closing quote, return (parsed_string, new_index)."""
         toks_len = len(toks)
@@ -602,6 +603,7 @@ class OuterInterpreter(object):
         print "ABORT"
 
     # ABORT" ( flag "ccc<quote>" -- )
+    @unroll_safe
     def _handle_abort_quote(self, toks, i):
         toks_len = len(toks)
         abort_msg_parts = []
@@ -634,6 +636,7 @@ class OuterInterpreter(object):
         self.state = INTERPRET
 
     # main outer interpreter
+    @unroll_safe
     def interpret_line(self, line):
         # Store the source line for SOURCE word
         self.source_buffer = line
