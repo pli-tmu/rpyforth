@@ -211,6 +211,81 @@ def test_SDOUBLE_QUOTE():
     assert inner.pop_ds().intval == len(str)
     assert inner.pop_ds().ptrval == len(str) # Cheating!
 
+def test_DIV():
+    assert run_and_pop("10 3 /").intval == 3
+    assert run_and_pop("-20 6 /").intval == -4
+    assert run_and_pop("-9223372036854775808 -1 /").intval == 9223372036854775808
+
+def test_mul_slash():
+    assert run_and_pop("10 3 2 */").intval == 15
+    assert run_and_pop("-20 6 7 */").intval == -18
+
+def test_div_mod():
+    inner = run("10 3 /MOD")
+    assert inner.pop_ds().intval == 3
+    assert inner.pop_ds().intval == 1
+    inner = run("-20 6 /MOD")
+    assert inner.pop_ds().intval == -4
+    assert inner.pop_ds().intval == 4
+
+def test_mul_div_mod():
+    inner = run("10 2 3 */MOD")
+    assert inner.pop_ds().intval == 6
+    assert inner.pop_ds().intval == 2
+    inner = run("-20 4 6 */MOD")
+    assert inner.pop_ds().intval == -14
+    assert inner.pop_ds().intval == 4
+
+def test_fm_div_mod():
+    inner = run("20 S>D 3 FM/MOD")
+    assert inner.pop_ds().intval == 6
+    assert inner.pop_ds().intval == 2
+    inner = run("-20 S>D 6 FM/MOD")
+    assert inner.pop_ds().intval == -4
+    assert inner.pop_ds().intval == 4
+    inner = run("20 5 M* 3 FM/MOD")
+    assert inner.pop_ds().intval == 33
+    assert inner.pop_ds().intval == 1
+    inner = run("-20 5 M* 6 FM/MOD")
+    assert inner.pop_ds().intval == -17
+    assert inner.pop_ds().intval == 2
+
+def test_um_div_mod():
+    inner = run("0 1 2 UM/MOD")
+    assert inner.pop_ds().intval == -9223372036854775808
+    assert inner.pop_ds().intval == 0
+    inner = run("3 0 2 UM/MOD")
+    assert inner.pop_ds().intval == 1
+    assert inner.pop_ds().intval == 1
+    inner = run("18446744073709551615 2 UM* 2 UM/MOD")
+    assert inner.pop_ds().intval == -1
+    assert inner.pop_ds().intval == 1
+
+def test_sm_div_rem():
+    inner = run("7 S>D 3 SM/REM")
+    assert inner.pop_ds().intval == 2
+    assert inner.pop_ds().intval == 1
+    inner = run("-7 S>D 3 SM/REM")
+    assert inner.pop_ds().intval == -2
+    assert inner.pop_ds().intval == -1
+    inner = run("7 S>D -3 SM/REM")
+    assert inner.pop_ds().intval == -2
+    assert inner.pop_ds().intval == 1
+    inner = run("-7 S>D -3 SM/REM")
+    assert inner.pop_ds().intval == 2
+    assert inner.pop_ds().intval == -1
+
+def test_u_less():
+    assert run_and_pop("3 5 U<").intval == -1  # True
+    assert run_and_pop("5 3 U<").intval == 0   # False
+    assert run_and_pop("18446744073709551615 0 U<").intval == 0  # False
+    assert run_and_pop("0 18446744073709551615 U<").intval == -1  # True
+    assert run_and_pop("-1 0 U<").intval == 0  # False
+    assert run_and_pop("0 -1 U<").intval == -1 # True
+
+def test_u_dot():
+    assert run_and_pop("10 10 U.").intval == 10
+
 # Floating point tests
 def test_float_literals():
     assert run_and_pop("1.0").floatval == 1.0
