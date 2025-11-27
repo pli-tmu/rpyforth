@@ -18,10 +18,11 @@ from rpython.rlib.rarithmetic import r_ulonglong, intmask
 from rpython.rlib.jit import JitDriver, promote, elidable, unroll_safe, promote_string
 from rpython.rlib.rfile import create_stdio
 
-STACK_SIZE = 128  # Increased for deeper nesting
+STACK_SIZE = 128 # Increased for deeper nesting
 BUF_SIZE = 1024
 HEAP_CELL_COUNT = 65536
 HEAP_SIZE_BYTES = HEAP_CELL_COUNT * CELL_SIZE_BYTES
+
 
 class Exit(Exception):
     pass
@@ -38,7 +39,8 @@ jitdriver = JitDriver(
 
 class InnerInterpreter(object):
     _immutable_fields_ = ["cell_size", "cell_size_bytes", "base"]
-    _virtualizable_ = ["ds_ptr", "ds[*]", "rs_ptr", "rs[*]"]
+    _virtualizable_ = ["ds_ptr", "ds[*]", "rs_ptr", "rs[*]",
+                       "cs_ptr", "cs_threads[*]", "cs_ips[*]"]
 
 
     def __init__(self):
@@ -48,6 +50,11 @@ class InnerInterpreter(object):
 
         self.rs = [None] * STACK_SIZE  # return stack
         self.rs_ptr = 0
+
+        # Virtualized call stack for JIT optimization
+        self.cs_threads = [None] * STACK_SIZE  # return threads
+        self.cs_ips = [0] * STACK_SIZE         # return IPs
+        self.cs_ptr = 0
 
         self.mem = [0] * HEAP_SIZE_BYTES
         self.here = 0
@@ -60,6 +67,27 @@ class InnerInterpreter(object):
         self.base = DECIMAL
         self._pno_active = False      # inside <# ... #> or not
         self._pno_buf = []            # buffer for pno (pictured numeric output)
+
+    def push_call(self, thread, ip):
+        """Push return address onto virtualized call stack."""
+        ptr = self.cs_ptr
+        self.cs_threads[ptr] = thread
+        self.cs_ips[ptr] = ip
+        self.cs_ptr = ptr + 1
+
+    def pop_call(self):
+        """Pop return address from virtualized call stack."""
+        ptr = self.cs_ptr - 1
+        assert ptr >= 0
+        self.cs_ptr = ptr
+        thread = self.cs_threads[ptr]
+        ip = self.cs_ips[ptr]
+        self.cs_threads[ptr] = None
+        return thread, ip
+
+    def is_call_stack_empty(self):
+        """Check if call stack is empty."""
+        return self.cs_ptr == 0
 
     def push_ds(self, w_x):
         ds_ptr = self.ds_ptr
@@ -197,25 +225,45 @@ class InnerInterpreter(object):
                 self=self
             )
             if ip >= len(thread.code):
-                break
+                if not self.is_call_stack_empty():
+                    thread, ip = self.pop_call()
+                    continue
+                else:
+                    break
 
             # Promote the word to allow JIT to specialize on it
             w = promote(thread.code[ip])
             if w is None:
-                break
+                if not self.is_call_stack_empty():
+                    thread, ip = self.pop_call()
+                    continue
+                else:
+                    break
             ip += 1
 
             # Promote the primitive function pointer for better inlining
-            try:
-                prim = promote(w.prim)
-                if prim is not None:
+            prim = promote(w.prim)
+            if prim is not None:
+                try:
                     ip = prim(self, thread, ip)
-                else:
-                    # Promote the nested thread for better inlining of colon definitions
-                    nested_thread = promote(w.thread)
-                    self.execute_thread(nested_thread)
-            except Exit:
-                break
+                except Exit:
+                    # EXIT - return to caller
+                    if not self.is_call_stack_empty():
+                        thread, ip = self.pop_call()
+                    else:
+                        break
+            else:
+                # Colon definition - push current state and enter nested thread
+                nested_thread = promote(w.thread)
+                self.push_call(thread, ip)
+                thread = nested_thread
+                ip = 0
+                # Signal JIT that this is a potential loop entry point (for recursion)
+                jitdriver.can_enter_jit(
+                    ip=ip,
+                    thread=thread,
+                    self=self
+                )
 
     def execute_word_now(self, w):
         code = [w]

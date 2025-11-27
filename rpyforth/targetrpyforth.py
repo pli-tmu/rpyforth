@@ -21,6 +21,7 @@ def entry_point(argv):
         print("Usage: %s filename x" % (argv[0],))
         return 2
 
+    jit.set_user_param(None, "trace_limit=200000")
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
     path = argv[1]

@@ -143,6 +143,15 @@ def prim_DROP(inner, cur, ip):
     return ip
 
 
+# NIP ( x1 x2 -- x2 )
+def prim_NIP(inner, cur, ip):
+    """GForth core 2012: discard the second stack item."""
+    x2 = inner.pop_ds()
+    inner.pop_ds()  # discard x1
+    inner.push_ds(x2)
+    return ip
+
+
 # 2DROP ( x1 x2 -- )
 def prim_2DROP(inner, cur, ip):
     """GForth core 2012: discard the top two stack items."""
@@ -206,6 +215,18 @@ def prim_ROT(inner, cur, ip):
     inner.push_ds(b)
     inner.push_ds(c)
     inner.push_ds(a)
+    return ip
+
+
+# -ROT ( x1 x2 x3 -- x3 x1 x2 )
+def prim_NROT(inner, cur, ip):
+    """Inverse of ROT."""
+    c = inner.pop_ds()
+    b = inner.pop_ds()
+    a = inner.pop_ds()
+    inner.push_ds(c)
+    inner.push_ds(a)
+    inner.push_ds(b)
     return ip
 
 
@@ -529,7 +550,7 @@ def prim_MUL_STAR(inner, cur, ip):
     BIT_MASK = (1 << LONG_BIT) - 1   #111...11 64bits
     SIGN_BIT = 1 << (LONG_BIT - 1)  #100...00 64bits
 
-    low = c.intval & BIT_MASK    # get c's low 64bits 
+    low = c.intval & BIT_MASK    # get c's low 64bits
     #high 64bits: 0s, low 64bits: c's low 64bits,total 128bits
 
     if low & SIGN_BIT:  # if highest of c's low bits is 1
@@ -537,7 +558,7 @@ def prim_MUL_STAR(inner, cur, ip):
 
         low = low - (1 << LONG_BIT)  # convert to negative number
 
-    high = c.intval >> LONG_BIT # get c's high 64bits 
+    high = c.intval >> LONG_BIT # get c's high 64bits
     #(ex,LONG_BIT = 4) if c = 0100 0000, high = 0000 0100 = c's high 4bits : if c = 1100 1000, high = 1111 1100 = c's high 4bits
 
     inner.push_ds(W_IntObject(low))
@@ -553,10 +574,10 @@ def prim_U_MUL_STAR(inner, cur, ip):
 
     BIT_MASK = (1 << LONG_BIT) - 1   #111...11 64bits
 
-    low = c.intval & BIT_MASK    # get c's low 64bits 
+    low = c.intval & BIT_MASK    # get c's low 64bits
     #high 64bits: 0s, low 64bits: c's low 64bits,total 128bits
 
-    high = c.intval >> LONG_BIT # get c's high 64bits 
+    high = c.intval >> LONG_BIT # get c's high 64bits
     #(ex,LONG_BIT = 4) if c = 0100 0000, high = 0000 0100 = c's high 4bits : if c = 1100 1000, high = 1111 1100 = c's high 4bits
 
     inner.push_ds(W_IntObject(low))
@@ -1095,6 +1116,32 @@ def prim_ACCEPT(inner, cur, ip):
     inner.push_ds(W_IntObject(final_len))
     return ip
 
+# U.R ( u n -- )
+def prim_UDOTR(inner, cur, ip):
+    """Display unsigned number right-justified in n-character field."""
+    n = inner.pop_ds()
+    u = inner.pop_ds()
+    assert isinstance(n, W_IntObject)
+    assert isinstance(u, W_IntObject)
+
+    # Get unsigned value
+    val = u.intval
+    if val < 0:
+        # Convert to unsigned (handle as positive for display)
+        BIT_MASK = (1 << LONG_BIT) - 1  # 64-bit mask
+        val = val & BIT_MASK
+
+    num_str = str(val)
+    width = n.getvalue()
+
+    stdin, stdout, stderr = create_stdio()
+    # Right-justify: add leading spaces if needed
+    if len(num_str) < width:
+        stdout.write(' ' * (width - len(num_str)))
+    stdout.write(num_str)
+    stdout.flush()
+    return ip
+
 # CodeThread-aware primitives
 
 # LIT ( -- x )
@@ -1575,6 +1622,7 @@ def install_primitives(outer):
     # stack manipulation
     outer.define_prim("DUP", prim_DUP)
     outer.define_prim("DROP", prim_DROP)
+    outer.define_prim("NIP", prim_NIP)
     outer.define_prim("SWAP", prim_SWAP)
     outer.define_prim("OVER", prim_OVER)
 
@@ -1586,6 +1634,7 @@ def install_primitives(outer):
     outer.define_prim("?DUP", prim_QUESTIONDUP)
 
     outer.define_prim("ROT", prim_ROT)
+    outer.define_prim("-ROT", prim_NROT)
     outer.define_prim("MAX", prim_MAX)
     outer.define_prim("MIN", prim_MIN)
 
@@ -1640,6 +1689,7 @@ def install_primitives(outer):
     outer.define_prim("U.", prim_UDOT)
     outer.define_prim("KEY", prim_KEY)
     outer.define_prim("ACCEPT", prim_ACCEPT)
+    outer.define_prim("U.R", prim_UDOTR)
 
     # memory management
     outer.define_prim("!", prim_STORE)

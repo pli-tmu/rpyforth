@@ -199,6 +199,7 @@ class OuterInterpreter(object):
     def w_CR(self):
         stdin, stdout, stderr = create_stdio()
         stdout.write('\n')
+        stdout.flush()
 
     # Helper methods for interpret_line refactoring
 
@@ -1063,6 +1064,18 @@ class OuterInterpreter(object):
                     if self.last_word is not None:
                         # Store does_ip in the word for later use
                         self.last_word.does_ip = does_ip
+                    # Compile a call to the word currently being defined
+                    if self.current_name:
+                        name_upper = to_upper(self.current_name)
+                        # If not already in dictionary, add it now
+                        if name_upper not in self.dict:
+                            thread = CodeThread([], [])
+                            self.define_colon(self.current_name, thread)
+                        # Emit the current word
+                        w = self.dict[name_upper]
+                        self._emit_word(w)
+                    else:
+                        print "RECURSE outside definition"
                     continue
 
             w = self.dict.get(tkey, None)
