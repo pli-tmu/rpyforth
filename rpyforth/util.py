@@ -1,3 +1,6 @@
+from rpython.rlib.jit import unroll_safe
+
+@unroll_safe
 def to_upper(s):
     out = ''
     for i in range(len(s)):
@@ -8,6 +11,7 @@ def to_upper(s):
             out += s[i]
     return out
 
+@unroll_safe
 def remove_comments(line):
     """Remove Forth comments from a line.
 
@@ -48,6 +52,7 @@ def remove_comments(line):
 
     return result
 
+@unroll_safe
 def split_whitespace(line):
     """Split line into tokens, removing Forth comments first."""
     # Remove comments before tokenization
