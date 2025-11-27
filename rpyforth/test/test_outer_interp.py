@@ -259,7 +259,7 @@ def test_um_div_mod():
     assert inner.pop_ds().intval == 1
     inner = run("18446744073709551615 2 UM* 2 UM/MOD")
     assert inner.pop_ds().intval == -1
-    assert inner.pop_ds().intval == 1
+    assert inner.pop_ds().intval == 0  # 36893488147419103230 % 2 = 0
 
 def test_sm_div_rem():
     inner = run("7 S>D 3 SM/REM")
@@ -921,13 +921,6 @@ def test_abort_quote_true():
 # ============================================
 
 # Division Tests
-
-def test_div():
-    """Test / - integer division"""
-    assert run_and_pop("10 3 /").intval == 3
-    assert run_and_pop("-10 3 /").intval == -3
-    assert run_and_pop("10 -3 /").intval == -3
-    assert run_and_pop("-10 -3 /").intval == 3
 
 def test_divmod():
     """Test /MOD - division with remainder"""

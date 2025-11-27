@@ -694,8 +694,8 @@ def prim_UM_DIV_MOD(inner, cur, ip):
     SING_BIT = 1 << (LONG_BIT - 1)  #100...00 64bits
     d = (b.intval << LONG_BIT) | (c.intval & BIT_MASK) #d is 128bits
     assert a.intval != 0, "Division by zero"
-    e = d // a.intval #e is 64bits
-    f = e % a.intval #f is 64bits
+    e = d // a.intval #e is 64bits (quotient)
+    f = d % a.intval #f is 64bits (remainder)
     if e & SING_BIT:  # if highest of f's bits is 1
         e = e - (1 << LONG_BIT)  # convert to negative number
     if f & SING_BIT:  # if highest of f's bits is 1
