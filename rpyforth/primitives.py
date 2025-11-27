@@ -366,7 +366,6 @@ def prim_DIV(inner, cur, ip):
     a, b = inner.top2_ds()
     assert isinstance(a, W_IntObject)
     assert isinstance(b, W_IntObject)
-    # Direct field access for better JIT optimization
     assert b.intval != 0, "Division by zero"
     inner.push_ds(W_IntObject(a.intval // b.intval))
     return ip
@@ -374,7 +373,7 @@ def prim_DIV(inner, cur, ip):
 # */ ( n1 n2 n3 -- n4 )
 def prim_MUL_SLASH(inner, cur, ip):
     """GForth core 2012: multiply n1 by n2 producing the intermediate double-cell result d. divide d by n3 giving the single-cell quotient n4."""
-    a = inner.pop_ds()  
+    a = inner.pop_ds()
     b = inner.pop_ds()
     c = inner.pop_ds()
     assert isinstance(a, W_IntObject)
@@ -401,7 +400,7 @@ def prim_DIV_MOD(inner, cur, ip):
 # */MOD ( n1 n2 n3 -- n4 n5 )
 def prim_MUL_DIV_MOD(inner, cur, ip):
     """GForth core 2012: multiply n1 by n2 producing the intermediate double-cell result d. divide d by n3 giving the single-cell remainder n4 and the single-cell quotient n5."""
-    a = inner.pop_ds()  
+    a = inner.pop_ds()
     b = inner.pop_ds()
     c = inner.pop_ds()
     assert isinstance(a, W_IntObject)
@@ -436,26 +435,6 @@ def prim_MOD(inner, cur, ip):
     """GForth core 2012: divide n1 by n2, giving the single-cell remainder n3."""
     a, b = inner.top2_ds()
     inner.push_ds(a.mod(b))
-    return ip
-
-
-# / ( n1 n2 -- n3 )
-def prim_DIV(inner, cur, ip):
-    """GForth core 2012: divide n1 by n2, giving the single-cell quotient n3."""
-    a, b = inner.top2_ds()
-    assert isinstance(a, W_IntObject)
-    assert isinstance(b, W_IntObject)
-    # Forth 2012 specifies symmetric/truncated division for /
-    # Truncate toward zero (symmetric division)
-    dividend = a.intval
-    divisor = b.intval
-    if (dividend < 0) != (divisor < 0):
-        # Different signs - result should be negative, truncate toward zero
-        result = -(abs(dividend) // abs(divisor))
-    else:
-        # Same signs - result is positive
-        result = abs(dividend) // abs(divisor)
-    inner.push_ds(W_IntObject(result))
     return ip
 
 
@@ -687,7 +666,7 @@ def prim_XOR(inner, cur, ip):
 # FM/MOD ( d1 n1 -- n2 n3 )
 def prim_FM_DIV_MOD(inner, cur, ip):
     """GForth core 2012: divide d1 by n1, giving the floored quotient n3 and the remainder n2."""
-    a = inner.pop_ds()  
+    a = inner.pop_ds()
     b = inner.pop_ds() # d1's high 64bits
     c = inner.pop_ds() # d1's low 64bits
     assert isinstance(a, W_IntObject)
@@ -705,7 +684,7 @@ def prim_FM_DIV_MOD(inner, cur, ip):
 # UM/MOD ( ud u1 -- u2 u3 )
 def prim_UM_DIV_MOD(inner, cur, ip):
     """GForth core 2012: divide ud by u1, giving the quotient u3 and the remainder u2."""
-    a = inner.pop_ds()  
+    a = inner.pop_ds()
     b = inner.pop_ds() # ud's high 64bits
     c = inner.pop_ds() # ud's low 64bits
     assert isinstance(a, W_IntObject)
@@ -729,7 +708,7 @@ def prim_UM_DIV_MOD(inner, cur, ip):
 # SM/REM ( d1 n1 -- n2 n3 )
 def prim_SM_DIV_REM(inner, cur, ip):
     """GForth core 2012: divide d1 by n1, giving the symmetric quotient n3 and the remainder n2."""
-    a = inner.pop_ds()  
+    a = inner.pop_ds()
     b = inner.pop_ds() # d1's high 64bits
     c = inner.pop_ds() # d1's low 64bits
     assert isinstance(a, W_IntObject)
@@ -748,6 +727,7 @@ def prim_SM_DIV_REM(inner, cur, ip):
         f = -f
     inner.push_ds(W_IntObject(f))
     inner.push_ds(W_IntObject(e))
+    return ip
 
 
 # INVERT ( x1 -- x2 )
