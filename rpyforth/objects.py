@@ -11,13 +11,14 @@ class Word(object):
     """
     Dictionary entry for a Forth word.
     """
-    _immutable_fields_ = ['name', 'prim', 'immediate', 'thread']
+    _immutable_fields_ = ['name', 'prim']
 
     def __init__(self, name, prim=None, immediate=False, thread=None):
         self.name = name
         self.prim = prim # callable(vm) or None
-        self.immediate = immediate # bool
-        self.thread = thread # code thread
+        self.immediate = immediate # bool (mutable for IMMEDIATE)
+        self.thread = thread # code thread (mutable for RECURSIVE)
+        self.does_ip = -1  # DOES> instruction pointer (-1 means not set)
 
     @elidable
     def is_primitive(self):

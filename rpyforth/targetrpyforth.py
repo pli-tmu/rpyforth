@@ -21,9 +21,13 @@ def entry_point(argv):
         print("Usage: %s filename x" % (argv[0],))
         return 2
 
+    jit.set_user_param(None, "trace_limit=200000")
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
     path = argv[1]
+    args = None
+    if len(argv) > 1:
+        args = argv[2:]
     f = open_file_as_stream(path)
     for line in f.readall().split('\n'):
         outer.interpret_line(line)

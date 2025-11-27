@@ -846,3 +846,300 @@ def test_sign_in_pno():
     outer = OuterInterpreter(inner)
     # Complete PNO example with SIGN
     outer.interpret_line("<# -5 SIGN 0 0 #>")
+    w_str = inner.pop_ds()
+    assert isinstance(w_str, W_StringObject)
+
+# System Tests
+
+def test_fill():
+    """Test FILL - fill memory with character"""
+    inner = InnerInterpreter()
+    outer = OuterInterpreter(inner)
+    # Fill 5 bytes starting at HERE with 'A' (65)
+    outer.interpret_line("HERE 5 65 FILL")
+
+def test_move():
+    """Test MOVE - copy memory region"""
+    inner = InnerInterpreter()
+    outer = OuterInterpreter(inner)
+    # Store values using VARIABLE to get proper addresses
+    outer.interpret_line("VARIABLE SRC1  VARIABLE SRC2  VARIABLE SRC3")
+    outer.interpret_line("10 SRC1 !  20 SRC2 !  30 SRC3 !")
+    # Get source address and create destination
+    outer.interpret_line("VARIABLE DST")
+    # Move 3 bytes from SRC1 to DST
+    outer.interpret_line("SRC1 DST 3 MOVE")
+    # Verify first value was copied
+    outer.interpret_line("DST @")
+    result = inner.pop_ds()
+    assert result.intval == 10
+
+def test_state():
+    """Test STATE - get interpreter state"""
+    inner = InnerInterpreter()
+    outer = OuterInterpreter(inner)
+    # In interpret mode, STATE should return address with 0
+    outer.interpret_line("STATE @")
+    state_val = inner.pop_ds()
+    assert state_val.intval == 0
+
+def test_evaluate():
+    """Test EVALUATE - evaluate string as Forth"""
+    inner = InnerInterpreter()
+    outer = OuterInterpreter(inner)
+    # Create a string and evaluate it
+    outer.interpret_line('S" 1 2 +"')
+    outer.interpret_line("EVALUATE")
+    result = inner.pop_ds()
+    assert result.intval == 3
+
+def test_abort_quote_false():
+    """Test ABORT\" with false condition - should not abort"""
+    inner = InnerInterpreter()
+    outer = OuterInterpreter(inner)
+    # Push some values
+    outer.interpret_line("1 2 3")
+    # False flag should not abort
+    outer.interpret_line('0 ABORT" This should not print"')
+    # Stack should still have values
+    assert inner.ds_ptr == 3
+
+def test_abort_quote_true():
+    """Test ABORT\" with true condition - should abort"""
+    inner = InnerInterpreter()
+    outer = OuterInterpreter(inner)
+    # Push some values
+    outer.interpret_line("1 2 3")
+    # True flag should abort and clear stack
+    outer.interpret_line('-1 ABORT" Error occurred"')
+    # Stack should be cleared
+    assert inner.ds_ptr == 0
+
+
+# ============================================
+# Tests for newly implemented Forth 2012 Core words
+# ============================================
+
+# Division Tests
+
+def test_div():
+    """Test / - integer division"""
+    assert run_and_pop("10 3 /").intval == 3
+    assert run_and_pop("-10 3 /").intval == -3
+    assert run_and_pop("10 -3 /").intval == -3
+    assert run_and_pop("-10 -3 /").intval == 3
+
+def test_divmod():
+    """Test /MOD - division with remainder"""
+    inner = run("10 3 /MOD")
+    quot = inner.pop_ds()
+    rem = inner.pop_ds()
+    assert quot.intval == 3
+    assert rem.intval == 1
+
+def test_starslash():
+    """Test */ - multiply then divide"""
+    assert run_and_pop("10 3 2 */").intval == 15  # (10*3)/2
+
+def test_starslashmod():
+    """Test */MOD - multiply then divide with remainder"""
+    inner = run("10 3 4 */MOD")
+    quot = inner.pop_ds()
+    rem = inner.pop_ds()
+    # (10*3)/4 = 30/4 = 7 remainder 2
+    assert quot.intval == 7
+    assert rem.intval == 2
+
+def test_fmslashmod():
+    """Test FM/MOD - floored division"""
+    inner = run("7 0 3 FM/MOD")
+    quot = inner.pop_ds()
+    rem = inner.pop_ds()
+    assert quot.intval == 2
+    assert rem.intval == 1
+
+def test_smslashrem():
+    """Test SM/REM - symmetric division"""
+    inner = run("7 0 3 SM/REM")
+    quot = inner.pop_ds()
+    rem = inner.pop_ds()
+    assert quot.intval == 2
+    assert rem.intval == 1
+
+def test_umslashmod():
+    """Test UM/MOD - unsigned division"""
+    inner = run("10 0 3 UM/MOD")
+    quot = inner.pop_ds()
+    rem = inner.pop_ds()
+    assert quot.intval == 3
+    assert rem.intval == 1
+
+# Bitwise Tests
+
+def test_invert():
+    """Test INVERT - bitwise NOT"""
+    assert run_and_pop("0 INVERT").intval == -1
+    assert run_and_pop("-1 INVERT").intval == 0
+
+# Comparison Tests
+
+def test_u_less():
+    """Test U< - unsigned less than"""
+    assert run_and_pop("1 2 U<").intval == -1  # True
+    assert run_and_pop("2 1 U<").intval == 0   # False
+    assert run_and_pop("-1 1 U<").intval == 0  # -1 is large when unsigned
+
+# Control Flow Tests
+
+def test_plusloop():
+    """Test +LOOP with positive increment"""
+    result = run_and_pop(": TEST 0 10 0 DO I + 2 +LOOP ; TEST")
+    assert result.intval == 20  # 0+2+4+6+8 = 20
+
+def test_again():
+    """Test BEGIN...AGAIN loop (needs EXIT to break)"""
+    result = run_and_pop(": TEST 0 BEGIN 1+ DUP 5 = IF EXIT THEN AGAIN ; TEST")
+    assert result.intval == 5
+
+def test_until():
+    """Test BEGIN...UNTIL loop"""
+    result = run_and_pop(": TEST 0 BEGIN 1+ DUP 5 = UNTIL ; TEST")
+    assert result.intval == 5
+
+def test_unloop():
+    """Test UNLOOP - remove loop parameters from return stack"""
+    # Keep I on stack before comparison by duplicating it
+    result = run_and_pop(": TEST 5 0 DO I DUP 3 = IF UNLOOP EXIT THEN DROP LOOP 99 ; TEST")
+    assert result.intval == 3  # Should exit when I=3
+
+# Compilation Tests
+
+def test_immediate():
+    """Test IMMEDIATE - mark word as immediate"""
+    inner = InnerInterpreter()
+    outer = OuterInterpreter(inner)
+    # Define a word and mark it immediate
+    outer.interpret_line(": TWICE 2 * ;")
+    outer.interpret_line("IMMEDIATE")
+    # The last defined word should be marked immediate
+    assert outer.last_word.immediate == True
+
+def test_literal():
+    """Test LITERAL - compile literal at compile time"""
+    result = run_and_pop(": TEST [ 5 3 + ] LITERAL ; TEST")
+    assert result.intval == 8
+
+def test_bracket():
+    """Test [ and ] - switch between interpret and compile modes"""
+    result = run_and_pop(": TEST [ 2 3 + ] LITERAL 10 + ; TEST")
+    assert result.intval == 15  # (2+3) + 10
+
+def test_bracket_tick():
+    """Test ['] - compile execution token"""
+    inner = InnerInterpreter()
+    outer = OuterInterpreter(inner)
+    outer.interpret_line(": TEST ['] DUP ; TEST")
+    xt = inner.pop_ds()
+    assert isinstance(xt, W_WordObject)
+    assert xt.word.name == "DUP"
+
+# Number Conversion Tests
+
+def test_base():
+    """Test BASE - returns address of base variable"""
+    inner = InnerInterpreter()
+    outer = OuterInterpreter(inner)
+    outer.interpret_line("BASE @")
+    result = inner.pop_ds()
+    # Default base should be 10 (decimal)
+    assert result.intval == 10
+
+def test_base_change():
+    """Test changing BASE via HEX/DECIMAL"""
+    inner = InnerInterpreter()
+    outer = OuterInterpreter(inner)
+    outer.interpret_line("HEX")  # Set to hex
+    outer.interpret_line("BASE @")
+    result = inner.pop_ds()
+    assert result.intval == 16
+    outer.interpret_line("DECIMAL")  # Set back to decimal
+    outer.interpret_line("BASE @")
+    result2 = inner.pop_ds()
+    assert result2.intval == 10
+
+# I/O Tests
+
+def test_space():
+    """Test SPACE - output single space"""
+    # Just verify it doesn't crash
+    run("SPACE")
+
+def test_spaces():
+    """Test SPACES - output multiple spaces"""
+    # Just verify it doesn't crash
+    run("5 SPACES")
+
+# Environment Tests
+
+def test_environment_core():
+    """Test ENVIRONMENT? with CORE query"""
+    inner = InnerInterpreter()
+    outer = OuterInterpreter(inner)
+    outer.interpret_line('S" CORE" ENVIRONMENT?')
+    flag = inner.pop_ds()
+    result = inner.pop_ds()
+    assert flag.intval == -1  # True
+    assert result.intval == -1  # CORE is present
+
+def test_environment_stack_cells():
+    """Test ENVIRONMENT? with STACK-CELLS query"""
+    inner = InnerInterpreter()
+    outer = OuterInterpreter(inner)
+    outer.interpret_line('S" STACK-CELLS" ENVIRONMENT?')
+    flag = inner.pop_ds()
+    result = inner.pop_ds()
+    assert flag.intval == -1  # True
+    assert result.intval == 64  # Stack size
+
+def test_environment_unknown():
+    """Test ENVIRONMENT? with unknown query"""
+    inner = InnerInterpreter()
+    outer = OuterInterpreter(inner)
+    outer.interpret_line('S" UNKNOWN-QUERY" ENVIRONMENT?')
+    flag = inner.pop_ds()
+    assert flag.intval == 0  # False - unknown
+
+
+# RECURSE Tests
+
+def test_recurse_factorial():
+    """Test RECURSE for recursive factorial"""
+    result = run_and_pop(": FACT DUP 1 > IF DUP 1- RECURSE * THEN ; 5 FACT")
+    assert result.intval == 120  # 5! = 120
+
+def test_recurse_countdown():
+    """Test RECURSE for countdown"""
+    result = run_and_pop(": COUNTDOWN DUP 0 > IF 1- RECURSE THEN ; 5 COUNTDOWN")
+    assert result.intval == 0
+
+# Compiled ABORT" Tests
+
+def test_abort_quote_compiled_false():
+    """Test compiled ABORT\" with false condition"""
+    inner = InnerInterpreter()
+    outer = OuterInterpreter(inner)
+    outer.interpret_line(': TEST 0 ABORT" Should not abort" 42 ;')
+    outer.interpret_line("TEST")
+    result = inner.pop_ds()
+    assert result.intval == 42
+
+def test_abort_quote_compiled_true():
+    """Test compiled ABORT\" with true condition"""
+    inner = InnerInterpreter()
+    outer = OuterInterpreter(inner)
+    outer.interpret_line(': TEST -1 ABORT" Aborted!" 42 ;')
+    # Push a marker to verify stack gets cleared
+    outer.interpret_line("99")
+    outer.interpret_line("TEST")
+    # After abort, stack should be cleared
+    assert inner.ds_ptr == 0

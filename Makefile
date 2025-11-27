@@ -23,6 +23,10 @@ build-jit: _pypy_binary/bin/python setup-pypy
 test: _pypy_binary/bin/python setup-pypy
 	PYTHONPATH=. ./_pypy_binary/bin/python2 ./pypy/pytest.py rpyforth/test -vv -s
 
+.PHONY: coverage
+coverage:
+	python3 check_coverage.py
+
 _pypy_binary/bin/python:  ## Download a PyPy binary
 	mkdir -p _pypy_binary
 	python3 get_pypy_to_download.py
