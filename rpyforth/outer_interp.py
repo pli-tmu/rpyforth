@@ -63,6 +63,10 @@ class OuterInterpreter(object):
         self.wTYPE = self.dict["TYPE"]
         self.wABORTQUOTE = self.dict['(ABORT")']
 
+    @elidable
+    def dict_get(self, name):
+        return self.dict.get(name, None)
+
     def reset_code(self):
         self.current_code = [None] * 128
         self.current_lits = [None] * 128
@@ -484,7 +488,7 @@ class OuterInterpreter(object):
 
         name_upper = to_upper(name)
         if name_upper in self.dict:
-            word = self.dict[name_upper]
+            word = self.dict_get(name_upper)
             xt = W_WordObject(word)
             self.inner.push_ds(xt)
             if word.immediate:
@@ -518,7 +522,7 @@ class OuterInterpreter(object):
         name, i = self._read_tok(toks, i)
         name_upper = to_upper(name)
         if name_upper in self.dict:
-            word = self.dict[name_upper]
+            word = self.dict.get(name_upper)
             xt = W_WordObject(word)
             self.inner.push_ds(xt)
         else:
@@ -1086,7 +1090,7 @@ class OuterInterpreter(object):
                         print "RECURSE outside definition"
                     continue
 
-            w = self.dict.get(tkey, None)
+            w = self.dict_get(tkey)
             w = promote(w)
             if self.state == INTERPRET:
                 self._execute_or_push(w, t)
