@@ -39,14 +39,16 @@ jitdriver = JitDriver(
 
 class InnerInterpreter(object):
     _immutable_fields_ = ["cell_size", "cell_size_bytes", "base"]
-    _virtualizable_ = ["ds_ptr", "ds[*]", "rs_ptr", "rs[*]",
+    _virtualizable_ = ["ds_ptr", "ds_ints[*]", "ds_tags[*]", "ds[*]", "rs_ptr", "rs[*]",
                        "cs_ptr", "cs_threads[*]", "cs_ips[*]",
                        "loop_ptr", "loop_counters[*]", "loop_limits[*]"]
 
 
     def __init__(self):
         # Pre-allocate larger stacks to reduce growth overhead
-        self.ds = [None] * STACK_SIZE # data stack
+        self.ds_ints = [0] * STACK_SIZE # unboxed integer data stack
+        self.ds_tags = [0] * STACK_SIZE # 0=int, 1=object
+        self.ds = [None] * STACK_SIZE # boxed object data stack (for non-ints)
         self.ds_ptr = 0
 
         self.rs = [None] * STACK_SIZE  # return stack
@@ -131,16 +133,71 @@ class InnerInterpreter(object):
 
     def push_ds(self, w_x):
         ds_ptr = self.ds_ptr
-        self.ds[ds_ptr] = w_x
+        if isinstance(w_x, W_IntObject):
+            # Store unboxed integer
+            self.ds_ints[ds_ptr] = w_x.intval
+            self.ds_tags[ds_ptr] = 0
+        else:
+            # Store boxed object
+            self.ds[ds_ptr] = w_x
+            self.ds_tags[ds_ptr] = 1
         self.ds_ptr = ds_ptr + 1
 
     def pop_ds(self):
         ds_ptr = self.ds_ptr - 1
         assert ds_ptr >= 0
-        w_x = self.ds[ds_ptr]
-        self.ds[ds_ptr] = None
+        tag = self.ds_tags[ds_ptr]
+        if tag == 0:
+            # Reconstruct W_IntObject from unboxed int
+            intval = self.ds_ints[ds_ptr]
+            self.ds_ptr = ds_ptr
+            return W_IntObject(intval)
+        else:
+            # Return boxed object
+            w_x = self.ds[ds_ptr]
+            self.ds[ds_ptr] = None
+            self.ds_ptr = ds_ptr
+            return w_x
+
+    def push_ds_int(self, intval):
+        """Push raw integer directly (unboxed)."""
+        ds_ptr = self.ds_ptr
+        self.ds_ints[ds_ptr] = intval
+        self.ds_tags[ds_ptr] = 0
+        self.ds_ptr = ds_ptr + 1
+
+    def pop_ds_int(self):
+        """Pop and return raw integer (unboxed)."""
+        ds_ptr = self.ds_ptr - 1
+        assert ds_ptr >= 0
+        assert self.ds_tags[ds_ptr] == 0, "Expected int on stack"
+        intval = self.ds_ints[ds_ptr]
         self.ds_ptr = ds_ptr
-        return w_x
+        return intval
+
+    def peek_ds_int(self, depth=0):
+        """Peek at raw integer without popping (unboxed)."""
+        ptr = self.ds_ptr - 1 - depth
+        assert ptr >= 0
+        assert self.ds_tags[ptr] == 0, "Expected int on stack"
+        return self.ds_ints[ptr]
+
+    def peek_ds(self, depth=0):
+        """Peek at stack value without popping (returns boxed W_Object)."""
+        ptr = self.ds_ptr - 1 - depth
+        assert ptr >= 0
+        tag = self.ds_tags[ptr]
+        if tag == 0:
+            return W_IntObject(self.ds_ints[ptr])
+        else:
+            return self.ds[ptr]
+
+    def poke_ds_int(self, depth, intval):
+        """Set raw integer at depth (unboxed)."""
+        ptr = self.ds_ptr - 1 - depth
+        assert ptr >= 0
+        self.ds_ints[ptr] = intval
+        self.ds_tags[ptr] = 0
 
     def top2_ds(self):
         w_y = self.pop_ds()
