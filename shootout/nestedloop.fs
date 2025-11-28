@@ -16,10 +16,6 @@
   loop ;
 
 \ run test and print result
-: main
-    1 0 DO
-        0 nestedloops 1
-    LOOP
-;
+0 nestedloops 1 U.R CR
 
-main
+bye
