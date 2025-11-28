@@ -1753,6 +1753,16 @@ def prim_EQUAL(inner, cur, ip):
     return ip
 
 
+# System Operations
+
+# BYE ( -- )
+def prim_BYE(inner, cur, ip):
+    """GForth core 2012: exit the Forth system."""
+    import os
+    os._exit(0)
+    return -1
+
+
 def install_primitives(outer):
     outer.define_prim("0=", prim_ZEROEQUAL)
     outer.define_prim("0<", prim_ZEROLESS)
@@ -1927,3 +1937,6 @@ def install_primitives(outer):
 
     # comparison
     outer.define_prim("=", prim_EQUAL)
+
+    # system
+    outer.define_prim("BYE", prim_BYE)
