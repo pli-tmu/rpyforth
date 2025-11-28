@@ -209,7 +209,11 @@ def test_SDOUBLE_QUOTE():
     str = "Hello, World!"
     inner = run("S\" Hello, World!\"")
     assert inner.pop_ds().intval == len(str)
-    assert inner.pop_ds().ptrval == len(str) # Cheating!
+    ptr = inner.pop_ds()
+    # Verify the pointer points to valid buffer entry with the correct string
+    buf_entry = inner.buf[ptr.ptrval]
+    assert buf_entry is not None
+    assert buf_entry.strval == str
 
 def test_DIV():
     assert run_and_pop("10 3 /").intval == 3

@@ -21,7 +21,7 @@ from rpython.rlib.rfile import create_stdio
 STACK_SIZE = 128 # Increased for deeper nesting
 BUF_SIZE = 1024
 HEAP_CELL_COUNT = 65536
-HEAP_SIZE_BYTES = HEAP_CELL_COUNT * CELL_SIZE_BYTES
+HEAP_SIZE_BYTES = HEAP_CELL_COUNT
 
 
 class Exit(Exception):
@@ -56,13 +56,13 @@ class InnerInterpreter(object):
         self.cs_ips = [0] * STACK_SIZE         # return IPs
         self.cs_ptr = 0
 
-        self.mem = [0] * HEAP_SIZE_BYTES
-        self.here = 0
+        self.mem = [None] * HEAP_SIZE_BYTES
         self.cell_size = CELL_SIZE
         self.cell_size_bytes = CELL_SIZE_BYTES
 
-        self.buf = [None] * BUF_SIZE
-        self.buf_ptr = 0
+        # for string
+        self.buf = [None] * HEAP_SIZE_BYTES
+        self.here = 0
 
         self.base = DECIMAL
         self._pno_active = False      # inside <# ... #> or not
@@ -133,89 +133,71 @@ class InnerInterpreter(object):
         stdout.flush()
 
     def alloc_buf(self, content, size):
-        assert isinstance(content, str)
-        for i in range(self.buf_ptr, self.buf_ptr + size):
-            self.buf[i] = content[i]
-        self.buf_ptr += size
-        return W_PtrObject(self.buf_ptr)
+        addr = self.here
+        self.buf[addr] = W_StringObject(content[:size])
+        self.here += 1
+        return W_PtrObject(addr)
 
     def _ensure_addr(self, addr, span):
         assert 0 <= addr < len(self.mem)
         assert addr + span <= len(self.mem)
 
-    @unroll_safe
     def cell_store(self, addr_obj, value_obj):
-        assert isinstance(addr_obj, W_IntObject)
-        assert isinstance(value_obj, W_IntObject)
-        addr = intmask(addr_obj.intval)
-        self._ensure_addr(addr, self.cell_size_bytes)
-        masked = value_obj.intval
-        for offset in range(self.cell_size_bytes):
-            self.mem[addr + offset] = masked & 0xFF
-            masked >>= 8
-
-    @unroll_safe
-    def cell_2store(self, addr_obj, value_obj, value2_obj):
-        assert isinstance(addr_obj, W_IntObject)
-        assert isinstance(value_obj, W_IntObject)
-        assert isinstance(value2_obj, W_IntObject)
-        addr = intmask(addr_obj.intval)
-        self._ensure_addr(addr, self.cell_size_bytes)
-        masked = value_obj.intval
-        for offset in range(self.cell_size_bytes):
-            self.mem[addr + offset] = masked & 0xFF
-            masked >>= 8
-
-        addr2 = addr + self.cell_size_bytes
-        masked2 = value2_obj.intval
-        for offset in range(self.cell_size_bytes):
-            self.mem[addr2 + offset] = masked2 & 0xFF
-            masked2 >>= 8
-
-    @unroll_safe
-    def cell_fetch(self, addr_obj):
+        """! ( x addr -- ) - Store value at cell address."""
         assert isinstance(addr_obj, W_IntObject)
         addr = addr_obj.intval
-        self._ensure_addr(addr, self.cell_size_bytes)
-        accum = 0
-        for offset in range(self.cell_size_bytes):
-            accum |= self.mem[addr + offset] << (8 * offset)
-        top_byte = self.mem[addr + self.cell_size_bytes - 1]
-        if top_byte & 0x80:
-            sign_adjust = 1 << (self.cell_size_bytes * 8)
-            accum -= sign_adjust
-        return W_IntObject(accum)
+        assert 0 <= addr < HEAP_CELL_COUNT
+        self.mem[addr] = value_obj
 
-    @unroll_safe
+    def cell_fetch(self, addr_obj):
+        """@ ( addr -- x ) - Fetch value from cell address."""
+        assert isinstance(addr_obj, W_IntObject)
+        addr = addr_obj.intval
+        assert 0 <= addr < HEAP_CELL_COUNT
+        result = self.mem[addr]
+        if result is None:
+            return ZERO
+        return result
+
+    def cell_2store(self, addr_obj, x1_obj, x2_obj):
+        """2! ( x1 x2 addr -- ) - Store cell pair."""
+        assert isinstance(addr_obj, W_IntObject)
+        addr = addr_obj.intval
+        assert 0 <= addr < HEAP_CELL_COUNT - self.cell_size_bytes
+        self.mem[addr] = x1_obj
+        self.mem[addr + self.cell_size_bytes] = x2_obj
+
+    def cell_2fetch(self, addr_obj):
+        """2@ ( addr -- x1 x2 ) - Fetch cell pair."""
+        assert isinstance(addr_obj, W_IntObject)
+        addr = addr_obj.intval
+        assert 0 <= addr < HEAP_CELL_COUNT - self.cell_size_bytes
+        x1 = self.mem[addr]
+        x2 = self.mem[addr + self.cell_size_bytes]
+        if x1 is None:
+            x1 = ZERO
+        if x2 is None:
+            x2 = ZERO
+        return x1, x2
+
     def float_store(self, addr_obj, value_obj):
-        """Store a float at the given address."""
+        """F! ( addr -- ) ( F: f -- ) - Store float."""
         assert isinstance(addr_obj, W_IntObject)
         assert isinstance(value_obj, W_FloatObject)
-        addr = intmask(addr_obj.intval)
-        float_size = 8  # 64-bit float
-        self._ensure_addr(addr, float_size)
-        # float_pack returns an r_ulonglong representing the IEEE 754 bits
-        packed = float_pack(value_obj.floatval, 8)
-        # Store the bytes in little-endian order
-        for offset in range(float_size):
-            byte_val = intmask((packed >> (offset * 8)) & 0xFF)
-            self.mem[addr + offset] = byte_val
+        addr = addr_obj.intval
+        assert 0 <= addr < HEAP_CELL_COUNT
+        self.mem[addr] = value_obj
 
-    @unroll_safe
     def float_fetch(self, addr_obj):
-        """Fetch a float from the given address."""
+        """F@ ( addr -- ) ( F: -- f ) - Fetch float."""
         assert isinstance(addr_obj, W_IntObject)
         addr = addr_obj.intval
-        float_size = 8  # 64-bit float
-        self._ensure_addr(addr, float_size)
-        # Read bytes and reconstruct the r_ulonglong
-        packed = r_ulonglong(0)
-        for offset in range(float_size):
-            byte_val = r_ulonglong(self.mem[addr + offset])
-            packed |= byte_val << (offset * 8)
-        # float_unpack takes an r_ulonglong and returns a float
-        floatval = float_unpack(packed, 8)
-        return W_FloatObject(floatval)
+        assert 0 <= addr < HEAP_CELL_COUNT
+        result = self.mem[addr]
+        if result is None:
+            return W_FloatObject(0.0)
+        assert isinstance(result, W_FloatObject)
+        return result
 
     def execute_thread(self, thread, ip=0):
         while True:

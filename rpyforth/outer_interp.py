@@ -471,8 +471,14 @@ class OuterInterpreter(object):
         # Extract string from buffer
         if isinstance(w_caddr, W_PtrObject):
             ptr = w_caddr.ptrval
-            length = w_u.intval
-            name = ''.join([self.inner.buf[ptr - length + j] for j in range(length)])
+            buf_entry = self.inner.buf[ptr]
+            if buf_entry is not None and isinstance(buf_entry, W_StringObject):
+                name = buf_entry.strval
+            else:
+                self.inner.push_ds(w_caddr)
+                self.inner.push_ds(w_u)
+                self.inner.push_ds(ZERO)
+                return
         elif isinstance(w_caddr, W_StringObject):
             name = w_caddr.strval
         else:
@@ -580,8 +586,12 @@ class OuterInterpreter(object):
 
         if isinstance(c_addr, W_PtrObject):
             ptr = c_addr.ptrval
-            length = u.intval
-            eval_str = ''.join([self.inner.buf[ptr - length + j] for j in range(length)])
+            buf_entry = self.inner.buf[ptr]
+            if buf_entry is not None and isinstance(buf_entry, W_StringObject):
+                eval_str = buf_entry.strval
+            else:
+                print "EVALUATE: invalid buffer entry"
+                return
         elif isinstance(c_addr, W_IntObject):
             length = u.intval
             chars = []
@@ -861,8 +871,12 @@ class OuterInterpreter(object):
                     # Extract the query string
                     if isinstance(c_addr, W_PtrObject):
                         ptr = c_addr.ptrval
-                        length = u.intval
-                        query = ''.join([self.inner.buf[ptr - length + j] for j in range(length)])
+                        buf_entry = self.inner.buf[ptr]
+                        if buf_entry is not None and isinstance(buf_entry, W_StringObject):
+                            query = buf_entry.strval
+                        else:
+                            self.inner.push_ds(ZERO)  # false - invalid buffer
+                            continue
                     elif isinstance(c_addr, W_IntObject):
                         length = u.intval
                         chars = []
