@@ -15,6 +15,9 @@ from rpyforth.objects import (
     CELL_SIZE,
     LONG_BIT,
     make_int,
+    _small_int_cache,
+    SMALL_INT_MIN,
+    SMALL_INT_MAX,
 )
 from rpyforth.inner_interp import jitdriver
 from rpyforth.util import digit_to_char
@@ -324,6 +327,11 @@ def prim_2SLASH(inner, cur, ip):
 
 # Arithmetic
 
+def int_shortcut(intval):
+    if SMALL_INT_MIN <= intval < SMALL_INT_MAX:
+        return _small_int_cache[intval - SMALL_INT_MIN]
+    else:
+        return W_IntObject(intval)
 
 # + ( n1 n2 -- n3 )
 def prim_ADD(inner, cur, ip):
@@ -332,8 +340,9 @@ def prim_ADD(inner, cur, ip):
     a, b = inner.top2_ds()
     assert isinstance(a, W_IntObject)
     assert isinstance(b, W_IntObject)
-    # Direct field access for better JIT optimization
-    inner.push_ds(W_IntObject(a.intval + b.intval))
+    # Inline cache access for JIT optimization (avoid function call overhead)
+    result = a.intval + b.intval
+    inner.push_ds(int_shortcut(result))
     return ip
 
 
@@ -345,7 +354,8 @@ def prim_SUB(inner, cur, ip):
     assert isinstance(a, W_IntObject)
     assert isinstance(b, W_IntObject)
     # Direct field access for better JIT optimization
-    inner.push_ds(W_IntObject(a.intval - b.intval))
+    result = a.intval - b.intval
+    inner.push_ds(int_shortcut(result))
     return ip
 
 
@@ -357,7 +367,8 @@ def prim_MUL(inner, cur, ip):
     assert isinstance(a, W_IntObject)
     assert isinstance(b, W_IntObject)
     # Direct field access for better JIT optimization
-    inner.push_ds(W_IntObject(a.intval * b.intval))
+    result = a.intval * b.intval
+    inner.push_ds(int_shortcut(result))
     return ip
 
 # / ( n1 n2 -- n3 )
@@ -368,7 +379,8 @@ def prim_DIV(inner, cur, ip):
     assert isinstance(a, W_IntObject)
     assert isinstance(b, W_IntObject)
     assert b.intval != 0, "Division by zero"
-    inner.push_ds(W_IntObject(a.intval // b.intval))
+    result = a.intval // b.intval
+    inner.push_ds(int_shortcut(result))
     return ip
 
 # */ ( n1 n2 n3 -- n4 )
@@ -384,7 +396,7 @@ def prim_MUL_SLASH(inner, cur, ip):
     assert a.intval != 0, "Division by zero"
     d = d // a.intval #d is 64bits
     assert  (d >> LONG_BIT) == 0 or (d >> LONG_BIT) == -1, "Overflow in */"
-    inner.push_ds(W_IntObject(d))
+    inner.push_ds(int_shortcut(d))
     return ip
 
 # /MOD ( n1 n2 -- n3 n4 )
@@ -394,8 +406,8 @@ def prim_DIV_MOD(inner, cur, ip):
     assert isinstance(a, W_IntObject)
     assert isinstance(b, W_IntObject)
     assert b.intval != 0, "Division by zero"
-    inner.push_ds(W_IntObject(a.intval % b.intval))
-    inner.push_ds(W_IntObject(a.intval // b.intval))
+    inner.push_ds(int_shortcut(a.intval % b.intval))
+    inner.push_ds(int_shortcut(a.intval // b.intval))
     return ip
 
 # */MOD ( n1 n2 n3 -- n4 n5 )
@@ -411,8 +423,8 @@ def prim_MUL_DIV_MOD(inner, cur, ip):
     assert a.intval != 0, "Division by zero"
     e = d // a.intval #e is 64bits
     assert  (e >> LONG_BIT) == 0 or (e >> LONG_BIT) == -1, "Overflow in */mod"
-    inner.push_ds(W_IntObject(d % a.intval))
-    inner.push_ds(W_IntObject(e))
+    inner.push_ds(int_shortcut(d % a.intval))
+    inner.push_ds(int_shortcut(e))
     return ip
 
 # ABS ( n -- u )
@@ -448,8 +460,8 @@ def prim_DIVMOD(inner, cur, ip):
     # Symmetric division
     q = int(a.intval / b.intval)
     r = a.intval - (q * b.intval)
-    inner.push_ds(W_IntObject(r))
-    inner.push_ds(W_IntObject(q))
+    inner.push_ds(int_shortcut(r))
+    inner.push_ds(int_shortcut(q))
     return ip
 
 
@@ -465,7 +477,7 @@ def prim_STARSLASH(inner, cur, ip):
     # Use intermediate double-cell precision
     product = n1.intval * n2.intval
     result = int(product / n3.intval)
-    inner.push_ds(W_IntObject(result))
+    inner.push_ds(int_shortcut(result))
     return ip
 
 
@@ -482,8 +494,8 @@ def prim_STARSLASHMOD(inner, cur, ip):
     product = n1.intval * n2.intval
     q = int(product / n3.intval)
     r = product - (q * n3.intval)
-    inner.push_ds(W_IntObject(r))
-    inner.push_ds(W_IntObject(q))
+    inner.push_ds(int_shortcut(r))
+    inner.push_ds(int_shortcut(q))
     return ip
 
 
@@ -511,8 +523,8 @@ def prim_FMSLASHMOD(inner, cur, ip):
     q = dividend // divisor
     r = dividend - (q * divisor)
 
-    inner.push_ds(W_IntObject(r))
-    inner.push_ds(W_IntObject(q))
+    inner.push_ds(int_shortcut(r))
+    inner.push_ds(int_shortcut(q))
     return ip
 
 
@@ -539,8 +551,8 @@ def prim_SMSLASHREM(inner, cur, ip):
     q = int(dividend / divisor)
     r = dividend - (q * divisor)
 
-    inner.push_ds(W_IntObject(r))
-    inner.push_ds(W_IntObject(q))
+    inner.push_ds(int_shortcut(r))
+    inner.push_ds(int_shortcut(q))
     return ip
 
 
@@ -570,8 +582,8 @@ def prim_UMSLASHMOD(inner, cur, ip):
     q = dividend // divisor
     r = dividend % divisor
 
-    inner.push_ds(W_IntObject(r))
-    inner.push_ds(W_IntObject(q))
+    inner.push_ds(int_shortcut(r))
+    inner.push_ds(int_shortcut(q))
     return ip
 
 
@@ -579,7 +591,10 @@ def prim_UMSLASHMOD(inner, cur, ip):
 def prim_INC(inner, cur, ip):
     """GForth core 2012: add one to n1."""
     a = inner.pop_ds()
-    inner.push_ds(a.inc())
+    assert isinstance(a, W_IntObject)
+    # Inline cache access for JIT optimization (avoid function call overhead)
+    result = a.intval + 1
+    inner.push_ds(int_shortcut(result))
     return ip
 
 
@@ -587,7 +602,10 @@ def prim_INC(inner, cur, ip):
 def prim_DEC(inner, cur, ip):
     """GForth core 2012: subtract one from n1."""
     a = inner.pop_ds()
-    inner.push_ds(a.dec())
+    assert isinstance(a, W_IntObject)
+    # Inline cache access for JIT optimization (avoid function call overhead)
+    result = a.intval - 1
+    inner.push_ds(int_shortcut(result))
     return ip
 
 
@@ -611,8 +629,8 @@ def prim_MUL_STAR(inner, cur, ip):
     high = c.intval >> LONG_BIT # get c's high 64bits
     #(ex,LONG_BIT = 4) if c = 0100 0000, high = 0000 0100 = c's high 4bits : if c = 1100 1000, high = 1111 1100 = c's high 4bits
 
-    inner.push_ds(W_IntObject(low))
-    inner.push_ds(W_IntObject(high))
+    inner.push_ds(int_shortcut(low))
+    inner.push_ds(int_shortcut(high))
 
     return ip
 
@@ -630,8 +648,8 @@ def prim_U_MUL_STAR(inner, cur, ip):
     high = c.intval >> LONG_BIT # get c's high 64bits
     #(ex,LONG_BIT = 4) if c = 0100 0000, high = 0000 0100 = c's high 4bits : if c = 1100 1000, high = 1111 1100 = c's high 4bits
 
-    inner.push_ds(W_IntObject(low))
-    inner.push_ds(W_IntObject(high))
+    inner.push_ds(int_shortcut(low))
+    inner.push_ds(int_shortcut(high))
 
     return ip
 
@@ -641,7 +659,7 @@ def prim_AND(inner, cur, ip):
     a, b = inner.top2_ds()
     assert isinstance(a, W_IntObject)
     assert isinstance(b, W_IntObject)
-    inner.push_ds(W_IntObject(a.intval & b.intval))
+    inner.push_ds(int_shortcut(a.intval & b.intval))
     return ip
 
 
@@ -651,7 +669,7 @@ def prim_OR(inner, cur, ip):
     a, b = inner.top2_ds()
     assert isinstance(a, W_IntObject)
     assert isinstance(b, W_IntObject)
-    inner.push_ds(W_IntObject(a.intval | b.intval))
+    inner.push_ds(int_shortcut(a.intval | b.intval))
     return ip
 
 # XOR ( x1 x2 -- x3 )
@@ -660,7 +678,7 @@ def prim_XOR(inner, cur, ip):
     a, b = inner.top2_ds()
     assert isinstance(a, W_IntObject)
     assert isinstance(b, W_IntObject)
-    inner.push_ds(W_IntObject(a.intval ^ b.intval))
+    inner.push_ds(int_shortcut(a.intval ^ b.intval))
     return ip
 
 
@@ -678,8 +696,8 @@ def prim_FM_DIV_MOD(inner, cur, ip):
     assert a.intval != 0, "Division by zero"
     e = d // a.intval #e is 64bits
     assert  (e >> LONG_BIT) == 0 or (e >> LONG_BIT) == -1, "Overflow in fm/mod"
-    inner.push_ds(W_IntObject(d % a.intval))
-    inner.push_ds(W_IntObject(e))
+    inner.push_ds(int_shortcut(d % a.intval))
+    inner.push_ds(int_shortcut(e))
     return ip
 
 # UM/MOD ( ud u1 -- u2 u3 )
@@ -702,8 +720,8 @@ def prim_UM_DIV_MOD(inner, cur, ip):
     if f & SING_BIT:  # if highest of f's bits is 1
         f = f - (1 << LONG_BIT)  # convert to negative number
     assert  (e >> LONG_BIT) == 0 or (e >> LONG_BIT) == -1, "Overflow in um/mod"
-    inner.push_ds(W_IntObject(f))
-    inner.push_ds(W_IntObject(e))
+    inner.push_ds(int_shortcut(f))
+    inner.push_ds(int_shortcut(e))
     return ip
 
 # SM/REM ( d1 n1 -- n2 n3 )
@@ -726,8 +744,8 @@ def prim_SM_DIV_REM(inner, cur, ip):
         e = -e
     if d < 0:
         f = -f
-    inner.push_ds(W_IntObject(f))
-    inner.push_ds(W_IntObject(e))
+    inner.push_ds(int_shortcut(f))
+    inner.push_ds(int_shortcut(e))
     return ip
 
 
@@ -736,7 +754,7 @@ def prim_INVERT(inner, cur, ip):
     """GForth core 2012: invert all bits of x1, giving x2 (one's complement)."""
     x = inner.pop_ds()
     assert isinstance(x, W_IntObject)
-    inner.push_ds(W_IntObject(~x.intval))
+    inner.push_ds(int_shortcut(~x.intval))
     return ip
 
 
@@ -852,30 +870,25 @@ def prim_BRANCH(inner, cur, ip):
 def prim_DO_RUNTIME(inner, cur, ip):
     start = inner.pop_ds()
     limit = inner.pop_ds()
-    limit = promote(limit)
-    inner.push_rs(limit)
-    inner.push_rs(start)
+    assert isinstance(start, W_IntObject)
+    assert isinstance(limit, W_IntObject)
+    # Use dedicated integer loop stack for better JIT optimization
+    start_val = start.intval
+    limit_val = promote(limit.intval)
+    inner.push_loop(limit_val, start_val)
     return ip
 
 
 # (LOOP) ( -- ) ( R: limit counter -- limit counter+1 | )
 def prim_LOOP_RUNTIME(inner, cur, ip):
-    # Use peek_rs to avoid pop/push overhead
-    counter = inner.peek_rs(0)
-    limit = inner.peek_rs(1)
-
-    assert isinstance(counter, W_IntObject)
-    assert isinstance(limit, W_IntObject)
-
-    # Directly access intval for better optimization
-    counter_val = counter.intval
-    limit_val = promote(limit.intval)
+    # Use dedicated integer loop stack - no object allocation!
+    counter_val = inner.peek_loop_counter(0)
+    limit_val = promote(inner.peek_loop_limit(0))
     new_counter_val = counter_val + 1
 
     if new_counter_val < limit_val:
-        # Continue loop: update counter in place and branch
-        new_counter = make_int(new_counter_val)
-        inner.poke_rs(0, new_counter)
+        # Continue loop: update counter in place (raw int, no allocation)
+        inner.set_loop_counter(0, new_counter_val)
         origin_ip = ip - 1
         target = promote(cur.lits[origin_ip])
         assert isinstance(target, W_IntObject)
@@ -883,25 +896,19 @@ def prim_LOOP_RUNTIME(inner, cur, ip):
         ip = target_ip
         _maybe_enter_jit(inner, target_ip, origin_ip, cur)
     else:
-        # Loop done: pop limit and counter from return stack
-        inner.pop_rs()
-        inner.pop_rs()
+        # Loop done: pop from loop stack
+        inner.pop_loop()
     return ip
 
 # (+LOOP) ( n -- ) ( R: limit counter -- limit counter+n | )
 def prim_PLUSLOOP_RUNTIME(inner, cur, ip):
     """Runtime for +LOOP: increment counter by n and conditionally branch back."""
     increment = inner.pop_ds()
-    # Use peek_rs to avoid pop/push overhead
-    counter = inner.peek_rs(0)
-    limit = inner.peek_rs(1)
-
     assert isinstance(increment, W_IntObject)
-    assert isinstance(counter, W_IntObject)
-    assert isinstance(limit, W_IntObject)
 
-    counter_val = counter.intval
-    limit_val = limit.intval
+    # Use dedicated integer loop stack - no object allocation!
+    counter_val = inner.peek_loop_counter(0)
+    limit_val = inner.peek_loop_limit(0)
     inc_val = increment.intval
     new_counter_val = counter_val + inc_val
 
@@ -922,9 +929,8 @@ def prim_PLUSLOOP_RUNTIME(inner, cur, ip):
             continue_loop = True
 
     if continue_loop:
-        # Continue loop: update counter in place and branch
-        new_counter = make_int(new_counter_val)
-        inner.poke_rs(0, new_counter)
+        # Continue loop: update counter in place (raw int, no allocation)
+        inner.set_loop_counter(0, new_counter_val)
         origin_ip = ip - 1
         target = promote(cur.lits[origin_ip])
         assert isinstance(target, W_IntObject)
@@ -932,25 +938,22 @@ def prim_PLUSLOOP_RUNTIME(inner, cur, ip):
         ip = target_ip
         _maybe_enter_jit(inner, target_ip, origin_ip, cur)
     else:
-        # Loop done: pop limit and counter from return stack
-        inner.pop_rs()
-        inner.pop_rs()
+        # Loop done: pop from loop stack
+        inner.pop_loop()
     return ip
 
 
 # UNLOOP ( -- ) ( R: limit counter -- )
 def prim_UNLOOP(inner, cur, ip):
     """GForth core 2012: discard loop parameters from return stack."""
-    inner.pop_rs()  # counter
-    inner.pop_rs()  # limit
+    inner.pop_loop()  # Pop from dedicated loop stack
     return ip
 
 
 # LEAVE ( -- ) ( R: limit counter -- )
 def prim_LEAVE(inner, cur, ip):
     """Exit the current loop by cleaning up return stack and jumping to end."""
-    inner.pop_rs()  # counter
-    inner.pop_rs()  # limit
+    inner.pop_loop()  # Pop from dedicated loop stack
     target = cur.lits[ip - 2]
     assert isinstance(target, W_IntObject)
     ip = target.intval + 1
@@ -959,20 +962,18 @@ def prim_LEAVE(inner, cur, ip):
 # I ( -- n ) ( R: limit counter -- limit counter )
 def prim_I(inner, cur, ip):
     """Get the current loop counter (innermost loop)."""
-    # Use peek_rs to avoid unnecessary pop/push operations
-    counter = inner.peek_rs(0)  # Counter is at top of return stack
-    inner.push_ds(counter)
+    # Read from dedicated integer loop stack
+    counter_val = inner.peek_loop_counter(0)
+    inner.push_ds(int_shortcut(counter_val))
     return ip
 
 
 # J ( -- n ) ( R: limit1 counter1 limit2 counter2 -- limit1 counter1 limit2 counter2 )
 def prim_J(inner, cur, ip):
     """Get the outer loop counter (second innermost loop)."""
-    # Use peek_rs to avoid unnecessary pop/push operations
-    # Stack layout: [... limit1, counter1, limit2, counter2] (counter2 at top)
-    # We want counter1, which is at depth 2
-    counter1 = inner.peek_rs(2)
-    inner.push_ds(counter1)
+    # Read from dedicated integer loop stack (depth 1 = outer loop)
+    counter_val = inner.peek_loop_counter(1)
+    inner.push_ds(int_shortcut(counter_val))
     return ip
 
 
@@ -1042,7 +1043,7 @@ def prim_NUMSIGN(inner, cur, ip):
     q = x.getvalue() // base
     r = x.getvalue() % base
     inner._pno_buf.insert(0, digit_to_char(r))
-    inner.push_ds(W_IntObject(q))
+    inner.push_ds(int_shortcut(q))
     return ip
 
 
@@ -1077,8 +1078,8 @@ def prim_NUMSIGN_S(inner, cur, ip):
             value = q
 
     # Push double-cell zero (0 0)
-    inner.push_ds(W_IntObject(0))
-    inner.push_ds(W_IntObject(0))
+    inner.push_ds(ZERO)
+    inner.push_ds(ZERO)
     return ip
 
 
@@ -1185,6 +1186,15 @@ def prim_SPACES(inner, cur, ip):
         stdin, stdout, stderr = create_stdio()
         for i in range(count):
             stdout.write(' ')
+    return ip
+
+
+# CR ( -- )
+def prim_CR(inner, cur, ip):
+    """GForth core 2012: cause subsequent output to appear at the beginning of the next line."""
+    stdin, stdout, stderr = create_stdio()
+    stdout.write('\n')
+    stdout.flush()
     return ip
 
 
@@ -1827,6 +1837,7 @@ def install_primitives(outer):
     outer.define_prim("EMIT", prim_EMIT)
     outer.define_prim("SPACE", prim_SPACE)
     outer.define_prim("SPACES", prim_SPACES)
+    outer.define_prim("CR", prim_CR)
     outer.define_prim("U.", prim_UDOT)
     outer.define_prim("KEY", prim_KEY)
     outer.define_prim("ACCEPT", prim_ACCEPT)

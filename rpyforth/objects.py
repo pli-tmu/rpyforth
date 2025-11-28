@@ -289,9 +289,9 @@ OCTAL   = W_IntObject(8)
 BINARY  = W_IntObject(2)
 
 SMALL_INT_MIN = -128
-SMALL_INT_MAX = 1024  # Extended range for loop counters
+SMALL_INT_MAX = 2048  # Extended range for loop counters (covers 0-1000 loops)
 
-# Pre-initialize the cache at module load time for RPython compatibility
+# Pre-initialize the cache as a list at module load time for O(1) access
 _small_int_cache = [W_IntObject(i) for i in range(SMALL_INT_MIN, SMALL_INT_MAX)]
 
 @elidable

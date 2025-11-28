@@ -18,7 +18,7 @@ from rpython.rlib.rarithmetic import r_ulonglong, intmask
 from rpython.rlib.jit import JitDriver, promote, elidable, unroll_safe, promote_string
 from rpython.rlib.rfile import create_stdio
 
-STACK_SIZE = 128 # Increased for deeper nesting
+STACK_SIZE = 64 # Increased for deeper nesting
 BUF_SIZE = 1024
 HEAP_CELL_COUNT = 65536
 HEAP_SIZE_BYTES = HEAP_CELL_COUNT
@@ -41,7 +41,7 @@ class InnerInterpreter(object):
     _immutable_fields_ = ["cell_size", "cell_size_bytes", "base"]
     _virtualizable_ = ["ds_ptr", "ds[*]", "rs_ptr", "rs[*]",
                        "cs_ptr", "cs_threads[*]", "cs_ips[*]",
-                       ]
+                       "loop_ptr", "loop_counters[*]", "loop_limits[*]"]
 
 
     def __init__(self):
@@ -54,8 +54,13 @@ class InnerInterpreter(object):
 
         # Virtualized call stack for JIT optimization
         self.cs_threads = [None] * STACK_SIZE  # return threads
-        self.cs_ips = [0] * STACK_SIZE         # return IPs
+        self.cs_ips = [0] * STACK_SIZE        # return IPs
         self.cs_ptr = 0
+
+        # Dedicated integer loop stack for DO...LOOP (avoids W_IntObject allocation)
+        self.loop_counters = [0] * 32  # raw int counters
+        self.loop_limits = [0] * 32    # raw int limits
+        self.loop_ptr = 0
 
         self.mem = [None] * HEAP_SIZE_BYTES
         self.cell_size = CELL_SIZE
@@ -89,6 +94,40 @@ class InnerInterpreter(object):
     def is_call_stack_empty(self):
         """Check if call stack is empty."""
         return self.cs_ptr == 0
+
+    def push_loop(self, limit, counter):
+        """Push loop parameters (raw integers) onto dedicated loop stack."""
+        ptr = self.loop_ptr
+        self.loop_limits[ptr] = limit
+        self.loop_counters[ptr] = counter
+        self.loop_ptr = ptr + 1
+
+    def pop_loop(self):
+        """Pop loop parameters from dedicated loop stack."""
+        ptr = self.loop_ptr - 1
+        assert ptr >= 0
+        self.loop_ptr = ptr
+        limit = self.loop_limits[ptr]
+        counter = self.loop_counters[ptr]
+        return limit, counter
+
+    def peek_loop_counter(self, depth=0):
+        """Get current loop counter without popping (raw int)."""
+        ptr = self.loop_ptr - 1 - depth
+        assert ptr >= 0
+        return self.loop_counters[ptr]
+
+    def peek_loop_limit(self, depth=0):
+        """Get current loop limit without popping (raw int)."""
+        ptr = self.loop_ptr - 1 - depth
+        assert ptr >= 0
+        return self.loop_limits[ptr]
+
+    def set_loop_counter(self, depth, value):
+        """Set loop counter in place (raw int)."""
+        ptr = self.loop_ptr - 1 - depth
+        assert ptr >= 0
+        self.loop_counters[ptr] = value
 
     def push_ds(self, w_x):
         ds_ptr = self.ds_ptr

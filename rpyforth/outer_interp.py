@@ -196,11 +196,6 @@ class OuterInterpreter(object):
         t = toks[i]
         return t, i+1
 
-    def w_CR(self):
-        stdin, stdout, stderr = create_stdio()
-        stdout.write('\n')
-        stdout.flush()
-
     # Helper methods for interpret_line refactoring
 
     @unroll_safe
@@ -669,10 +664,6 @@ class OuterInterpreter(object):
             if t == "CHAR":
                 s, i = self._read_tok(toks, i)
                 self.inner.push_ds(W_IntObject(ord(s[0])))
-                continue
-
-            if t == "CR":
-                self.w_CR()
                 continue
 
             # handle ':' and ';' lexically (not as immediate words)
