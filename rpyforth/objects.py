@@ -11,7 +11,7 @@ class Word(object):
     """
     Dictionary entry for a Forth word.
     """
-    _immutable_fields_ = ['name', 'prim']
+    _immutable_fields_ = ['name', 'prim', 'thread?']
 
     def __init__(self, name, prim=None, immediate=False, thread=None):
         self.name = name
@@ -153,15 +153,15 @@ class W_IntObject(W_Object):
         if isinstance(other, W_IntObject):
             return self.intval == other.intval
         return False
-    
+
     @elidable
     def rshift(self, other):
         return W_IntObject(self.intval >> other.intval)
-  
+
     @elidable
     def lshift(self, other):
         return W_IntObject(self.intval << other.intval)
-    
+
     @elidable
     def s_to_d(self):
         if self.intval >= 0:
