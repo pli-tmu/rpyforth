@@ -14,6 +14,7 @@ from rpyforth.objects import (
     W_WordObject,
     CELL_SIZE,
     LONG_BIT,
+    make_int,
 )
 from rpyforth.inner_interp import jitdriver
 from rpyforth.util import digit_to_char
@@ -851,6 +852,7 @@ def prim_BRANCH(inner, cur, ip):
 def prim_DO_RUNTIME(inner, cur, ip):
     start = inner.pop_ds()
     limit = inner.pop_ds()
+    limit = promote(limit)
     inner.push_rs(limit)
     inner.push_rs(start)
     return ip
@@ -858,37 +860,41 @@ def prim_DO_RUNTIME(inner, cur, ip):
 
 # (LOOP) ( -- ) ( R: limit counter -- limit counter+1 | )
 def prim_LOOP_RUNTIME(inner, cur, ip):
-    counter = inner.pop_rs()
-    limit = inner.pop_rs()
+    # Use peek_rs to avoid pop/push overhead
+    counter = inner.peek_rs(0)
+    limit = inner.peek_rs(1)
 
     assert isinstance(counter, W_IntObject)
     assert isinstance(limit, W_IntObject)
 
     # Directly access intval for better optimization
-    # The JIT can constant-fold these if they're promoted
     counter_val = counter.intval
-    limit_val = limit.intval
+    limit_val = promote(limit.intval)
     new_counter_val = counter_val + 1
 
     if new_counter_val < limit_val:
-        # Continue loop: push back to return stack and branch
-        new_counter = W_IntObject(new_counter_val)
-        inner.push_rs(limit)
-        inner.push_rs(new_counter)
+        # Continue loop: update counter in place and branch
+        new_counter = make_int(new_counter_val)
+        inner.poke_rs(0, new_counter)
         origin_ip = ip - 1
         target = promote(cur.lits[origin_ip])
         assert isinstance(target, W_IntObject)
         target_ip = target.intval
         ip = target_ip
         _maybe_enter_jit(inner, target_ip, origin_ip, cur)
+    else:
+        # Loop done: pop limit and counter from return stack
+        inner.pop_rs()
+        inner.pop_rs()
     return ip
 
 # (+LOOP) ( n -- ) ( R: limit counter -- limit counter+n | )
 def prim_PLUSLOOP_RUNTIME(inner, cur, ip):
     """Runtime for +LOOP: increment counter by n and conditionally branch back."""
     increment = inner.pop_ds()
-    counter = inner.pop_rs()
-    limit = inner.pop_rs()
+    # Use peek_rs to avoid pop/push overhead
+    counter = inner.peek_rs(0)
+    limit = inner.peek_rs(1)
 
     assert isinstance(increment, W_IntObject)
     assert isinstance(counter, W_IntObject)
@@ -916,16 +922,19 @@ def prim_PLUSLOOP_RUNTIME(inner, cur, ip):
             continue_loop = True
 
     if continue_loop:
-        # Continue loop: push back to return stack and branch
-        new_counter = W_IntObject(new_counter_val)
-        inner.push_rs(limit)
-        inner.push_rs(new_counter)
+        # Continue loop: update counter in place and branch
+        new_counter = make_int(new_counter_val)
+        inner.poke_rs(0, new_counter)
         origin_ip = ip - 1
         target = promote(cur.lits[origin_ip])
         assert isinstance(target, W_IntObject)
         target_ip = target.intval
         ip = target_ip
         _maybe_enter_jit(inner, target_ip, origin_ip, cur)
+    else:
+        # Loop done: pop limit and counter from return stack
+        inner.pop_rs()
+        inner.pop_rs()
     return ip
 
 
@@ -950,10 +959,8 @@ def prim_LEAVE(inner, cur, ip):
 # I ( -- n ) ( R: limit counter -- limit counter )
 def prim_I(inner, cur, ip):
     """Get the current loop counter (innermost loop)."""
-    counter = inner.pop_rs()
-    limit = inner.pop_rs()
-    inner.push_rs(limit)
-    inner.push_rs(counter)
+    # Use peek_rs to avoid unnecessary pop/push operations
+    counter = inner.peek_rs(0)  # Counter is at top of return stack
     inner.push_ds(counter)
     return ip
 
@@ -961,14 +968,10 @@ def prim_I(inner, cur, ip):
 # J ( -- n ) ( R: limit1 counter1 limit2 counter2 -- limit1 counter1 limit2 counter2 )
 def prim_J(inner, cur, ip):
     """Get the outer loop counter (second innermost loop)."""
-    counter2 = inner.pop_rs()
-    limit2 = inner.pop_rs()
-    counter1 = inner.pop_rs()
-    limit1 = inner.pop_rs()
-    inner.push_rs(limit1)
-    inner.push_rs(counter1)
-    inner.push_rs(limit2)
-    inner.push_rs(counter2)
+    # Use peek_rs to avoid unnecessary pop/push operations
+    # Stack layout: [... limit1, counter1, limit2, counter2] (counter2 at top)
+    # We want counter1, which is at depth 2
+    counter1 = inner.peek_rs(2)
     inner.push_ds(counter1)
     return ip
 

@@ -288,6 +288,19 @@ DECIMAL = W_IntObject(10)
 OCTAL   = W_IntObject(8)
 BINARY  = W_IntObject(2)
 
+SMALL_INT_MIN = -128
+SMALL_INT_MAX = 1024  # Extended range for loop counters
+
+# Pre-initialize the cache at module load time for RPython compatibility
+_small_int_cache = [W_IntObject(i) for i in range(SMALL_INT_MIN, SMALL_INT_MAX)]
+
+@elidable
+def make_int(val):
+    """Get a cached W_IntObject for small integers, or create a new one."""
+    if SMALL_INT_MIN <= val < SMALL_INT_MAX:
+        return _small_int_cache[val - SMALL_INT_MIN]
+    return W_IntObject(val)
+
 # data space characteristics
 CELL_SIZE_BYTES = LONG_BIT // 8
 CELL_SIZE = W_IntObject(CELL_SIZE_BYTES)

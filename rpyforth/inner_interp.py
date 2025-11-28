@@ -40,7 +40,8 @@ jitdriver = JitDriver(
 class InnerInterpreter(object):
     _immutable_fields_ = ["cell_size", "cell_size_bytes", "base"]
     _virtualizable_ = ["ds_ptr", "ds[*]", "rs_ptr", "rs[*]",
-                       "cs_ptr", "cs_threads[*]", "cs_ips[*]"]
+                       "cs_ptr", "cs_threads[*]", "cs_ips[*]",
+                       ]
 
 
     def __init__(self):
@@ -106,6 +107,16 @@ class InnerInterpreter(object):
         w_y = self.pop_ds()
         w_x = self.pop_ds()
         return w_x, w_y
+
+    def peek_rs(self, depth=0):
+        ptr = self.rs_ptr - 1 - depth
+        assert ptr >= 0
+        return self.rs[ptr]
+
+    def poke_rs(self, depth, w_x):
+        ptr = self.rs_ptr - 1 - depth
+        assert ptr >= 0
+        self.rs[ptr] = w_x
 
     def push_rs(self, w_x):
         rs_ptr = self.rs_ptr

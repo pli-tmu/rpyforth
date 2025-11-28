@@ -1,4 +1,4 @@
-10 constant NUM
+30 constant NUM
 
 : nestedloops
   NUM 0 do
@@ -17,7 +17,7 @@
 
 \ run test and print result
 : main
-    100 0 DO
+    1 0 DO
         0 nestedloops 1
     LOOP
 ;
