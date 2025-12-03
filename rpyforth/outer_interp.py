@@ -63,6 +63,9 @@ class OuterInterpreter(object):
         self.wTYPE = self.dict["TYPE"]
         self.wABORTQUOTE = self.dict['(ABORT")']
 
+        # Define LITERAL as an immediate word (for POSTPONE to find it)
+        self._define_literal_word()
+
     def reset_code(self):
         self.current_code = [None] * 128
         self.current_lits = [None] * 128
@@ -99,6 +102,15 @@ class OuterInterpreter(object):
         self.dict[to_upper(name)] = w
         self.last_word = w
         return w
+
+    def _define_literal_word(self):
+        """Define LITERAL as an immediate word that compiles a literal."""
+        # LITERAL is IMMEDIATE and should compile LIT <value>
+        # We can't use a real primitive because it needs access to compilation state
+        # So we use a dummy word that will be handled specially
+        w = Word("LITERAL", prim=None, immediate=True, thread=None)
+        self.dict["LITERAL"] = w
+        self.last_word = w
 
     def _emit_word(self, w):
         self.push_code(w)
@@ -138,7 +150,7 @@ class OuterInterpreter(object):
         for i in range(start_idx, length):
             n = n * 10 + (ord(s[i]) - ord('0'))
         result = sign * n
-        return W_IntObject(result)
+        return result
 
     @elidable
     def _is_float(self, s):
@@ -183,7 +195,7 @@ class OuterInterpreter(object):
     def _to_float(self, s):
         """Convert string to float"""
         # Python's float() handles the format we need
-        return W_FloatObject(float(s))
+        return float(s)
 
     def _emit_with_target(self, w, target_index):
         self.push_code(w)
@@ -439,20 +451,31 @@ class OuterInterpreter(object):
         if w is not None:
             self.inner.execute_word_now(w)
         elif self._is_float(t):
-            self.inner.push_ds(self._to_float(t))
+            self.inner.push_ds(W_FloatObject(self._to_float(t)))
         elif self._is_number(t):
-            self.inner.push_ds(self._to_number(t))
+            self.inner.push_ds(W_IntObject(self._to_number(t)))
         else:
             print "UNKNOWN: " + t
 
     def _compile_word_or_literal(self, w, t):
         """Compile word or literal in COMPILE mode."""
         if w is not None:
-            self._emit_word(w)
+            # Check if word is immediate - if so, execute it now
+            if w.immediate:
+                # Special case for LITERAL: it needs compilation-time handling
+                if w.name == "LITERAL" or to_upper(w.name) == "LITERAL":
+                    # Pop value from stack and compile it as a literal
+                    val = self.inner.pop_ds()
+                    self._emit_lit(val)
+                else:
+                    # Other immediate words: execute them
+                    self.inner.execute_word_now(w)
+            else:
+                self._emit_word(w)
         elif self._is_float(t):
-            self._emit_lit(self._to_float(t))
+            self._emit_lit(W_FloatObject(self._to_float(t)))
         elif self._is_number(t):
-            self._emit_lit(self._to_number(t))
+            self._emit_lit(W_IntObject(self._to_number(t)))
         else:
             print "UNKNOWN: " + t
 
@@ -1021,11 +1044,8 @@ class OuterInterpreter(object):
                     self.state = INTERPRET
                     continue
 
-                if tkey == "LITERAL":
-                    # Compile the value on stack as a literal
-                    val = self.inner.pop_ds()
-                    self._emit_lit(val)
-                    continue
+                # Note: LITERAL is now handled as an immediate word in the dictionary
+                # so it will be found by the word lookup below
 
                 if tkey == "POSTPONE":
                     # Compile execution of the next word (even if immediate)
@@ -1037,8 +1057,16 @@ class OuterInterpreter(object):
                     if name_upper in self.dict:
                         word = self.dict[name_upper]
                         if word.immediate:
-                            # For immediate words, compile them directly
-                            self._emit_word(word)
+                            # For immediate words, compile code that will compile them
+                            # Special case for LITERAL since it has custom handling
+                            if name_upper == "LITERAL":
+                                # POSTPONE LITERAL: pop value now and compile it as a literal
+                                # This means when float-literal executes, it will compile (LIT <value>)
+                                val = self.inner.pop_ds()
+                                self._emit_lit(val)
+                            else:
+                                # For other immediate words, compile them to be executed
+                                self._emit_word(word)
                         else:
                             # For non-immediate words, compile code to compile them
                             # Push the xt and compile EXECUTE

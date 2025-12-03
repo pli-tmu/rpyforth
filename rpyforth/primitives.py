@@ -815,6 +815,24 @@ def prim_CELL(inner, cur, ip):
     return ip
 
 
+# FLOAT ( -- n )
+def prim_FLOAT(inner, cur, ip):
+    """GForth floating 2012: return the size of one float in address units."""
+    # In our implementation, floats are stored as W_FloatObject which uses 8 bytes
+    inner.push_ds(W_IntObject(8))
+    return ip
+
+
+# FLOATS ( n1 -- n2 )
+def prim_FLOATS(inner, cur, ip):
+    """GForth floating 2012: convert a float count to address units."""
+    n = inner.pop_ds()
+    assert isinstance(n, W_IntObject)
+    # Each float is 8 bytes
+    inner.push_ds(W_IntObject(n.intval * 8))
+    return ip
+
+
 # ( n -- n )
 def prim_CELLPLUS(inner, cur, ip):
     """GForth core 2012: add one cell to an address."""
@@ -866,16 +884,15 @@ def prim_BRANCH(inner, cur, ip):
 
 # Loop control primitives
 
-# (DO) ( limit start -- ) ( R: -- limit start )
+# (DO) ( limit start -- )
 def prim_DO_RUNTIME(inner, cur, ip):
+    """Runtime for DO: pop limit and start from data stack, push to loop stack."""
     start = inner.pop_ds()
     limit = inner.pop_ds()
     assert isinstance(start, W_IntObject)
     assert isinstance(limit, W_IntObject)
-    # Use dedicated integer loop stack for better JIT optimization
-    start_val = start.intval
-    limit_val = promote(limit.intval)
-    inner.push_loop(limit_val, start_val)
+    # Push to dedicated loop stack (raw integers, no boxing!)
+    inner.push_loop(limit.intval, start.intval)
     return ip
 
 
@@ -1913,6 +1930,8 @@ def install_primitives(outer):
     outer.define_prim("F!", prim_FSTORE)
     outer.define_prim("F@", prim_FFETCH)
     outer.define_prim("FDUP", prim_FDUP)
+    outer.define_prim("FLOAT", prim_FLOAT)
+    outer.define_prim("FLOATS", prim_FLOATS)
 
     # stack manipulation
     outer.define_prim("PICK", prim_PICK)
