@@ -79,7 +79,7 @@ class W_IntObject(W_Object):
 
     @elidable
     def to_string(self):
-        return str(self.intval)
+        return 'W_IntObject(%s)' % str(self.intval)
 
     @elidable
     def is_true(self):

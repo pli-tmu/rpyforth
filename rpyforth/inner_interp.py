@@ -18,7 +18,7 @@ from rpython.rlib.rarithmetic import r_ulonglong, intmask
 from rpython.rlib.jit import JitDriver, promote, elidable, unroll_safe, promote_string
 from rpython.rlib.rfile import create_stdio
 
-STACK_SIZE = 64 # Increased for deeper nesting
+STACK_SIZE = 128 # Increased for deeper nesting
 BUF_SIZE = 1024
 HEAP_CELL_COUNT = 65536
 HEAP_SIZE_BYTES = HEAP_CELL_COUNT
@@ -47,16 +47,17 @@ class InnerInterpreter(object):
     def __init__(self):
         # Pre-allocate larger stacks to reduce growth overhead
         self.ds_ints = [0] * STACK_SIZE # unboxed integer data stack
+        self.ds_floats = [0.0] * STACK_SIZE
         self.ds_tags = [0] * STACK_SIZE # 0=int, 1=object
         self.ds = [None] * STACK_SIZE # boxed object data stack (for non-ints)
         self.ds_ptr = 0
 
-        self.rs = [None] * STACK_SIZE  # return stack
+        self.rs = [0] * STACK_SIZE  # return stack
         self.rs_ptr = 0
 
         # Virtualized call stack for JIT optimization
-        self.cs_threads = [None] * STACK_SIZE  # return threads
-        self.cs_ips = [0] * STACK_SIZE        # return IPs
+        self.cs_threads = [None] * 128  # return threads
+        self.cs_ips = [0] * 128       # return IPs
         self.cs_ptr = 0
 
         # Dedicated integer loop stack for DO...LOOP (avoids W_IntObject allocation)
@@ -72,7 +73,7 @@ class InnerInterpreter(object):
         self.buf = [None] * HEAP_SIZE_BYTES
         self.here = 0
 
-        self.base = DECIMAL
+        self.base = 10                # DECIMAL
         self._pno_active = False      # inside <# ... #> or not
         self._pno_buf = []            # buffer for pno (pictured numeric output)
 
@@ -133,41 +134,32 @@ class InnerInterpreter(object):
 
     def push_ds(self, w_x):
         ds_ptr = self.ds_ptr
-        if isinstance(w_x, W_IntObject):
-            # Store unboxed integer
-            self.ds_ints[ds_ptr] = w_x.intval
-            self.ds_tags[ds_ptr] = 0
-        else:
-            # Store boxed object
-            self.ds[ds_ptr] = w_x
-            self.ds_tags[ds_ptr] = 1
+        self.ds[ds_ptr] = w_x
+        self.ds_tags[ds_ptr] = 2
         self.ds_ptr = ds_ptr + 1
 
     def pop_ds(self):
         ds_ptr = self.ds_ptr - 1
         assert ds_ptr >= 0
-        tag = self.ds_tags[ds_ptr]
-        if tag == 0:
-            # Reconstruct W_IntObject from unboxed int
-            intval = self.ds_ints[ds_ptr]
-            self.ds_ptr = ds_ptr
-            return W_IntObject(intval)
-        else:
-            # Return boxed object
-            w_x = self.ds[ds_ptr]
-            self.ds[ds_ptr] = None
-            self.ds_ptr = ds_ptr
-            return w_x
+        # Return boxed object
+        w_x = self.ds[ds_ptr]
+        self.ds[ds_ptr] = None
+        self.ds_ptr = ds_ptr
+        return w_x
 
     def push_ds_int(self, intval):
-        """Push raw integer directly (unboxed)."""
         ds_ptr = self.ds_ptr
         self.ds_ints[ds_ptr] = intval
         self.ds_tags[ds_ptr] = 0
         self.ds_ptr = ds_ptr + 1
 
+    def push_ds_float(self, floatval):
+        ds_ptr = self.ds_ptr
+        self.ds_floats[ds_ptr] = floatval
+        self.ds_tags[ds_ptr] = 1
+        self.ds_ptr = ds_ptr + 1
+
     def pop_ds_int(self):
-        """Pop and return raw integer (unboxed)."""
         ds_ptr = self.ds_ptr - 1
         assert ds_ptr >= 0
         assert self.ds_tags[ds_ptr] == 0, "Expected int on stack"
@@ -175,12 +167,25 @@ class InnerInterpreter(object):
         self.ds_ptr = ds_ptr
         return intval
 
+    def pop_ds_float(self):
+        ds_ptr = self.ds_ptr - 1
+        assert ds_ptr >= 0
+        assert self.ds_tags[ds_ptr] == 1, "Expected float on stack"
+        floatval = self.ds_floats[ds_ptr]
+        self.ds_ptr = ds_ptr
+        return floatval
+
     def peek_ds_int(self, depth=0):
-        """Peek at raw integer without popping (unboxed)."""
         ptr = self.ds_ptr - 1 - depth
         assert ptr >= 0
         assert self.ds_tags[ptr] == 0, "Expected int on stack"
         return self.ds_ints[ptr]
+
+    def peek_ds_float(self, depth=0):
+        ptr = self.ds_ptr - 1 - depth
+        assert ptr >= 0
+        assert self.ds_tags[ptr] == 1, "Expected float on stack"
+        return self.ds_floats[ptr]
 
     def peek_ds(self, depth=0):
         """Peek at stack value without popping (returns boxed W_Object)."""
@@ -204,6 +209,11 @@ class InnerInterpreter(object):
         w_x = self.pop_ds()
         return w_x, w_y
 
+    def top2_ds_int(self):
+        y = self.pop_ds_int()
+        x = self.pop_ds_int()
+        return x, y
+
     def peek_rs(self, depth=0):
         ptr = self.rs_ptr - 1 - depth
         assert ptr >= 0
@@ -223,7 +233,6 @@ class InnerInterpreter(object):
         rs_ptr = self.rs_ptr - 1
         assert rs_ptr >= 0
         w_x = self.rs[rs_ptr]
-        self.rs[rs_ptr] = None
         self.rs_ptr = rs_ptr
         return w_x
 
@@ -243,41 +252,35 @@ class InnerInterpreter(object):
         addr = self.here
         self.buf[addr] = W_StringObject(content[:size])
         self.here += 1
-        return W_PtrObject(addr)
+        return addr
 
     def _ensure_addr(self, addr, span):
         assert 0 <= addr < len(self.mem)
         assert addr + span <= len(self.mem)
 
-    def cell_store(self, addr_obj, value_obj):
+    def cell_store(self, addr, intval):
         """! ( x addr -- ) - Store value at cell address."""
-        assert isinstance(addr_obj, W_IntObject)
-        addr = addr_obj.intval
+        assert isinstance(addr, int)
         assert 0 <= addr < HEAP_CELL_COUNT
+        value_obj = W_IntObject(intval)
         self.mem[addr] = value_obj
 
-    def cell_fetch(self, addr_obj):
+    def cell_fetch(self, addr):
         """@ ( addr -- x ) - Fetch value from cell address."""
-        assert isinstance(addr_obj, W_IntObject)
-        addr = addr_obj.intval
         assert 0 <= addr < HEAP_CELL_COUNT
         result = self.mem[addr]
         if result is None:
             return ZERO
         return result
 
-    def cell_2store(self, addr_obj, x1_obj, x2_obj):
+    def cell_2store(self, addr, x1_int, x2_int):
         """2! ( x1 x2 addr -- ) - Store cell pair."""
-        assert isinstance(addr_obj, W_IntObject)
-        addr = addr_obj.intval
         assert 0 <= addr < HEAP_CELL_COUNT - self.cell_size_bytes
-        self.mem[addr] = x1_obj
-        self.mem[addr + self.cell_size_bytes] = x2_obj
+        self.mem[addr] = W_IntObject(x1_int)
+        self.mem[addr + self.cell_size_bytes] = W_IntObject(x2_int)
 
-    def cell_2fetch(self, addr_obj):
+    def cell_2fetch(self, addr):
         """2@ ( addr -- x1 x2 ) - Fetch cell pair."""
-        assert isinstance(addr_obj, W_IntObject)
-        addr = addr_obj.intval
         assert 0 <= addr < HEAP_CELL_COUNT - self.cell_size_bytes
         x1 = self.mem[addr]
         x2 = self.mem[addr + self.cell_size_bytes]
@@ -287,23 +290,17 @@ class InnerInterpreter(object):
             x2 = ZERO
         return x1, x2
 
-    def float_store(self, addr_obj, value_obj):
+    def float_store(self, addr, value):
         """F! ( addr -- ) ( F: f -- ) - Store float."""
-        assert isinstance(addr_obj, W_IntObject)
-        assert isinstance(value_obj, W_FloatObject)
-        addr = addr_obj.intval
         assert 0 <= addr < HEAP_CELL_COUNT
-        self.mem[addr] = value_obj
+        self.mem[addr] = W_FloatObject(value)
 
-    def float_fetch(self, addr_obj):
+    def float_fetch(self, addr):
         """F@ ( addr -- ) ( F: -- f ) - Fetch float."""
-        assert isinstance(addr_obj, W_IntObject)
-        addr = addr_obj.intval
         assert 0 <= addr < HEAP_CELL_COUNT
         result = self.mem[addr]
         if result is None:
             return W_FloatObject(0.0)
-        assert isinstance(result, W_FloatObject)
         return result
 
     def execute_thread(self, thread, ip=0):

@@ -152,7 +152,7 @@ class OuterInterpreter(object):
         result = sign * n
         return result
 
-    @elidable
+    @unroll_safe
     def _is_float(self, s):
         length = len(s)
         if length == 0:
@@ -231,8 +231,8 @@ class OuterInterpreter(object):
         parsed_str, i = self._parse_string_until_quote(toks, i)
         size = len(parsed_str)
         c_addr = self.inner.alloc_buf(parsed_str, size)
-        self.inner.push_ds(c_addr)
-        self.inner.push_ds(W_IntObject(size))
+        self.inner.push_ds_int(c_addr)
+        self.inner.push_ds_int(size)
         return i
 
     def _handle_dot_quote(self, toks, i):
@@ -260,9 +260,9 @@ class OuterInterpreter(object):
             print "VARIABLE/FVARIABLE requires a name"
             return -1
         name, i = self._read_tok(toks, i)
-        addr = W_IntObject(self.inner.here)
+        addr = self.inner.here
         self.inner.here += self.inner.cell_size_bytes
-        self._define_simple_word(name, addr)
+        self._define_simple_word(name, W_IntObject(addr))
         return i
 
     def _handle_2variable(self, toks, i):
@@ -272,10 +272,10 @@ class OuterInterpreter(object):
             print "2VARIABLE requires a name"
             return -1
         name, i = self._read_tok(toks, i)
-        addr = W_IntObject(self.inner.here)
+        addr = self.inner.here
         self.inner.here += self.inner.cell_size_bytes
         self.inner.here += self.inner.cell_size_bytes  # allocate 2 cells
-        self._define_simple_word(name, addr)
+        self._define_simple_word(name, W_IntObject(addr))
         return i
 
     def _handle_constant(self, toks, i):
@@ -285,7 +285,19 @@ class OuterInterpreter(object):
             print "CONSTANT requires a name"
             return -1
         name, i = self._read_tok(toks, i)
-        val = self.inner.pop_ds()
+        # Check tag to determine if it's an unboxed int/float or boxed object
+        ds_ptr = self.inner.ds_ptr - 1
+        if ds_ptr >= 0 and self.inner.ds_tags[ds_ptr] == 0:
+            # Unboxed integer
+            intval = self.inner.pop_ds_int()
+            val = W_IntObject(intval)
+        elif ds_ptr >= 0 and self.inner.ds_tags[ds_ptr] == 1:
+            # Unboxed float
+            floatval = self.inner.pop_ds_float()
+            val = W_FloatObject(floatval)
+        else:
+            # Boxed object
+            val = self.inner.pop_ds()
         self._define_simple_word(name, val)
         return i
 
@@ -296,8 +308,8 @@ class OuterInterpreter(object):
             print "CREATE requires a name"
             return -1
         name, i = self._read_tok(toks, i)
-        addr = W_IntObject(self.inner.here)
-        self._define_simple_word(name, addr)
+        addr = self.inner.here
+        self._define_simple_word(name, W_IntObject(addr))
         return i
 
     # Control structure compilation helpers
@@ -354,7 +366,7 @@ class OuterInterpreter(object):
         self._emit_with_target(self.wLOOP, entry.index)
         loop_end = self.cc_ptr
         for leave_addr in entry.leave_addrs:
-            self.current_lits[leave_addr] = W_IntObject(loop_end)
+            self.current_lits[leave_addr] = loop_end
         return True
 
     def _compile_begin(self):
@@ -403,7 +415,7 @@ class OuterInterpreter(object):
         self._emit_with_target(self.wPLUSLOOP, entry.index)
         loop_end = self.cc_ptr
         for leave_addr in entry.leave_addrs:
-            self.current_lits[leave_addr] = W_IntObject(loop_end)
+            self.current_lits[leave_addr] = loop_end
         return True
 
     def _compile_again(self):
@@ -451,9 +463,9 @@ class OuterInterpreter(object):
         if w is not None:
             self.inner.execute_word_now(w)
         elif self._is_float(t):
-            self.inner.push_ds(W_FloatObject(self._to_float(t)))
+            self.inner.push_ds_float(self._to_float(t))
         elif self._is_number(t):
-            self.inner.push_ds(W_IntObject(self._to_number(t)))
+            self.inner.push_ds_int(self._to_number(t))
         else:
             print "UNKNOWN: " + t
 
@@ -465,8 +477,20 @@ class OuterInterpreter(object):
                 # Special case for LITERAL: it needs compilation-time handling
                 if w.name == "LITERAL" or to_upper(w.name) == "LITERAL":
                     # Pop value from stack and compile it as a literal
-                    val = self.inner.pop_ds()
-                    self._emit_lit(val)
+                    # Check tag to determine if it's an unboxed int or boxed object
+                    ds_ptr = self.inner.ds_ptr - 1
+                    if ds_ptr >= 0 and self.inner.ds_tags[ds_ptr] == 0:
+                        # Unboxed integer
+                        intval = self.inner.pop_ds_int()
+                        self._emit_lit(W_IntObject(intval))
+                    elif ds_ptr >= 0 and self.inner.ds_tags[ds_ptr] == 1:
+                        # Unboxed float
+                        floatval = self.inner.pop_ds_float()
+                        self._emit_lit(W_FloatObject(floatval))
+                    else:
+                        # Boxed object
+                        val = self.inner.pop_ds()
+                        self._emit_lit(val)
                 else:
                     # Other immediate words: execute them
                     self.inner.execute_word_now(w)
@@ -483,26 +507,18 @@ class OuterInterpreter(object):
 
     # FIND ( c-addr u -- c-addr 0 | xt 1 | xt -1 )
     def _handle_find(self):
-        w_u = self.inner.pop_ds()
-        w_caddr = self.inner.pop_ds()
+        w_u = self.inner.pop_ds_int()
+        w_caddr = self.inner.pop_ds_int()
 
         # Extract string from buffer
-        if isinstance(w_caddr, W_PtrObject):
-            ptr = w_caddr.ptrval
-            buf_entry = self.inner.buf[ptr]
-            if buf_entry is not None and isinstance(buf_entry, W_StringObject):
-                name = buf_entry.strval
-            else:
-                self.inner.push_ds(w_caddr)
-                self.inner.push_ds(w_u)
-                self.inner.push_ds(ZERO)
-                return
-        elif isinstance(w_caddr, W_StringObject):
-            name = w_caddr.strval
+        ptr = w_caddr
+        buf_entry = self.inner.buf[ptr]
+        if buf_entry is not None and isinstance(buf_entry, W_StringObject):
+            name = buf_entry.strval
         else:
-            self.inner.push_ds(w_caddr)
-            self.inner.push_ds(w_u)
-            self.inner.push_ds(ZERO)
+            self.inner.push_ds_int(w_caddr)
+            self.inner.push_ds_int(w_u)
+            self.inner.push_ds_int(0)
             return
 
         name_upper = to_upper(name)
@@ -511,26 +527,26 @@ class OuterInterpreter(object):
             xt = W_WordObject(word)
             self.inner.push_ds(xt)
             if word.immediate:
-                self.inner.push_ds(TRUE)
+                self.inner.push_ds_int(-1)
             else:
-                self.inner.push_ds(W_IntObject(1))
+                self.inner.push_ds_int(1)
         else:
-            self.inner.push_ds(w_caddr)
-            self.inner.push_ds(w_u)
-            self.inner.push_ds(ZERO)
+            self.inner.push_ds_int(w_caddr)
+            self.inner.push_ds_int(w_u)
+            self.inner.push_ds_int(0)
 
     # SOURCE ( -- c-addr u )
     def _handle_source(self):
         size = len(self.source_buffer)
         c_addr = self.inner.alloc_buf(self.source_buffer, size)
-        self.inner.push_ds(c_addr)
-        self.inner.push_ds(W_IntObject(size))
+        self.inner.push_ds_int(c_addr)
+        self.inner.push_ds_int(size)
 
     # >IN ( -- a-addr )
     def _handle_to_in(self):
-        addr = W_IntObject(self.inner.here)
-        self.inner.cell_store(addr, W_IntObject(self.source_index))
-        self.inner.push_ds(addr)
+        addr = self.inner.here
+        self.inner.cell_store(addr, self.source_index)
+        self.inner.push_ds_int(addr)
 
     # ' (tick) ( "<spaces>name" -- xt )
     def _handle_tick(self, toks, i):
@@ -559,19 +575,17 @@ class OuterInterpreter(object):
 
     # COUNT ( c-addr1 -- c-addr2 u )
     def _handle_count(self):
-        c_addr1 = self.inner.pop_ds()
-        assert isinstance(c_addr1, W_IntObject)
+        c_addr1 = self.inner.pop_ds_int()
         count = self.inner.cell_fetch(c_addr1)
         assert isinstance(count, W_IntObject)
-        c_addr2 = W_IntObject(c_addr1.intval + self.inner.cell_size_bytes)
-        self.inner.push_ds(c_addr2)
-        self.inner.push_ds(count)
+        c_addr2 = c_addr1 + self.inner.cell_size_bytes
+        self.inner.push_ds_int(c_addr2)
+        self.inner.push_ds_int(count.intval)
 
     # WORD ( char "<chars>ccc<char>" -- c-addr )
     def _handle_word(self, toks, i):
         toks_len = len(toks)
-        char_obj = self.inner.pop_ds()
-        assert isinstance(char_obj, W_IntObject)
+        char_obj = self.inner.pop_ds_int()
 
         if i >= toks_len:
             word_str = ''
@@ -579,49 +593,30 @@ class OuterInterpreter(object):
             word_str, i = self._read_tok(toks, i)
 
         length = len(word_str)
-        addr = W_IntObject(self.inner.here)
-        self.inner.cell_store(addr, W_IntObject(length))
+        addr = self.inner.here
+        self.inner.cell_store(addr, length)
         self.inner.here += self.inner.cell_size_bytes
         for ch in word_str:
-            ch_addr = W_IntObject(self.inner.here)
-            self.inner.cell_store(ch_addr, W_IntObject(ord(ch)))
+            ch_addr = self.inner.here
+            self.inner.cell_store(ch_addr, ord(ch))
             self.inner.here += 1
-        self.inner.push_ds(addr)
+        self.inner.push_ds_int(addr)
         return i
 
     # STATE ( -- a-addr )
     def _handle_state(self):
-        addr = W_IntObject(self.inner.here)
-        state_val = W_IntObject(-1 if self.state == COMPILE else 0)
+        addr = self.inner.here
+        state_val = -1 if self.state == COMPILE else 0
         self.inner.cell_store(addr, state_val)
-        self.inner.push_ds(addr)
+        self.inner.push_ds_int(addr)
 
     # EVALUATE ( c-addr u -- )
     def _handle_evaluate(self):
-        u = self.inner.pop_ds()
-        c_addr = self.inner.pop_ds()
-        assert isinstance(u, W_IntObject)
-
-        if isinstance(c_addr, W_PtrObject):
-            ptr = c_addr.ptrval
-            buf_entry = self.inner.buf[ptr]
-            if buf_entry is not None and isinstance(buf_entry, W_StringObject):
-                eval_str = buf_entry.strval
-            else:
-                print "EVALUATE: invalid buffer entry"
-                return
-        elif isinstance(c_addr, W_IntObject):
-            length = u.intval
-            chars = []
-            for j in range(length):
-                ch_obj = self.inner.cell_fetch(W_IntObject(c_addr.intval + j))
-                chars.append(chr(ch_obj.intval))
-            eval_str = ''.join(chars)
-        else:
-            print "EVALUATE: unexpected address type"
-            return
-
-        self.interpret_line(eval_str)
+        length = self.inner.pop_ds_int()
+        c_addr = self.inner.pop_ds_int()
+        buf_str = self.inner.buf[c_addr]
+        assert isinstance(buf_str, W_StringObject)
+        self.interpret_line(buf_str.strval)
 
     # ABORT ( -- )
     def _handle_abort(self):
@@ -646,10 +641,9 @@ class OuterInterpreter(object):
             abort_msg_parts.append(tok)
 
         abort_msg = ' '.join(abort_msg_parts)
-        flag = self.inner.pop_ds()
-        assert isinstance(flag, W_IntObject)
+        flag = self.inner.pop_ds_int()
 
-        if flag.intval != 0:
+        if flag != 0:
             print "ABORT:", abort_msg
             self.inner.ds_ptr = 0
             self.inner.rs_ptr = 0
@@ -686,7 +680,7 @@ class OuterInterpreter(object):
 
             if t == "CHAR":
                 s, i = self._read_tok(toks, i)
-                self.inner.push_ds(W_IntObject(ord(s[0])))
+                self.inner.push_ds_int(ord(s[0]))
                 continue
 
             # handle ':' and ';' lexically (not as immediate words)
@@ -824,32 +818,32 @@ class OuterInterpreter(object):
                         self.base_addr = self.inner.here
                         self.inner.here += self.inner.cell_size_bytes
                     # Store the current base at that address
-                    self.inner.cell_store(W_IntObject(self.base_addr), self.inner.base)
-                    self.inner.push_ds(W_IntObject(self.base_addr))
+                    self.inner.cell_store(self.base_addr, self.inner.base)
+                    self.inner.push_ds_int(self.base_addr)
                     continue
 
                 if tkey == ">NUMBER":
                     # >NUMBER ( ud1 c-addr1 u1 -- ud2 c-addr2 u2 )
                     # Convert string to number according to BASE
-                    u1 = self.inner.pop_ds()
-                    c_addr1 = self.inner.pop_ds()
-                    ud1_hi = self.inner.pop_ds()
-                    ud1_lo = self.inner.pop_ds()
+                    u1 = self.inner.pop_ds_int()
+                    c_addr1 = self.inner.pop_ds_int()
+                    ud1_hi = self.inner.pop_ds_int()
+                    ud1_lo = self.inner.pop_ds_int()
 
-                    assert isinstance(u1, W_IntObject)
-                    assert isinstance(c_addr1, W_IntObject)
-                    assert isinstance(ud1_hi, W_IntObject)
-                    assert isinstance(ud1_lo, W_IntObject)
+                    # assert isinstance(u1, W_IntObject)
+                    # assert isinstance(c_addr1, W_IntObject)
+                    # assert isinstance(ud1_hi, W_IntObject)
+                    # assert isinstance(ud1_lo, W_IntObject)
 
-                    base = self.inner.base.intval
-                    addr = c_addr1.intval
-                    length = u1.intval
-                    value = ud1_lo.intval
+                    base = self.inner.base
+                    addr = c_addr1
+                    length = u1
+                    value = ud1_lo
 
                     # Process each character
                     chars_processed = 0
                     for j in range(length):
-                        ch_obj = self.inner.cell_fetch(W_IntObject(addr + j))
+                        ch_obj = self.inner.cell_fetch(addr + j)
                         ch = chr(ch_obj.intval)
 
                         # Convert character to digit value
@@ -869,80 +863,65 @@ class OuterInterpreter(object):
                         chars_processed += 1
 
                     # Return updated values
-                    self.inner.push_ds(W_IntObject(value))
-                    self.inner.push_ds(W_IntObject(0))  # ud2 high
-                    self.inner.push_ds(W_IntObject(addr + chars_processed))
-                    self.inner.push_ds(W_IntObject(length - chars_processed))
+                    self.inner.push_ds_int(value)
+                    self.inner.push_ds_int(0)  # ud2 high
+                    self.inner.push_ds_int(addr + chars_processed)
+                    self.inner.push_ds_int(length - chars_processed)
                     continue
 
                 if tkey == "ENVIRONMENT?":
                     # ENVIRONMENT? ( c-addr u -- false | i*x true )
                     # Query environmental information
-                    u = self.inner.pop_ds()
-                    c_addr = self.inner.pop_ds()
-                    assert isinstance(u, W_IntObject)
+                    u = self.inner.pop_ds_int()
+                    c_addr = self.inner.pop_ds_int()
 
-                    # Extract the query string
-                    if isinstance(c_addr, W_PtrObject):
-                        ptr = c_addr.ptrval
-                        buf_entry = self.inner.buf[ptr]
-                        if buf_entry is not None and isinstance(buf_entry, W_StringObject):
-                            query = buf_entry.strval
-                        else:
-                            self.inner.push_ds(ZERO)  # false - invalid buffer
-                            continue
-                    elif isinstance(c_addr, W_IntObject):
-                        length = u.intval
-                        chars = []
-                        for j in range(length):
-                            ch_obj = self.inner.cell_fetch(W_IntObject(c_addr.intval + j))
-                            chars.append(chr(ch_obj.intval))
-                        query = ''.join(chars)
-                    else:
-                        self.inner.push_ds(ZERO)  # false - unknown query
-                        continue
-
+                    # Extract the query string from buffer
+                    assert 0 <= c_addr < len(self.inner.buf)
+                    buf_entry = self.inner.buf[c_addr]
+                    strval = buf_entry.strval
+                    assert 0 <= u <= len(strval)
+                    query = strval[:u]
                     query_upper = to_upper(query)
 
                     # Handle known queries
                     if query_upper == "/COUNTED-STRING":
-                        self.inner.push_ds(W_IntObject(255))  # max counted string length
-                        self.inner.push_ds(TRUE)
+                        self.inner.push_ds_int(255)  # max counted string length
+                        self.inner.push_ds_int(-1)
                     elif query_upper == "/HOLD":
-                        self.inner.push_ds(W_IntObject(128))  # hold buffer size
-                        self.inner.push_ds(TRUE)
+                        self.inner.push_ds_int(128)  # hold buffer size
+                        self.inner.push_ds_int(-1)
                     elif query_upper == "/PAD":
-                        self.inner.push_ds(W_IntObject(256))  # pad buffer size
-                        self.inner.push_ds(TRUE)
+                        self.inner.push_ds_int(256)  # pad buffer size
+                        self.inner.push_ds_int(-1)
                     elif query_upper == "ADDRESS-UNIT-BITS":
-                        self.inner.push_ds(W_IntObject(8))  # bits per address unit
-                        self.inner.push_ds(TRUE)
+                        self.inner.push_ds_int(8)  # bits per address unit
+                        self.inner.push_ds_int(-1)
                     elif query_upper == "CORE":
-                        self.inner.push_ds(TRUE)  # CORE wordset is present
-                        self.inner.push_ds(TRUE)
+                        self.inner.push_ds_int(-1)  # CORE wordset is present
+                        self.inner.push_ds_int(-1)
                     elif query_upper == "CORE-EXT":
-                        self.inner.push_ds(ZERO)  # CORE-EXT not fully present
-                        self.inner.push_ds(TRUE)
+                        self.inner.push_ds_int(0)  # CORE-EXT not fully present
+                        self.inner.push_ds_int(-1)
                     elif query_upper == "FLOORED":
-                        self.inner.push_ds(ZERO)  # division is symmetric, not floored
-                        self.inner.push_ds(TRUE)
+                        self.inner.push_ds_int(0)  # division is symmetric, not floored
+                        self.inner.push_ds_int(-1)
                     elif query_upper == "MAX-CHAR":
-                        self.inner.push_ds(W_IntObject(255))  # max character value
-                        self.inner.push_ds(TRUE)
+                        self.inner.push_ds_int(255)  # max character value
+                        self.inner.push_ds_int(-1)
                     elif query_upper == "MAX-N":
-                        self.inner.push_ds(W_IntObject(2147483647))  # max signed single
-                        self.inner.push_ds(TRUE)
+                        self.inner.push_ds_int(2147483647)  # max signed single
+                        self.inner.push_ds_int(-1)
                     elif query_upper == "MAX-U":
-                        self.inner.push_ds(W_IntObject(-1))  # max unsigned (all bits set)
-                        self.inner.push_ds(TRUE)
+                        self.inner.push_ds_int(-1)  # max unsigned (all bits set)
+                        self.inner.push_ds_int(-1)
                     elif query_upper == "RETURN-STACK-CELLS":
-                        self.inner.push_ds(W_IntObject(64))  # return stack size
-                        self.inner.push_ds(TRUE)
+                        self.inner.push_ds_int(64)  # return stack size
+                        self.inner.push_ds_int(-1)
                     elif query_upper == "STACK-CELLS":
-                        self.inner.push_ds(W_IntObject(64))  # data stack size
-                        self.inner.push_ds(TRUE)
+                        self.inner.push_ds_int(64)  # data stack size
+                        self.inner.push_ds_int(-1)
                     else:
-                        self.inner.push_ds(ZERO)  # false - unknown query
+                        self.inner.push_ds_int(0)  # false - unknown query
                     continue
 
             if self.state == COMPILE:

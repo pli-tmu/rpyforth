@@ -3,6 +3,7 @@ from rpython.rlib.jit import promote, unroll_safe
 
 from rpyforth.objects import (
     BINARY,
+    CELL_SIZE_BYTES,
     OCTAL,
     DECIMAL,
     HEX,
@@ -12,9 +13,7 @@ from rpyforth.objects import (
     W_StringObject,
     W_FloatObject,
     W_WordObject,
-    CELL_SIZE,
     LONG_BIT,
-    make_int,
     _small_int_cache,
     SMALL_INT_MIN,
     SMALL_INT_MAX,
@@ -38,33 +37,33 @@ def _maybe_enter_jit(inner, target_ip, origin_ip, thread):
 # 0= ( x -- flag )
 def prim_ZEROEQUAL(inner, cur, ip):
     """GForth core 2012: flag is true when x equals zero."""
-    w_x = inner.pop_ds()
-    if w_x.zero_equal():
-        inner.push_ds(TRUE)
+    x = inner.pop_ds_int()
+    if x == 0:
+        inner.push_ds_int(-1)
     else:
-        inner.push_ds(ZERO)
+        inner.push_ds_int(0)
     return ip
 
 
 # 0< ( n -- flag )
 def prim_ZEROLESS(inner, cur, ip):
     """GForth core 2012: flag is true when n is strictly negative."""
-    w_x = inner.pop_ds()
-    if w_x.zero_less():
-        inner.push_ds(TRUE)
+    x = inner.pop_ds_int()
+    if x < 0:
+        inner.push_ds_int(-1)
     else:
-        inner.push_ds(ZERO)
+        inner.push_ds_int(0)
     return ip
 
 
 # 0> ( n -- flag )
 def prim_ZEROGREATER(inner, cur, ip):
     """GForth core 2012: flag is true when n is strictly positive."""
-    w_x = inner.pop_ds()
-    if w_x.zero_greater():
-        inner.push_ds(TRUE)
+    x = inner.pop_ds_int()
+    if x > 0:
+        inner.push_ds_int(-1)
     else:
-        inner.push_ds(ZERO)
+        inner.push_ds_int(0)
     return ip
 
 
@@ -72,257 +71,250 @@ def prim_ZEROGREATER(inner, cur, ip):
 def prim_GREATER(inner, cur, ip):
     """GForth core 2012: flag is true when n1 is greater than n2."""
     # Pop in correct order: n2 is top, n1 is second
-    w_n2 = inner.pop_ds()
-    w_n1 = inner.pop_ds()
-    assert isinstance(w_n1, W_IntObject)
-    assert isinstance(w_n2, W_IntObject)
-    # Direct field access for better JIT optimization
-    if w_n1.intval > w_n2.intval:
-        inner.push_ds(TRUE)
+    n2 = inner.pop_ds_int()
+    n1 = inner.pop_ds_int()
+    if n1 > n2:
+        inner.push_ds_int(-1)
     else:
-        inner.push_ds(ZERO)
+        inner.push_ds_int(0)
     return ip
 
 # < ( n1 n2 -- flag )
 def prim_LESS(inner, cur, ip):
     """GForth core 2012: flag is true when n1 is less than n2."""
     # Pop in correct order: n2 is top, n1 is second
-    w_n2 = inner.pop_ds()
-    w_n1 = inner.pop_ds()
-    assert isinstance(w_n1, W_IntObject)
-    assert isinstance(w_n2, W_IntObject)
-    # Direct field access for better JIT optimization
-    if w_n1.intval < w_n2.intval:
-        inner.push_ds(TRUE)
+    n2 = inner.pop_ds_int()
+    n1 = inner.pop_ds_int()
+    if n1 < n2:
+        inner.push_ds_int(-1)
     else:
-        inner.push_ds(ZERO)
+        inner.push_ds_int(0)
     return ip
 
 
 # 0<> ( n -- flag )
 def prim_ZERONOTEQUAL(inner, cur, ip):
     """GForth core 2012: flag is true when n is non-zero."""
-    w_x = inner.pop_ds()
-    if not w_x.zero_equal():
-        inner.push_ds(TRUE)
+    x = inner.pop_ds_int()
+    if x != 0:
+        inner.push_ds_int(-1)
     else:
-        inner.push_ds(ZERO)
+        inner.push_ds_int(0)
     return ip
 
 # def U< (n1 n2 -- flag )
 def prim_U_LESS(inner, cur, ip):
     """GForth core 2012: flag is true if and only if u1 is less than u2."""
-    w_n2 = inner.pop_ds()
-    w_n1 = inner.pop_ds()
-    assert isinstance(w_n1, W_IntObject)
-    assert isinstance(w_n2, W_IntObject)
+    n2 = inner.pop_ds_int()
+    n1 = inner.pop_ds_int()
     BIT_MASK = (1 << LONG_BIT) - 1   #111...11 64bits
-    u1 = w_n1.intval & BIT_MASK
-    u2 = w_n2.intval & BIT_MASK
+    u1 = n1 & BIT_MASK
+    u2 = n2 & BIT_MASK
     if u1 < u2:
-        inner.push_ds(TRUE)
+        inner.push_ds_int(-1)
     else:
-        inner.push_ds(ZERO)
+        inner.push_ds_int(0)
     return ip
 
 # DUP ( x -- x x )
 def prim_DUP(inner, cur, ip):
     """GForth core 2012: duplicate x, leaving two copies on the stack."""
-    a = inner.pop_ds()
-    inner.push_ds(a)
-    inner.push_ds(a)
+    a = inner.pop_ds_int()
+    inner.push_ds_int(a)
+    inner.push_ds_int(a)
     return ip
 
 
 # 2DUP ( x1 x2 -- x1 x2 x1 x2 )
 def prim_2DUP(inner, cur, ip):
-    b = inner.pop_ds()
-    a = inner.pop_ds()
-    inner.push_ds(a)
-    inner.push_ds(b)
-    inner.push_ds(a)
-    inner.push_ds(b)
+    b = inner.pop_ds_int()
+    a = inner.pop_ds_int()
+    inner.push_ds_int(a)
+    inner.push_ds_int(b)
+    inner.push_ds_int(a)
+    inner.push_ds_int(b)
     return ip
 
 
 # ?DUP ( x -- 0 | x x )
 def prim_QUESTIONDUP(inner, cur, ip):
     """GForth core 2012: duplicate x if it is non-zero."""
-    a = inner.pop_ds()
-    inner.push_ds(a)
-    if not a.zero_equal():
-        inner.push_ds(a)
+    a = inner.pop_ds_int()
+    inner.push_ds_int(a)
+    if a != 0:
+        inner.push_ds_int(a)
     return ip
 
 
 # DROP ( x -- )
 def prim_DROP(inner, cur, ip):
     """GForth core 2012: discard the top stack item."""
-    inner.pop_ds()
+    inner.pop_ds_int()
     return ip
 
 
 # NIP ( x1 x2 -- x2 )
 def prim_NIP(inner, cur, ip):
     """GForth core 2012: discard the second stack item."""
-    x2 = inner.pop_ds()
-    inner.pop_ds()  # discard x1
-    inner.push_ds(x2)
+    x2 = inner.pop_ds_int()
+    inner.pop_ds_int()  # discard x1
+    inner.push_ds_int(x2)
     return ip
 
 
 # 2DROP ( x1 x2 -- )
 def prim_2DROP(inner, cur, ip):
     """GForth core 2012: discard the top two stack items."""
-    inner.pop_ds()
-    inner.pop_ds()
+    inner.pop_ds_int()
+    inner.pop_ds_int()
     return ip
 
 # SWAP ( x1 x2 -- x2 x1 )
 def prim_SWAP(inner, cur, ip):
     """GForth core 2012: exchange the top two stack items."""
-    a, b = inner.top2_ds()
-    inner.push_ds(b)
-    inner.push_ds(a)
+    a, b = inner.top2_ds_int()
+    inner.push_ds_int(b)
+    inner.push_ds_int(a)
     return ip
 
 
 # 2SWAP ( x1 x2 x3 x4 -- x3 x4 x1 x2 )
 def prim_2SWAP(inner, cur, ip):
     """GForth core 2012: exchange the top two cell pairs."""
-    c, d = inner.top2_ds()
-    a, b = inner.top2_ds()
-    inner.push_ds(c)
-    inner.push_ds(d)
-    inner.push_ds(a)
-    inner.push_ds(b)
+    c, d = inner.top2_ds_int()
+    a, b = inner.top2_ds_int()
+    inner.push_ds_int(c)
+    inner.push_ds_int(d)
+    inner.push_ds_int(a)
+    inner.push_ds_int(b)
     return ip
 
 
 # OVER ( x1 x2 -- x1 x2 x1 )
 def prim_OVER(inner, cur, ip):
     """GForth core 2012: copy the second stack item to the top."""
-    b = inner.pop_ds()
-    a = inner.pop_ds()
-    inner.push_ds(a)
-    inner.push_ds(b)
-    inner.push_ds(a)
+    b = inner.pop_ds_int()
+    a = inner.pop_ds_int()
+    inner.push_ds_int(a)
+    inner.push_ds_int(b)
+    inner.push_ds_int(a)
     return ip
 
 
 # 2OVER ( x1 x2 x3 x4 -- x1 x2 x3 x4 x1 x2 )
 def prim_2OVER(inner, cur, ip):
     """GForth core 2012: copy cell pair x1 x2 to the top of the stack."""
-    d = inner.pop_ds()
-    c = inner.pop_ds()
-    b = inner.pop_ds()
-    a = inner.pop_ds()
-    inner.push_ds(a)
-    inner.push_ds(b)
-    inner.push_ds(c)
-    inner.push_ds(d)
-    inner.push_ds(a)
-    inner.push_ds(b)
+    d = inner.pop_ds_int()
+    c = inner.pop_ds_int()
+    b = inner.pop_ds_int()
+    a = inner.pop_ds_int()
+    inner.push_ds_int(a)
+    inner.push_ds_int(b)
+    inner.push_ds_int(c)
+    inner.push_ds_int(d)
+    inner.push_ds_int(a)
+    inner.push_ds_int(b)
     return ip
 
 
 # ROT ( x1 x2 x3 -- x2 x3 x1 )
 def prim_ROT(inner, cur, ip):
-    c = inner.pop_ds()
-    b = inner.pop_ds()
-    a = inner.pop_ds()
-    inner.push_ds(b)
-    inner.push_ds(c)
-    inner.push_ds(a)
+    c = inner.pop_ds_int()
+    b = inner.pop_ds_int()
+    a = inner.pop_ds_int()
+    inner.push_ds_int(b)
+    inner.push_ds_int(c)
+    inner.push_ds_int(a)
     return ip
 
 
 # -ROT ( x1 x2 x3 -- x3 x1 x2 )
 def prim_NROT(inner, cur, ip):
     """Inverse of ROT."""
-    c = inner.pop_ds()
-    b = inner.pop_ds()
-    a = inner.pop_ds()
-    inner.push_ds(c)
-    inner.push_ds(a)
-    inner.push_ds(b)
+    c = inner.pop_ds_int()
+    b = inner.pop_ds_int()
+    a = inner.pop_ds_int()
+    inner.push_ds_int(c)
+    inner.push_ds_int(a)
+    inner.push_ds_int(b)
     return ip
 
 
 # MAX ( n1 n2 -- n3 )
 def prim_MAX(inner, cur, ip):
     """GForth core 2012: n3 is the greater of n1 and n2."""
-    a, b = inner.top2_ds()
-    if a.lt(b):
-        inner.push_ds(b)
+    a, b = inner.top2_ds_int()
+    if a < b:
+        inner.push_ds_int(b)
     else:
-        inner.push_ds(a)
+        inner.push_ds_int(a)
     return ip
 
 
 # MIN ( n1 n2 -- n3 )
 def prim_MIN(inner, cur, ip):
     """GForth core 2012: n3 is the lesser of n1 and n2."""
-    a, b = inner.top2_ds()
-    if a.lt(b):
-        inner.push_ds(a)
+    a, b = inner.top2_ds_int()
+    if a < b:
+        inner.push_ds_int(a)
     else:
-        inner.push_ds(b)
+        inner.push_ds_int(b)
     return ip
 
 
 # DEPTH ( -- +n )
 def prim_DEPTH(inner, cur, ip):
     """GForth core 2012: +n is the number of single-cell values contained in the data stack."""
-    inner.push_ds(W_IntObject(inner.ds_ptr))
+    inner.push_ds_int(inner.ds_ptr)
     return ip
 
 
 # RSHIFT ( n1 u -- n2 )
 def prim_RSHIFT(inner, cur, ip):
     """GForth core 2012: perform a logical right shift of u bit-places on n1, giving n2."""
-    a = inner.pop_ds()
-    b = inner.pop_ds()
-    inner.push_ds(b.rshift(a))
+    a = inner.pop_ds_int()
+    b = inner.pop_ds_int()
+    inner.push_ds_int(b >> a)
     return ip
 
 
 # LSHIFT ( n1 u -- n2 )
 def prim_LSHIFT(inner, cur, ip):
     """GForth core 2012: perform a logical left shift of u bit-places on n1, giving n2."""
-    a = inner.pop_ds()
-    b = inner.pop_ds()
-    inner.push_ds(b.lshift(a))
+    a = inner.pop_ds_int()
+    b = inner.pop_ds_int()
+    inner.push_ds_int(b << a)
     return ip
 
 # S>D ( n -- d )
 def prim_S_TO_D(inner, cur, ip):
     """GForth core 2012: convert tne number n to double-cell number d."""
-    a = inner.pop_ds()
-    inner.push_ds(a)
-    inner.push_ds(a.s_to_d())
+    a = inner.pop_ds_int()
+    inner.push_ds_int(a)
+    if a >= 0:
+        inner.push_ds_int(0)
+    else:
+        inner.push_ds_int(-1)
     return ip
 
 # BL ( -- char )
 def prim_BL(inner, cur, ip):
     """GForth core 2012: char is the character value of a space."""
-    inner.push_ds(W_IntObject(ord(' ')))
+    inner.push_ds_int(ord(' '))
     return ip
 
 # 2* ( x1 -- x2 )
 def prim_2STAR(inner, cur, ip):
     """GForth core 2012: x2 is the result of shifting x1 one bit toward the most-significant bit."""
-    a = inner.pop_ds()
-    assert isinstance(a, W_IntObject)
-    inner.push_ds(a.lshift(W_IntObject(1)))
+    a = inner.pop_ds_int()
+    inner.push_ds_int(a << 1)
     return ip
 
 # 2/ ( x1 -- x2 )
 def prim_2SLASH(inner, cur, ip):
     """GForth core 2012: x2 is the result of shifting x1 one bit right towards the least-significant bit."""
-    a = inner.pop_ds()
-    assert isinstance(a, W_IntObject)
-    inner.push_ds(a.rshift(W_IntObject(1)))
+    a = inner.pop_ds_int()
+    inner.push_ds_int(a >> 1)
     return ip
 
 # Arithmetic
@@ -337,288 +329,241 @@ def int_shortcut(intval):
 def prim_ADD(inner, cur, ip):
     """GForth core 2012: add n1 and n2, leaving their sum."""
     # top2_ds pops in correct order: second-to-top (a), then top (b)
-    a, b = inner.top2_ds()
-    assert isinstance(a, W_IntObject)
-    assert isinstance(b, W_IntObject)
+    a, b = inner.top2_ds_int()
     # Inline cache access for JIT optimization (avoid function call overhead)
-    result = a.intval + b.intval
-    inner.push_ds(int_shortcut(result))
+    inner.push_ds_int(a + b)
     return ip
 
 
 # - ( n1 n2 -- n3 )
 def prim_SUB(inner, cur, ip):
     """GForth core 2012: subtract n2 from n1, leaving the difference."""
-    # top2_ds pops in correct order: second-to-top (a), then top (b)
-    a, b = inner.top2_ds()
-    assert isinstance(a, W_IntObject)
-    assert isinstance(b, W_IntObject)
-    # Direct field access for better JIT optimization
-    result = a.intval - b.intval
-    inner.push_ds(int_shortcut(result))
+    a, b = inner.top2_ds_int()
+    inner.push_ds_int(a - b)
     return ip
 
 
 # * ( n1 n2 -- n3 )
 def prim_MUL(inner, cur, ip):
     """GForth core 2012: multiply n1 by n2, leaving the product."""
-    # top2_ds pops in correct order: second-to-top (a), then top (b)
-    a, b = inner.top2_ds()
-    assert isinstance(a, W_IntObject)
-    assert isinstance(b, W_IntObject)
-    # Direct field access for better JIT optimization
-    result = a.intval * b.intval
-    inner.push_ds(int_shortcut(result))
+    a, b = inner.top2_ds_int()
+    inner.push_ds_int(a * b)
     return ip
 
 # / ( n1 n2 -- n3 )
 def prim_DIV(inner, cur, ip):
     """GForth core 2012: divide n1 by n2, giving the single-cell quotient n3."""
     # top2_ds pops in correct order: second-to-top (a), then top (b)
-    a, b = inner.top2_ds()
-    assert isinstance(a, W_IntObject)
-    assert isinstance(b, W_IntObject)
-    assert b.intval != 0, "Division by zero"
-    result = a.intval // b.intval
-    inner.push_ds(int_shortcut(result))
+    a, b = inner.top2_ds_int()
+    assert b != 0, "Division by zero"
+    inner.push_ds_int(a // b)
     return ip
 
 # */ ( n1 n2 n3 -- n4 )
 def prim_MUL_SLASH(inner, cur, ip):
     """GForth core 2012: multiply n1 by n2 producing the intermediate double-cell result d. divide d by n3 giving the single-cell quotient n4."""
-    a = inner.pop_ds()
-    b = inner.pop_ds()
-    c = inner.pop_ds()
-    assert isinstance(a, W_IntObject)
-    assert isinstance(b, W_IntObject)
-    assert isinstance(c, W_IntObject)
-    d = b.intval * c.intval #d is 128bits
-    assert a.intval != 0, "Division by zero"
-    d = d // a.intval #d is 64bits
-    assert  (d >> LONG_BIT) == 0 or (d >> LONG_BIT) == -1, "Overflow in */"
-    inner.push_ds(int_shortcut(d))
+    n3 = inner.pop_ds_int()
+    n2 = inner.pop_ds_int()
+    n1 = inner.pop_ds_int()
+    d = n1 * n2
+    assert n3 != 0, "Division by zero"
+    result = d // n3
+    assert (result >> LONG_BIT) == 0 or (result >> LONG_BIT) == -1, "Overflow in */"
+    inner.push_ds_int(result)
     return ip
 
 # /MOD ( n1 n2 -- n3 n4 )
 def prim_DIV_MOD(inner, cur, ip):
     """GForth core 2012: divide n1 by n2, giving the single-cell remainder n3 and the single-cell quotient n4."""
-    a, b = inner.top2_ds()
-    assert isinstance(a, W_IntObject)
-    assert isinstance(b, W_IntObject)
-    assert b.intval != 0, "Division by zero"
-    inner.push_ds(int_shortcut(a.intval % b.intval))
-    inner.push_ds(int_shortcut(a.intval // b.intval))
+    a, b = inner.top2_ds_int()
+    assert b != 0, "Division by zero"
+    inner.push_ds_int(a % b)
+    inner.push_ds_int(a // b)
     return ip
 
 # */MOD ( n1 n2 n3 -- n4 n5 )
 def prim_MUL_DIV_MOD(inner, cur, ip):
     """GForth core 2012: multiply n1 by n2 producing the intermediate double-cell result d. divide d by n3 giving the single-cell remainder n4 and the single-cell quotient n5."""
-    a = inner.pop_ds()
-    b = inner.pop_ds()
-    c = inner.pop_ds()
-    assert isinstance(a, W_IntObject)
-    assert isinstance(b, W_IntObject)
-    assert isinstance(c, W_IntObject)
-    d = b.intval * c.intval #d is 128bits
-    assert a.intval != 0, "Division by zero"
-    e = d // a.intval #e is 64bits
-    assert  (e >> LONG_BIT) == 0 or (e >> LONG_BIT) == -1, "Overflow in */mod"
-    inner.push_ds(int_shortcut(d % a.intval))
-    inner.push_ds(int_shortcut(e))
+    n3 = inner.pop_ds_int()
+    n2 = inner.pop_ds_int()
+    n1 = inner.pop_ds_int()
+    d = n1 * n2
+    assert n3 != 0, "Division by zero"
+    q = d // n3
+    assert (q >> LONG_BIT) == 0 or (q >> LONG_BIT) == -1, "Overflow in */mod"
+    inner.push_ds_int(d % n3)
+    inner.push_ds_int(q)
     return ip
 
 # ABS ( n -- u )
 def prim_ABS(inner, cur, ip):
     """GForth core 2012: u is the absolute value of n."""
-    a = inner.pop_ds()
-    inner.push_ds(a.abs())
+    a = inner.pop_ds_int()
+    inner.push_ds_int(abs(a))
     return ip
 
 
 # NEGATE ( n1 -- n2 )
 def prim_NEGATE(inner, cur, ip):
     """GForth core 2012: negate n1, giving its arithmetic inverse n2."""
-    a = inner.pop_ds()
-    inner.push_ds(a.neg())
+    a = inner.pop_ds_int()
+    inner.push_ds_int(-a)
     return ip
 
 
 # MOD ( n1 n2 -- n3 )
 def prim_MOD(inner, cur, ip):
     """GForth core 2012: divide n1 by n2, giving the single-cell remainder n3."""
-    a, b = inner.top2_ds()
-    inner.push_ds(a.mod(b))
+    a, b = inner.top2_ds_int()
+    inner.push_ds_int(a % b)
     return ip
 
 
 # /MOD ( n1 n2 -- n3 n4 )
 def prim_DIVMOD(inner, cur, ip):
     """GForth core 2012: divide n1 by n2, giving remainder n3 and quotient n4."""
-    a, b = inner.top2_ds()
-    assert isinstance(a, W_IntObject)
-    assert isinstance(b, W_IntObject)
+    a, b = inner.top2_ds_int()
     # Symmetric division
-    q = int(a.intval / b.intval)
-    r = a.intval - (q * b.intval)
-    inner.push_ds(int_shortcut(r))
-    inner.push_ds(int_shortcut(q))
+    q = int(a / b)
+    r = a - (q * b)
+    inner.push_ds_int(r)
+    inner.push_ds_int(q)
     return ip
 
 
 # */ ( n1 n2 n3 -- n4 )
 def prim_STARSLASH(inner, cur, ip):
     """GForth core 2012: multiply n1 by n2 producing intermediate double-cell result, divide by n3."""
-    n3 = inner.pop_ds()
-    n2 = inner.pop_ds()
-    n1 = inner.pop_ds()
-    assert isinstance(n1, W_IntObject)
-    assert isinstance(n2, W_IntObject)
-    assert isinstance(n3, W_IntObject)
+    n3 = inner.pop_ds_int()
+    n2 = inner.pop_ds_int()
+    n1 = inner.pop_ds_int()
     # Use intermediate double-cell precision
-    product = n1.intval * n2.intval
-    result = int(product / n3.intval)
-    inner.push_ds(int_shortcut(result))
+    product = n1 * n2
+    result = int(product / n3)
+    inner.push_ds_int(result)
     return ip
 
 
 # */MOD ( n1 n2 n3 -- n4 n5 )
 def prim_STARSLASHMOD(inner, cur, ip):
     """GForth core 2012: multiply n1 by n2, divide by n3, giving remainder n4 and quotient n5."""
-    n3 = inner.pop_ds()
-    n2 = inner.pop_ds()
-    n1 = inner.pop_ds()
-    assert isinstance(n1, W_IntObject)
-    assert isinstance(n2, W_IntObject)
-    assert isinstance(n3, W_IntObject)
+    n3 = inner.pop_ds_int()
+    n2 = inner.pop_ds_int()
+    n1 = inner.pop_ds_int()
     # Use intermediate double-cell precision
-    product = n1.intval * n2.intval
-    q = int(product / n3.intval)
-    r = product - (q * n3.intval)
-    inner.push_ds(int_shortcut(r))
-    inner.push_ds(int_shortcut(q))
+    product = n1 * n2
+    q = int(product / n3)
+    r = product - (q * n3)
+    inner.push_ds_int(r)
+    inner.push_ds_int(q)
     return ip
 
 
 # FM/MOD ( d n1 -- n2 n3 )
 def prim_FMSLASHMOD(inner, cur, ip):
     """GForth core 2012: floored division of double d by n1, giving remainder n2 and quotient n3."""
-    n1 = inner.pop_ds()
-    d_hi = inner.pop_ds()
-    d_lo = inner.pop_ds()
-    assert isinstance(n1, W_IntObject)
-    assert isinstance(d_hi, W_IntObject)
-    assert isinstance(d_lo, W_IntObject)
+    n1 = inner.pop_ds_int()
+    d_hi = inner.pop_ds_int()
+    d_lo = inner.pop_ds_int()
 
     # Reconstruct double-cell dividend (simplified: use d_lo for single-cell)
-    dividend = d_lo.intval
-    divisor = n1.intval
+    dividend = d_lo
+    divisor = n1
 
     # Floored division: quotient rounded toward negative infinity
     if divisor == 0:
-        inner.push_ds(ZERO)
-        inner.push_ds(ZERO)
+        inner.push_ds_int(0)
+        inner.push_ds_int(0)
         return ip
 
     # Python's // is floored division
     q = dividend // divisor
     r = dividend - (q * divisor)
 
-    inner.push_ds(int_shortcut(r))
-    inner.push_ds(int_shortcut(q))
+    inner.push_ds_int(r)
+    inner.push_ds_int(q)
     return ip
 
 
 # SM/REM ( d n1 -- n2 n3 )
 def prim_SMSLASHREM(inner, cur, ip):
     """GForth core 2012: symmetric division of double d by n1, giving remainder n2 and quotient n3."""
-    n1 = inner.pop_ds()
-    d_hi = inner.pop_ds()
-    d_lo = inner.pop_ds()
-    assert isinstance(n1, W_IntObject)
-    assert isinstance(d_hi, W_IntObject)
-    assert isinstance(d_lo, W_IntObject)
+    n1 = inner.pop_ds_int()
+    d_hi = inner.pop_ds_int()
+    d_lo = inner.pop_ds_int()
 
     # Reconstruct double-cell dividend (simplified: use d_lo for single-cell)
-    dividend = d_lo.intval
-    divisor = n1.intval
+    dividend = d_lo
+    divisor = n1
 
     if divisor == 0:
-        inner.push_ds(ZERO)
-        inner.push_ds(ZERO)
+        inner.push_ds_int(0)
+        inner.push_ds_int(0)
         return ip
 
     # Symmetric division: quotient rounded toward zero
     q = int(dividend / divisor)
     r = dividend - (q * divisor)
 
-    inner.push_ds(int_shortcut(r))
-    inner.push_ds(int_shortcut(q))
+    inner.push_ds_int(r)
+    inner.push_ds_int(q)
     return ip
 
 
 # UM/MOD ( ud u1 -- u2 u3 )
 def prim_UMSLASHMOD(inner, cur, ip):
     """GForth core 2012: unsigned division of double ud by u1, giving remainder u2 and quotient u3."""
-    u1 = inner.pop_ds()
-    ud_hi = inner.pop_ds()
-    ud_lo = inner.pop_ds()
-    assert isinstance(u1, W_IntObject)
-    assert isinstance(ud_hi, W_IntObject)
-    assert isinstance(ud_lo, W_IntObject)
+    u1 = inner.pop_ds_int()
+    ud_hi = inner.pop_ds_int()
+    ud_lo = inner.pop_ds_int()
 
     # For unsigned division, treat values as unsigned
     # Reconstruct the double-cell unsigned value
     BIT_MASK = (1 << LONG_BIT) - 1
-    lo = ud_lo.intval & BIT_MASK
-    hi = ud_hi.intval & BIT_MASK
+    lo = ud_lo & BIT_MASK
+    hi = ud_hi & BIT_MASK
     dividend = (hi << LONG_BIT) | lo
-    divisor = u1.intval & BIT_MASK
+    divisor = u1 & BIT_MASK
 
     if divisor == 0:
-        inner.push_ds(ZERO)
-        inner.push_ds(ZERO)
+        inner.push_ds_int(0)
+        inner.push_ds_int(0)
         return ip
 
     q = dividend // divisor
     r = dividend % divisor
 
-    inner.push_ds(int_shortcut(r))
-    inner.push_ds(int_shortcut(q))
+    inner.push_ds_int(r)
+    inner.push_ds_int(q)
     return ip
 
 
 # 1+ ( n1 -- n2 )
 def prim_INC(inner, cur, ip):
     """GForth core 2012: add one to n1."""
-    a = inner.pop_ds()
-    assert isinstance(a, W_IntObject)
-    # Inline cache access for JIT optimization (avoid function call overhead)
-    result = a.intval + 1
-    inner.push_ds(int_shortcut(result))
+    a = inner.pop_ds_int()
+    inner.push_ds_int(a + 1)
     return ip
 
 
 # 1- ( n1 -- n2 )
 def prim_DEC(inner, cur, ip):
     """GForth core 2012: subtract one from n1."""
-    a = inner.pop_ds()
-    assert isinstance(a, W_IntObject)
-    # Inline cache access for JIT optimization (avoid function call overhead)
-    result = a.intval - 1
-    inner.push_ds(int_shortcut(result))
+    a = inner.pop_ds_int()
+    inner.push_ds_int(a - 1)
     return ip
 
 
 # M* ( n1 n2 -- d)
 def prim_MUL_STAR(inner, cur, ip):
     """GForth core 2012: d is the signed product of n1 times n2."""
-    a, b = inner.top2_ds()
-    c = a.mul(b)    #c is 128bits
+    a, b = inner.top2_ds_int()
+    c = a * b    #c is 128bits
 
     BIT_MASK = (1 << LONG_BIT) - 1   #111...11 64bits
     SIGN_BIT = 1 << (LONG_BIT - 1)  #100...00 64bits
 
-    low = c.intval & BIT_MASK    # get c's low 64bits
+    low = c & BIT_MASK    # get c's low 64bits
     #high 64bits: 0s, low 64bits: c's low 64bits,total 128bits
 
     if low & SIGN_BIT:  # if highest of c's low bits is 1
@@ -626,153 +571,135 @@ def prim_MUL_STAR(inner, cur, ip):
 
         low = low - (1 << LONG_BIT)  # convert to negative number
 
-    high = c.intval >> LONG_BIT # get c's high 64bits
+    high = c >> LONG_BIT # get c's high 64bits
     #(ex,LONG_BIT = 4) if c = 0100 0000, high = 0000 0100 = c's high 4bits : if c = 1100 1000, high = 1111 1100 = c's high 4bits
 
-    inner.push_ds(int_shortcut(low))
-    inner.push_ds(int_shortcut(high))
+    inner.push_ds_int(low)
+    inner.push_ds_int(high)
 
     return ip
 
 # UM* ( n1 n2 -- d)
 def prim_U_MUL_STAR(inner, cur, ip):
     """GForth core 2012: multiply u1 by u2, giving the unsigned double-cell product ud."""
-    a, b = inner.top2_ds()
-    c = a.mul(b)    #c is 128bits
+    a, b = inner.top2_ds_int()
+    c = a * b    #c is 128bits
 
     BIT_MASK = (1 << LONG_BIT) - 1   #111...11 64bits
 
-    low = c.intval & BIT_MASK    # get c's low 64bits
+    low = c & BIT_MASK    # get c's low 64bits
     #high 64bits: 0s, low 64bits: c's low 64bits,total 128bits
 
-    high = c.intval >> LONG_BIT # get c's high 64bits
+    high = c >> LONG_BIT # get c's high 64bits
     #(ex,LONG_BIT = 4) if c = 0100 0000, high = 0000 0100 = c's high 4bits : if c = 1100 1000, high = 1111 1100 = c's high 4bits
 
-    inner.push_ds(int_shortcut(low))
-    inner.push_ds(int_shortcut(high))
+    inner.push_ds_int(low)
+    inner.push_ds_int(high)
 
     return ip
 
 # AND ( x1 x2 -- x3 )
 def prim_AND(inner, cur, ip):
     """GForth core 2012: x3 is the bit-by-bit logical "and" of x1 with x2."""
-    a, b = inner.top2_ds()
-    assert isinstance(a, W_IntObject)
-    assert isinstance(b, W_IntObject)
-    inner.push_ds(int_shortcut(a.intval & b.intval))
+    a, b = inner.top2_ds_int()
+    inner.push_ds_int(a & b)
     return ip
 
 
 # OR ( x1 x2 -- x3 )
 def prim_OR(inner, cur, ip):
     """GForth core 2012: x3 is the bit-by-bit inclusive-or of x1 with x2."""
-    a, b = inner.top2_ds()
-    assert isinstance(a, W_IntObject)
-    assert isinstance(b, W_IntObject)
-    inner.push_ds(int_shortcut(a.intval | b.intval))
+    a, b = inner.top2_ds_int()
+    inner.push_ds_int(a | b)
     return ip
 
 # XOR ( x1 x2 -- x3 )
 def prim_XOR(inner, cur, ip):
     """GForth core 2012: x3 is the bit-by-bit exclusive-or of x1 with x2."""
-    a, b = inner.top2_ds()
-    assert isinstance(a, W_IntObject)
-    assert isinstance(b, W_IntObject)
-    inner.push_ds(int_shortcut(a.intval ^ b.intval))
+    a, b = inner.top2_ds_int()
+    inner.push_ds_int(a ^ b)
     return ip
 
 
 # FM/MOD ( d1 n1 -- n2 n3 )
 def prim_FM_DIV_MOD(inner, cur, ip):
     """GForth core 2012: divide d1 by n1, giving the floored quotient n3 and the remainder n2."""
-    a = inner.pop_ds()
-    b = inner.pop_ds() # d1's high 64bits
-    c = inner.pop_ds() # d1's low 64bits
-    assert isinstance(a, W_IntObject)
-    assert isinstance(b, W_IntObject)
-    assert isinstance(c, W_IntObject)
+    a = inner.pop_ds_int()
+    b = inner.pop_ds_int() # d1's high 64bits
+    c = inner.pop_ds_int() # d1's low 64bits
     BIT_MASK = (1 << LONG_BIT) - 1   #111...11 64bits
-    d = (b.intval << LONG_BIT) | (c.intval & BIT_MASK) #d is 128bits
-    assert a.intval != 0, "Division by zero"
-    e = d // a.intval #e is 64bits
-    assert  (e >> LONG_BIT) == 0 or (e >> LONG_BIT) == -1, "Overflow in fm/mod"
-    inner.push_ds(int_shortcut(d % a.intval))
-    inner.push_ds(int_shortcut(e))
+    d = (b << LONG_BIT) | (c & BIT_MASK) #d is 128bits
+    assert a != 0, "Division by zero"
+    e = d // a #e is 64bits
+    assert (e >> LONG_BIT) == 0 or (e >> LONG_BIT) == -1, "Overflow in fm/mod"
+    inner.push_ds_int(d % a)
+    inner.push_ds_int(e)
     return ip
 
 # UM/MOD ( ud u1 -- u2 u3 )
 def prim_UM_DIV_MOD(inner, cur, ip):
     """GForth core 2012: divide ud by u1, giving the quotient u3 and the remainder u2."""
-    a = inner.pop_ds()
-    b = inner.pop_ds() # ud's high 64bits
-    c = inner.pop_ds() # ud's low 64bits
-    assert isinstance(a, W_IntObject)
-    assert isinstance(b, W_IntObject)
-    assert isinstance(c, W_IntObject)
+    a = inner.pop_ds_int()
+    b = inner.pop_ds_int() # ud's high 64bits
+    c = inner.pop_ds_int() # ud's low 64bits
     BIT_MASK = (1 << LONG_BIT) - 1   #111...11 64bits
-    SING_BIT = 1 << (LONG_BIT - 1)  #100...00 64bits
-    d = (b.intval << LONG_BIT) | (c.intval & BIT_MASK) #d is 128bits
-    assert a.intval != 0, "Division by zero"
-    e = d // a.intval #e is 64bits (quotient)
-    f = d % a.intval #f is 64bits (remainder)
-    if e & SING_BIT:  # if highest of f's bits is 1
+    SIGN_BIT = 1 << (LONG_BIT - 1)  #100...00 64bits
+    d = (b << LONG_BIT) | (c & BIT_MASK) #d is 128bits
+    assert a != 0, "Division by zero"
+    e = d // a #e is 64bits (quotient)
+    f = d % a #f is 64bits (remainder)
+    if e & SIGN_BIT:  # if highest of e's bits is 1
         e = e - (1 << LONG_BIT)  # convert to negative number
-    if f & SING_BIT:  # if highest of f's bits is 1
+    if f & SIGN_BIT:  # if highest of f's bits is 1
         f = f - (1 << LONG_BIT)  # convert to negative number
-    assert  (e >> LONG_BIT) == 0 or (e >> LONG_BIT) == -1, "Overflow in um/mod"
-    inner.push_ds(int_shortcut(f))
-    inner.push_ds(int_shortcut(e))
+    assert (e >> LONG_BIT) == 0 or (e >> LONG_BIT) == -1, "Overflow in um/mod"
+    inner.push_ds_int(f)
+    inner.push_ds_int(e)
     return ip
 
 # SM/REM ( d1 n1 -- n2 n3 )
 def prim_SM_DIV_REM(inner, cur, ip):
     """GForth core 2012: divide d1 by n1, giving the symmetric quotient n3 and the remainder n2."""
-    a = inner.pop_ds()
-    b = inner.pop_ds() # d1's high 64bits
-    c = inner.pop_ds() # d1's low 64bits
-    assert isinstance(a, W_IntObject)
-    assert isinstance(b, W_IntObject)
-    assert isinstance(c, W_IntObject)
+    a = inner.pop_ds_int()
+    b = inner.pop_ds_int() # d1's high 64bits
+    c = inner.pop_ds_int() # d1's low 64bits
     BIT_MASK = (1 << LONG_BIT) - 1   #111...11 64bits
-    d = (b.intval << LONG_BIT) | (c.intval & BIT_MASK) #d is 128bits
-    assert a.intval != 0, "Division by zero"
-    a_abs = abs(a.intval)
+    d = (b << LONG_BIT) | (c & BIT_MASK) #d is 128bits
+    assert a != 0, "Division by zero"
+    a_abs = abs(a)
     d_abs = abs(d)
     e = d_abs // a_abs
     f = d_abs % a_abs
-    if (d < 0) ^ (a.intval < 0):  # if signs of d and a are different
+    if (d < 0) ^ (a < 0):  # if signs of d and a are different
         e = -e
     if d < 0:
         f = -f
-    inner.push_ds(int_shortcut(f))
-    inner.push_ds(int_shortcut(e))
+    inner.push_ds_int(f)
+    inner.push_ds_int(e)
     return ip
 
 
 # INVERT ( x1 -- x2 )
 def prim_INVERT(inner, cur, ip):
     """GForth core 2012: invert all bits of x1, giving x2 (one's complement)."""
-    x = inner.pop_ds()
-    assert isinstance(x, W_IntObject)
-    inner.push_ds(int_shortcut(~x.intval))
+    x = inner.pop_ds_int()
+    inner.push_ds_int(~x)
     return ip
 
 
 # U< ( u1 u2 -- flag )
 def prim_ULESS(inner, cur, ip):
     """GForth core 2012: flag is true if and only if u1 is less than u2 (unsigned comparison)."""
-    u2 = inner.pop_ds()
-    u1 = inner.pop_ds()
-    assert isinstance(u1, W_IntObject)
-    assert isinstance(u2, W_IntObject)
+    u2 = inner.pop_ds_int()
+    u1 = inner.pop_ds_int()
     # Treat values as unsigned for comparison
     BIT_MASK = (1 << LONG_BIT) - 1
-    val1 = u1.intval & BIT_MASK
-    val2 = u2.intval & BIT_MASK
+    val1 = u1 & BIT_MASK
+    val2 = u2 & BIT_MASK
     if val1 < val2:
-        inner.push_ds(TRUE)
+        inner.push_ds_int(-1)
     else:
-        inner.push_ds(ZERO)
+        inner.push_ds_int(0)
     return ip
 
 # memory management
@@ -781,9 +708,9 @@ def prim_ULESS(inner, cur, ip):
 # ! ( x addr -- )
 def prim_STORE(inner, cur, ip):
     """GForth core 2012: store x at cell address addr."""
-    addr_obj = inner.pop_ds()
-    val_obj = inner.pop_ds()
-    inner.cell_store(addr_obj, val_obj)
+    addr = inner.pop_ds_int()
+    val = inner.pop_ds_int()
+    inner.cell_store(addr, val)
     return ip
 
 
@@ -794,24 +721,26 @@ def prim_2STORE(inner, cur, ip):
     with x2 at a-addr and x1 at the next consecutive cell.
     It is equivalent to the sequence SWAP OVER ! CELL+ !.
     """
-    addr_obj = inner.pop_ds()
-    w_x2 = inner.pop_ds()
-    w_x1 = inner.pop_ds()
-    inner.cell_2store(addr_obj, w_x1, w_x2)
+    addr = inner.pop_ds_int()
+    x2 = inner.pop_ds_int()
+    x1 = inner.pop_ds_int()
+    inner.cell_2store(addr, x1, x2)
     return ip
 
 # @ ( addr -- x )
 def prim_FETCH(inner, cur, ip):
     """GForth core 2012: fetch the cell contents at addr."""
-    addr_obj = inner.pop_ds()
-    inner.push_ds(inner.cell_fetch(addr_obj))
+    addr = inner.pop_ds_int()
+    w_x = inner.cell_fetch(addr)
+    assert isinstance(w_x, W_IntObject)
+    inner.push_ds_int(w_x.intval)
     return ip
 
 
 # ( -- n )
 def prim_CELL(inner, cur, ip):
     """push the size of one cell in address units."""
-    inner.push_ds(CELL_SIZE)
+    inner.push_ds_int(CELL_SIZE_BYTES)
     return ip
 
 
@@ -819,35 +748,32 @@ def prim_CELL(inner, cur, ip):
 def prim_FLOAT(inner, cur, ip):
     """GForth floating 2012: return the size of one float in address units."""
     # In our implementation, floats are stored as W_FloatObject which uses 8 bytes
-    inner.push_ds(W_IntObject(8))
+    inner.push_ds_int(8)
     return ip
 
 
 # FLOATS ( n1 -- n2 )
 def prim_FLOATS(inner, cur, ip):
-    """GForth floating 2012: convert a float count to address units."""
-    n = inner.pop_ds()
-    assert isinstance(n, W_IntObject)
+    """GForth floating 2012: convert  float count to address units."""
+    n = inner.pop_ds_int()
     # Each float is 8 bytes
-    inner.push_ds(W_IntObject(n.intval * 8))
+    inner.push_ds_int(n * 8)
     return ip
 
 
 # ( n -- n )
 def prim_CELLPLUS(inner, cur, ip):
     """GForth core 2012: add one cell to an address."""
-    addr = inner.pop_ds()
-    assert isinstance(addr, W_IntObject)
-    inner.push_ds(addr.add(CELL_SIZE))
+    addr = inner.pop_ds_int()
+    inner.push_ds_int(addr + CELL_SIZE_BYTES)
     return ip
 
 
 # ( n -- n * cell_size )
 def prim_CELLS(inner, cur, ip):
     """GForth core 2012: convert a cell count to address units."""
-    count = inner.pop_ds()
-    assert isinstance(count, W_IntObject)
-    inner.push_ds(count.mul(CELL_SIZE))
+    count = inner.pop_ds_int()
+    inner.push_ds_int(count * CELL_SIZE_BYTES)
     return ip
 
 
@@ -858,10 +784,8 @@ def prim_CELLS(inner, cur, ip):
 def prim_0BRANCH(inner, cur, ip):
     """GForth core 2012: branch to target when flag is zero."""
     origin_ip = ip - 1
-    w_x = inner.pop_ds()
-    assert isinstance(w_x, W_IntObject)
-    # Direct field access for better optimization
-    if w_x.intval == 0:
+    x = inner.pop_ds_int()
+    if x == 0:
         w_target = promote(cur.lits[origin_ip])
         assert isinstance(w_target, W_IntObject)
         target_ip = w_target.intval
@@ -887,12 +811,10 @@ def prim_BRANCH(inner, cur, ip):
 # (DO) ( limit start -- )
 def prim_DO_RUNTIME(inner, cur, ip):
     """Runtime for DO: pop limit and start from data stack, push to loop stack."""
-    start = inner.pop_ds()
-    limit = inner.pop_ds()
-    assert isinstance(start, W_IntObject)
-    assert isinstance(limit, W_IntObject)
+    start = inner.pop_ds_int()
+    limit = inner.pop_ds_int()
     # Push to dedicated loop stack (raw integers, no boxing!)
-    inner.push_loop(limit.intval, start.intval)
+    inner.push_loop(limit, start)
     return ip
 
 
@@ -920,13 +842,11 @@ def prim_LOOP_RUNTIME(inner, cur, ip):
 # (+LOOP) ( n -- ) ( R: limit counter -- limit counter+n | )
 def prim_PLUSLOOP_RUNTIME(inner, cur, ip):
     """Runtime for +LOOP: increment counter by n and conditionally branch back."""
-    increment = inner.pop_ds()
-    assert isinstance(increment, W_IntObject)
+    inc_val = inner.pop_ds_int()
 
     # Use dedicated integer loop stack - no object allocation!
     counter_val = inner.peek_loop_counter(0)
     limit_val = inner.peek_loop_limit(0)
-    inc_val = increment.intval
     new_counter_val = counter_val + inc_val
 
     # Check if loop should continue based on crossing the boundary
@@ -981,7 +901,7 @@ def prim_I(inner, cur, ip):
     """Get the current loop counter (innermost loop)."""
     # Read from dedicated integer loop stack
     counter_val = inner.peek_loop_counter(0)
-    inner.push_ds(int_shortcut(counter_val))
+    inner.push_ds_int(counter_val)
     return ip
 
 
@@ -990,7 +910,7 @@ def prim_J(inner, cur, ip):
     """Get the outer loop counter (second innermost loop)."""
     # Read from dedicated integer loop stack (depth 1 = outer loop)
     counter_val = inner.peek_loop_counter(1)
-    inner.push_ds(int_shortcut(counter_val))
+    inner.push_ds_int(counter_val)
     return ip
 
 
@@ -1000,14 +920,14 @@ def prim_J(inner, cur, ip):
 # BASE@ ( -- u )
 def prim_BASE_FETCH(inner, cur, ip):
     """GForth core 2012: return the current conversion base."""
-    inner.push_ds(inner.base)
+    inner.push_ds_int(inner.base)
     return ip
 
 
 # BASE! ( u -- )
 def prim_BASE_STORE(inner, cur, ip):
     """GForth core 2012: set the conversion base to u."""
-    u = inner.pop_ds()
+    u = inner.pop_ds_int()
     inner.base = u
     return ip
 
@@ -1015,28 +935,28 @@ def prim_BASE_STORE(inner, cur, ip):
 # DECIMAL ( -- )
 def prim_DECIMAL(inner, cur, ip):
     """GForth core 2012: set BASE to decimal (radix 10)."""
-    inner.base = DECIMAL
+    inner.base = 10
     return ip
 
 
 # HEX ( -- )
 def prim_HEX(inner, cur, ip):
     """GForth core 2012: set BASE to hexadecimal (radix 16)."""
-    inner.base = HEX
+    inner.base = 16
     return ip
 
 
 # OCTAL ( -- )
 def prim_OCTAL(inner, cur, ip):
     """GForth core 2012: set BASE to octal (radix 8)."""
-    inner.base = OCTAL
+    inner.base = 8
     return ip
 
 
 # BINARY ( -- )
 def prim_BINARY(inner, cur, ip):
     """GForth core 2012: set BASE to binary (radix 2)."""
-    inner.base = BINARY
+    inner.base = 2
     return ip
 
 
@@ -1054,13 +974,13 @@ def prim_NUMSIGN(inner, cur, ip):
     if not inner._pno_active:
         inner.print_str(W_StringObject("# outside <# #>"))
         return ip
-    x = inner.pop_ds()
+    x = inner.pop_ds_int()
     assert isinstance(x, W_IntObject)
-    base = inner.base.intval
-    q = x.getvalue() // base
-    r = x.getvalue() % base
+    base = inner.base
+    q = x // base
+    r = x % base
     inner._pno_buf.insert(0, digit_to_char(r))
-    inner.push_ds(int_shortcut(q))
+    inner.push_ds_int(q)
     return ip
 
 
@@ -1073,30 +993,27 @@ def prim_NUMSIGN_S(inner, cur, ip):
         return ip
 
     # Pop double-cell number (d.lo d.hi) where d.hi is on top
-    hi = inner.pop_ds()
-    lo = inner.pop_ds()
-    assert isinstance(hi, W_IntObject)
-    assert isinstance(lo, W_IntObject)
+    hi = inner.pop_ds_int()
+    lo = inner.pop_ds_int()
 
     # For simplified implementation, use the low-order cell
     # (assumes the number fits in single cell)
-    value = lo.getvalue()
 
-    base = inner.base.intval
+    base = inner.base
     # Convert all remaining digits
-    if value == 0:
+    if lo == 0:
         # At least one digit for zero
         inner._pno_buf.insert(0, digit_to_char(0))
     else:
-        while value > 0:
-            q = value // base
-            r = value % base
+        while lo > 0:
+            q = lo // base
+            r = lo % base
             inner._pno_buf.insert(0, digit_to_char(r))
-            value = q
+            lo = q
 
     # Push double-cell zero (0 0)
-    inner.push_ds(ZERO)
-    inner.push_ds(ZERO)
+    inner.push_ds_int(0)
+    inner.push_ds_int(0)
     return ip
 
 
@@ -1106,9 +1023,8 @@ def prim_HOLD(inner, cur, ip):
     if not inner._pno_active:
         inner.print_str(W_StringObject("HOLD outside <# #>"))
         return ip
-    ch = inner.pop_ds()
-    assert isinstance(ch, W_IntObject)
-    inner._pno_buf.insert(0, chr(ch.getvalue()))
+    ch = inner.pop_ds_int()
+    inner._pno_buf.insert(0, chr(ch))
     return ip
 
 
@@ -1118,9 +1034,8 @@ def prim_SIGN(inner, cur, ip):
     if not inner._pno_active:
         inner.print_str(W_StringObject("SIGN outside <# #>"))
         return ip
-    n = inner.pop_ds()
-    assert isinstance(n, W_IntObject)
-    if n.intval < 0:
+    n = inner.pop_ds_int()
+    if n < 0:
         # Append to put the sign at the end (left side of the final string)
         inner._pno_buf.append('-')
     return ip
@@ -1132,7 +1047,7 @@ def prim_NUMGREATER(inner, cur, ip):
     if not inner._pno_active:
         inner.print_str(W_StringObject("#> outside <# #>"))
         return ip
-    _ = inner.pop_ds()
+    _ = inner.pop_ds_int()
     s = "".join(inner._pno_buf)
     inner._pno_active = False
     inner.push_ds(W_StringObject(s))
@@ -1153,21 +1068,19 @@ def prim_TYPE(inner, cur, ip):
 # . ( n -- )
 def prim_DOT(inner, cur, ip):
     """GForth core 2012: display n according to current BASE."""
-    x = inner.pop_ds()
-    assert isinstance(x, W_IntObject)
+    x = inner.pop_ds_int()
     stdin, stdout, stderr = create_stdio()
-    stdout.write(str(x.getvalue()))
+    stdout.write(str(x))
     stdout.write(' ')
     #stdout.flush()
     return ip
 
 def prim_U_DOT(inner, cur, ip):
     """GForth core 2012: display u in field format according to current BASE."""
-    x = inner.pop_ds()
-    assert isinstance(x, W_IntObject)
+    x = inner.pop_ds_int()
     stdin, stdout, stderr = create_stdio()
     BIT_MASK = (1 << LONG_BIT) - 1  #111...11 64bits
-    u_value = x.intval & BIT_MASK
+    u_value = x & BIT_MASK
     stdout.write(str(u_value))
     stdout.write(' ')
     #stdout.flush()
@@ -1177,10 +1090,9 @@ def prim_U_DOT(inner, cur, ip):
 # EMIT ( char -- )
 def prim_EMIT(inner, cur, ip):
     """GForth core 2012: display character with char code."""
-    x = inner.pop_ds()
-    assert isinstance(x, W_IntObject)
+    x = inner.pop_ds_int()
     stdin, stdout, stderr = create_stdio()
-    stdout.write(chr(x.getvalue()))
+    stdout.write(chr(x))
     stdout.flush()
     return ip
 
@@ -1196,9 +1108,7 @@ def prim_SPACE(inner, cur, ip):
 # SPACES ( n -- )
 def prim_SPACES(inner, cur, ip):
     """GForth core 2012: display n spaces."""
-    n = inner.pop_ds()
-    assert isinstance(n, W_IntObject)
-    count = n.intval
+    count = inner.pop_ds_int()
     if count > 0:
         stdin, stdout, stderr = create_stdio()
         for i in range(count):
@@ -1218,11 +1128,10 @@ def prim_CR(inner, cur, ip):
 # U. ( u -- )
 def prim_UDOT(inner, cur, ip):
     """GForth core 2012: display u as unsigned according to current BASE."""
-    x = inner.pop_ds()
-    assert isinstance(x, W_IntObject)
+    x = inner.pop_ds_int()
     # Treat as unsigned
     BIT_MASK = (1 << LONG_BIT) - 1
-    val = x.intval & BIT_MASK
+    val = x & BIT_MASK
     stdin, stdout, stderr = create_stdio()
     stdout.write(str(val))
     stdout.write(' ')
@@ -1236,19 +1145,17 @@ def prim_KEY(inner, cur, ip):
     ch = stdin.read(1)
     if len(ch) > 0:
         # Index into string to get a single character for ord()
-        inner.push_ds(W_IntObject(ord(ch[0])))
+        inner.push_ds_int(ord(ch[0]))
     else:
-        inner.push_ds(W_IntObject(0))
+        inner.push_ds_int(0)
     return ip
 
 
 # ACCEPT ( c-addr +n1 -- +n2 )
 def prim_ACCEPT(inner, cur, ip):
     """GForth core 2012: receive a string of at most +n1 characters from input."""
-    max_len = inner.pop_ds()
-    c_addr = inner.pop_ds()
-    assert isinstance(max_len, W_IntObject)
-    assert isinstance(c_addr, W_IntObject)
+    max_count = inner.pop_ds_int()
+    addr = inner.pop_ds_int()
 
     stdin, stdout, stderr = create_stdio()
     line = stdin.readline()
@@ -1259,38 +1166,33 @@ def prim_ACCEPT(inner, cur, ip):
         assert new_len >= 0  # Help RPython prove non-negative
         line = line[:new_len]
 
-    # Limit to max_len
-    max_count = max_len.intval
+    # Limit to max_count
     line_len = len(line)
     if line_len > max_count and max_count >= 0:
         line = line[:max_count]
 
-    # Store characters at c-addr
-    addr = c_addr.intval
+    # Store characters at addr
     final_len = len(line)
     for j in range(final_len):
-        inner.cell_store(W_IntObject(addr + j), W_IntObject(ord(line[j])))
+        inner.cell_store(addr+j, ord(line[j]))
 
-    inner.push_ds(W_IntObject(final_len))
+    inner.push_ds_int(final_len)
     return ip
 
 # U.R ( u n -- )
 def prim_UDOTR(inner, cur, ip):
     """Display unsigned number right-justified in n-character field."""
-    n = inner.pop_ds()
-    u = inner.pop_ds()
-    assert isinstance(n, W_IntObject)
-    assert isinstance(u, W_IntObject)
+    n = inner.pop_ds_int()
+    u = inner.pop_ds_int()
 
     # Get unsigned value
-    val = u.intval
-    if val < 0:
+    if u < 0:
         # Convert to unsigned (handle as positive for display)
         BIT_MASK = (1 << LONG_BIT) - 1  # 64-bit mask
-        val = val & BIT_MASK
+        u = u & BIT_MASK
 
-    num_str = str(val)
-    width = n.getvalue()
+    num_str = str(u)
+    width = n
 
     stdin, stdout, stderr = create_stdio()
     # Right-justify: add leading spaces if needed
@@ -1306,7 +1208,12 @@ def prim_UDOTR(inner, cur, ip):
 def prim_LIT(inner, cur, ip):
     """GForth core 2012: push the next compilation literal."""
     lit = promote(cur.lits[ip - 1])
-    inner.push_ds(lit)
+    if isinstance(lit, W_IntObject):
+        inner.push_ds_int(lit.intval)
+    elif isinstance(lit, W_FloatObject):
+        inner.push_ds_float(lit.floatval)
+    else:
+        inner.push_ds(lit)
     return ip
 
 
@@ -1320,12 +1227,11 @@ def prim_EXIT(inner, cur, ip):
 # (ABORT") ( flag c-addr u -- )
 def prim_ABORT_QUOTE_RUNTIME(inner, cur, ip):
     """Runtime for ABORT" - abort if flag is non-zero, printing message."""
-    u = inner.pop_ds()
+    u = inner.pop_ds_int()
     c_addr = inner.pop_ds()
-    flag = inner.pop_ds()
-    assert isinstance(flag, W_IntObject)
+    flag = inner.pop_ds_int()
 
-    if flag.intval != 0:
+    if flag != 0:
         # Print the abort message
         if isinstance(c_addr, W_StringObject):
             msg = c_addr.strval
@@ -1349,68 +1255,60 @@ def prim_ABORT_QUOTE_RUNTIME(inner, cur, ip):
 # F* ( f1 f2 -- f3 )
 def prim_FMUL(inner, cur, ip):
     """Multiply two floating point numbers."""
-    f2 = inner.pop_ds()
-    f1 = inner.pop_ds()
-    assert isinstance(f1, W_FloatObject)
-    assert isinstance(f2, W_FloatObject)
-    inner.push_ds(f1.mul(f2))
+    f2 = inner.pop_ds_float()
+    f1 = inner.pop_ds_float()
+    #assert isinstance(f1, W_FloatObject)
+    #assert isinstance(f2, W_FloatObject)
+    inner.push_ds_float(f1 * f2)
     return ip
 
 
 # F+ ( f1 f2 -- f3 )
 def prim_FADD(inner, cur, ip):
     """Add two floating point numbers."""
-    f2 = inner.pop_ds()
-    f1 = inner.pop_ds()
-    assert isinstance(f1, W_FloatObject)
-    assert isinstance(f2, W_FloatObject)
-    inner.push_ds(f1.add(f2))
+    f2 = inner.pop_ds_float()
+    f1 = inner.pop_ds_float()
+    inner.push_ds_float(f1 + f2)
     return ip
 
 
 # F- ( f1 f2 -- f3 )
 def prim_FSUB(inner, cur, ip):
     """Subtract f2 from f1."""
-    f2 = inner.pop_ds()
-    f1 = inner.pop_ds()
-    assert isinstance(f1, W_FloatObject)
-    assert isinstance(f2, W_FloatObject)
-    inner.push_ds(f1.sub(f2))
+    f2 = inner.pop_ds_float()
+    f1 = inner.pop_ds_float()
+    inner.push_ds_float(f1 - f2)
     return ip
 
 
 # F/ ( f1 f2 -- f3 )
 def prim_FDIV(inner, cur, ip):
     """Divide f1 by f2."""
-    f2 = inner.pop_ds()
-    f1 = inner.pop_ds()
-    assert isinstance(f1, W_FloatObject)
-    assert isinstance(f2, W_FloatObject)
-    inner.push_ds(f1.div(f2))
+    f2 = inner.pop_ds_float()
+    f1 = inner.pop_ds_float()
+    inner.push_ds_float(f1 / f2)
     return ip
 
 
 # F> ( f1 f2 -- flag )
 def prim_FGREATER(inner, cur, ip):
     """Compare if f1 > f2."""
-    f2 = inner.pop_ds()
-    f1 = inner.pop_ds()
-    assert isinstance(f1, W_FloatObject)
-    assert isinstance(f2, W_FloatObject)
-    if f1.gt(f2):
-        inner.push_ds(TRUE)
+    f2 = inner.pop_ds_float()
+    f1 = inner.pop_ds_float()
+    if f1 > f2:
+        inner.push_ds_int(-1)
     else:
-        inner.push_ds(ZERO)
+        inner.push_ds_int(0)
     return ip
 
 
 # FSWAP ( f1 f2 -- f2 f1 )
 def prim_FSWAP(inner, cur, ip):
     """Exchange the top two floating point stack items."""
-    f2 = inner.pop_ds()
-    f1 = inner.pop_ds()
-    inner.push_ds(f2)
-    inner.push_ds(f1)
+    f2 = inner.pop_ds_float()
+    f1 = inner.pop_ds_float()
+    inner.push_ds_float(f2)
+    inner.push_ds_float(f1)
     return ip
 
 
@@ -1419,7 +1317,7 @@ def prim_FSWAP(inner, cur, ip):
 # >R ( x -- ) ( R: -- x )
 def prim_TORETURN(inner, cur, ip):
     """GForth core 2012: move x from data stack to return stack."""
-    x = inner.pop_ds()
+    x = inner.pop_ds_int()
     inner.push_rs(x)
     return ip
 
@@ -1428,24 +1326,23 @@ def prim_TORETURN(inner, cur, ip):
 def prim_FROMRETURN(inner, cur, ip):
     """GForth core 2012: move x from return stack to data stack."""
     x = inner.pop_rs()
-    inner.push_ds(x)
+    inner.push_ds_int(x)
     return ip
 
 
 # R@ ( -- x ) ( R: x -- x )
 def prim_RFETCH(inner, cur, ip):
     """GForth core 2012: copy x from top of return stack to data stack."""
-    x = inner.pop_rs()
-    inner.push_rs(x)
-    inner.push_ds(x)
+    x = inner.peek_rs(0)
+    inner.push_ds_int(x)
     return ip
 
 
 # 2>R ( x1 x2 -- ) ( R: -- x1 x2 )
 def prim_2TORETURN(inner, cur, ip):
     """GForth core 2012: move x1 and x2 from data stack to return stack."""
-    x2 = inner.pop_ds()
-    x1 = inner.pop_ds()
+    x2 = inner.pop_ds_int()
+    x1 = inner.pop_ds_int()
     inner.push_rs(x1)
     inner.push_rs(x2)
     return ip
@@ -1456,8 +1353,8 @@ def prim_2FROMRETURN(inner, cur, ip):
     """GForth core 2012: move x1 and x2 from return stack to data stack."""
     x2 = inner.pop_rs()
     x1 = inner.pop_rs()
-    inner.push_ds(x1)
-    inner.push_ds(x2)
+    inner.push_ds_int(x1)
+    inner.push_ds_int(x2)
     return ip
 
 
@@ -1468,39 +1365,34 @@ def prim_2RFETCH(inner, cur, ip):
     x1 = inner.pop_rs()
     inner.push_rs(x1)
     inner.push_rs(x2)
-    inner.push_ds(x1)
-    inner.push_ds(x2)
+    inner.push_ds_int(x1)
+    inner.push_ds_int(x2)
     return ip
-
-
-# Stack manipulation
 
 # PICK ( xu ... x1 x0 u -- xu ... x1 x0 xu )
 def prim_PICK(inner, cur, ip):
     """Copy the u-th stack item to the top (0 PICK is equivalent to DUP)."""
-    u = inner.pop_ds()
-    assert isinstance(u, W_IntObject)
-    u_val = u.getvalue()
+    u = inner.pop_ds_int()
 
     # We need to access virtualizable stack without direct indexing
     # Pop items off, find the one we want, and push them all back
-    if u_val == 0:
+    if u == 0:
         # 0 PICK is just DUP
-        item = inner.pop_ds()
-        inner.push_ds(item)
-        inner.push_ds(item)
+        item = inner.pop_ds_int()
+        inner.push_ds_int(item)
+        inner.push_ds_int(item)
     else:
         # Pop u_val+1 items to get to the target
         temp = []
-        for i in range(u_val + 1):
-            temp.append(inner.pop_ds())
+        for i in range(u + 1):
+            temp.append(inner.pop_ds_int())
         # The item we want is at the end
-        item = temp[u_val]
+        item = temp[u]
         # Push everything back
-        for i in range(u_val, -1, -1):
-            inner.push_ds(temp[i])
+        for i in range(u, -1, -1):
+            inner.push_ds_int(temp[i])
         # Push the picked item
-        inner.push_ds(item)
+        inner.push_ds_int(item)
     return ip
 
 
@@ -1509,36 +1401,36 @@ def prim_PICK(inner, cur, ip):
 # S>F ( n -- ) ( F: -- f )
 def prim_S2F(inner, cur, ip):
     """Convert signed integer to float."""
-    n = inner.pop_ds()
-    assert isinstance(n, W_IntObject)
-    inner.push_ds(W_FloatObject(float(n.getvalue())))
+    n = inner.pop_ds_int()
+    inner.push_ds_float(float(n))
     return ip
 
 
 # F! ( f-addr -- ) ( F: f -- )
 def prim_FSTORE(inner, cur, ip):
     """Store float at address."""
-    addr_obj = inner.pop_ds()
-    val_obj = inner.pop_ds()
-    inner.float_store(addr_obj, val_obj)
+    addr = inner.pop_ds_int()
+    val = inner.pop_ds_float()
+    inner.float_store(addr, val)
     return ip
 
 
 # F@ ( f-addr -- ) ( F: -- f )
 def prim_FFETCH(inner, cur, ip):
     """Fetch float from address."""
-    addr_obj = inner.pop_ds()
-    inner.push_ds(inner.float_fetch(addr_obj))
+    addr = inner.pop_ds_int()
+    w_float = inner.float_fetch(addr)
+    assert isinstance(w_float, W_FloatObject)
+    inner.push_ds_float(w_float.floatval)
     return ip
 
 
 # FDUP ( F: f -- f f )
 def prim_FDUP(inner, cur, ip):
     """Duplicate float on stack."""
-    f = inner.pop_ds()
-    assert isinstance(f, W_FloatObject)
-    inner.push_ds(f)
-    inner.push_ds(f)
+    f = inner.pop_ds_float()
+    inner.push_ds_float(f)
+    inner.push_ds_float(f)
     return ip
 
 
@@ -1564,11 +1456,14 @@ def prim_TOBODY(inner, cur, ip):
     # the body is in the first literal of the code thread
     if word.thread is not None and len(word.thread.lits) > 0:
         body = word.thread.lits[0]
-        inner.push_ds(body)
+        if isinstance(body, W_IntObject):
+            inner.push_ds_int(body.intval)
+        else:
+            inner.push_ds(body)
     else:
         # For primitive words, there's no body
         # Push 0 or raise an error
-        inner.push_ds(W_IntObject(0))
+        inner.push_ds_int(0)
     return ip
 
 
@@ -1577,45 +1472,38 @@ def prim_TOBODY(inner, cur, ip):
 # FILL ( c-addr u char -- )
 def prim_FILL(inner, cur, ip):
     """GForth core 2012: fill u bytes of memory starting at c-addr with char."""
-    char = inner.pop_ds()
-    u = inner.pop_ds()
-    c_addr = inner.pop_ds()
-    assert isinstance(char, W_IntObject)
-    assert isinstance(u, W_IntObject)
-    assert isinstance(c_addr, W_IntObject)
+    char = inner.pop_ds_int()
+    u = inner.pop_ds_int()
+    addr = inner.pop_ds_int()
 
     # Fill memory with char
-    addr = c_addr.intval
-    count = u.intval
-    for i in range(count):
-        inner.cell_store(W_IntObject(addr + i), char)
+    for i in range(u):
+        inner.cell_store(addr+i, char)
     return ip
 
 
 # MOVE ( addr1 addr2 u -- )
 def prim_MOVE(inner, cur, ip):
     """GForth core 2012: copy u bytes from addr1 to addr2."""
-    u = inner.pop_ds()
-    addr2 = inner.pop_ds()
-    addr1 = inner.pop_ds()
-    assert isinstance(u, W_IntObject)
-    assert isinstance(addr2, W_IntObject)
-    assert isinstance(addr1, W_IntObject)
+    u = inner.pop_ds_int()
+    addr2 = inner.pop_ds_int()
+    addr1 = inner.pop_ds_int()
 
     # Copy u bytes from addr1 to addr2
     # Handle overlapping regions by using a temporary buffer
-    src = addr1.intval
-    dst = addr2.intval
-    count = u.intval
+    src = addr1
+    dst = addr2
 
     # Read all values first (in case of overlap)
     values = []
-    for i in range(count):
-        values.append(inner.cell_fetch(W_IntObject(src + i)))
+    for i in range(u):
+        w_x = inner.cell_fetch(src+i)
+        assert isinstance(w_x, W_IntObject)
+        values.append(w_x.intval)
 
     # Write to destination
-    for i in range(count):
-        inner.cell_store(W_IntObject(dst + i), values[i])
+    for i in range(u):
+        inner.cell_store(dst+i, values[i])
     return ip
 
 
@@ -1624,72 +1512,67 @@ def prim_MOVE(inner, cur, ip):
 # +! ( n|u a-addr -- )
 def prim_PLUSSTORE(inner, cur, ip):
     """GForth core 2012: add n to the value stored at a-addr."""
-    addr_obj = inner.pop_ds()
-    n = inner.pop_ds()
-    assert isinstance(addr_obj, W_IntObject)
-    assert isinstance(n, W_IntObject)
+    addr = inner.pop_ds_int()
+    n = inner.pop_ds_int()
     # Fetch current value, add n, store back
-    current = inner.cell_fetch(addr_obj)
+    current = inner.cell_fetch(addr)
     assert isinstance(current, W_IntObject)
-    new_val = W_IntObject(current.intval + n.intval)
-    inner.cell_store(addr_obj, new_val)
+    new_val = current.intval + n
+    inner.cell_store(addr, new_val)
     return ip
 
 
 # 2@ ( a-addr -- x1 x2 )
 def prim_2FETCH(inner, cur, ip):
     """GForth core 2012: fetch the cell pair stored at a-addr."""
-    addr_obj = inner.pop_ds()
-    assert isinstance(addr_obj, W_IntObject)
+    addr = inner.pop_ds_int()
     # Actual storage from cell_2store: x1 at addr, x2 at addr+cell
-    x1 = inner.cell_fetch(addr_obj)
-    addr2 = W_IntObject(addr_obj.intval + inner.cell_size_bytes)
+    x1 = inner.cell_fetch(addr)
+    addr2 = addr + inner.cell_size_bytes
     x2 = inner.cell_fetch(addr2)
     # Push x1 first, then x2 to get stack ( x1 x2 )
-    inner.push_ds(x1)
-    inner.push_ds(x2)
+    assert isinstance(x1, W_IntObject)
+    assert isinstance(x2, W_IntObject)
+    inner.push_ds_int(x1.intval)
+    inner.push_ds_int(x2.intval)
     return ip
 
 
 # C! ( char c-addr -- )
 def prim_C_STORE(inner, cur, ip):
     """GForth core 2012: store char at c-addr."""
-    addr_obj = inner.pop_ds()
-    char = inner.pop_ds()
-    assert isinstance(addr_obj, W_IntObject)
-    assert isinstance(char, W_IntObject)
+    addr = inner.pop_ds_int()
+    char = inner.pop_ds_int()
     # Store just the character (we'll use cell_store for simplicity)
-    inner.cell_store(addr_obj, char)
+    inner.cell_store(addr, char)
     return ip
 
 
 # C@ ( c-addr -- char )
 def prim_C_FETCH(inner, cur, ip):
     """GForth core 2012: fetch the character stored at c-addr."""
-    addr_obj = inner.pop_ds()
-    assert isinstance(addr_obj, W_IntObject)
-    char = inner.cell_fetch(addr_obj)
-    inner.push_ds(char)
+    addr = inner.pop_ds_int()
+    char = inner.cell_fetch(addr)
+    assert isinstance(char, W_IntObject)
+    inner.push_ds_int(char.intval)
     return ip
 
 
 # CHAR+ ( c-addr1 -- c-addr2 )
 def prim_CHAR_PLUS(inner, cur, ip):
     """GForth core 2012: add the size of a character to c-addr1."""
-    addr = inner.pop_ds()
-    assert isinstance(addr, W_IntObject)
+    addr = inner.pop_ds_int()
     # In our implementation, characters are 1 byte
-    inner.push_ds(W_IntObject(addr.intval + 1))
+    inner.push_ds_int(addr + 1)
     return ip
 
 
 # CHARS ( n1 -- n2 )
 def prim_CHARS(inner, cur, ip):
     """GForth core 2012: convert n1 characters to address units."""
-    n = inner.pop_ds()
-    assert isinstance(n, W_IntObject)
+    n = inner.pop_ds_int()
     # In our implementation, 1 char = 1 address unit
-    inner.push_ds(n)
+    inner.push_ds_int(n)
     return ip
 
 
@@ -1706,13 +1589,11 @@ def prim_ALIGN(inner, cur, ip):
 # ALIGNED ( addr -- a-addr )
 def prim_ALIGNED(inner, cur, ip):
     """GForth core 2012: return the aligned address."""
-    addr = inner.pop_ds()
-    assert isinstance(addr, W_IntObject)
-    addr_val = addr.intval
+    addr_val = inner.pop_ds_int()
     remainder = addr_val % inner.cell_size_bytes
     if remainder != 0:
         addr_val += (inner.cell_size_bytes - remainder)
-    inner.push_ds(W_IntObject(addr_val))
+    inner.push_ds_int(addr_val)
     return ip
 
 
@@ -1721,15 +1602,15 @@ def prim_ALIGNED(inner, cur, ip):
 # HERE ( -- addr )
 def prim_HERE(inner, cur, ip):
     """GForth core 2012: return the address of the next available data space location."""
-    inner.push_ds(W_IntObject(inner.here))
+    inner.push_ds_int(inner.here)
     return ip
 
 
 # , ( x -- )
 def prim_COMMA(inner, cur, ip):
     """GForth core 2012: reserve one cell of data space and store x in it."""
-    x = inner.pop_ds()
-    addr = W_IntObject(inner.here)
+    x = inner.pop_ds_int()
+    addr = inner.here
     inner.cell_store(addr, x)
     inner.here += inner.cell_size_bytes
     return ip
@@ -1738,11 +1619,9 @@ def prim_COMMA(inner, cur, ip):
 # C, ( char -- )
 def prim_C_COMMA(inner, cur, ip):
     """GForth core 2012: reserve one character of data space and store char in it."""
-    char = inner.pop_ds()
-    assert isinstance(char, W_IntObject)
+    char = inner.pop_ds_int()
     # For simplicity, we'll use cell_store but only increment by 1 byte
-    addr = W_IntObject(inner.here)
-    assert isinstance(char, W_IntObject)
+    addr = inner.here
     inner.cell_store(addr, char)
     inner.here += 1
     return ip
@@ -1751,9 +1630,8 @@ def prim_C_COMMA(inner, cur, ip):
 # ALLOT ( n -- )
 def prim_ALLOT(inner, cur, ip):
     """GForth core 2012: reserve n address units of data space."""
-    n = inner.pop_ds()
-    assert isinstance(n, W_IntObject)
-    inner.here += n.intval
+    n = inner.pop_ds_int()
+    inner.here += n
     return ip
 
 
@@ -1761,12 +1639,12 @@ def prim_ALLOT(inner, cur, ip):
 
 # = ( x1 x2 -- flag )
 def prim_EQUAL(inner, cur, ip):
-    x2 = inner.pop_ds()
-    x1 = inner.pop_ds()
-    if x1.eq(x2):
-        inner.push_ds(TRUE)
+    x2 = inner.pop_ds_int()
+    x1 = inner.pop_ds_int()
+    if x1 == x2:
+        inner.push_ds_int(-1)
     else:
-        inner.push_ds(ZERO)
+        inner.push_ds_int(0)
     return ip
 
 
