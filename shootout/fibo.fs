@@ -1,4 +1,4 @@
-30 constant NUM
+40 constant NUM
 
 \ compute fibonacci numbers
 : fib  recursive
@@ -14,3 +14,5 @@
     then ;
 
 NUM fib 1 u.r cr
+
+bye
