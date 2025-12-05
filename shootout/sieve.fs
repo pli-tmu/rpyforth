@@ -6,7 +6,7 @@
 \ find and count all primes from 2 to 8192
 
 \ read NUM from last command line argument
-100000 constant NUM
+10000 constant NUM
 
 \ we search for primes up to this SIZE
 8192 constant SIZE
@@ -65,7 +65,9 @@ Flags SIZE + constant EndFlags
 
 
 \ now print count of how many Flags are now "true"
+UTIME 2>R
 ." Count: " benchmark  1 u.r cr
+UTIME 2R> D- ." Elapsed: " D. ." microseconds" CR
 
 
 \ PPRIMES
