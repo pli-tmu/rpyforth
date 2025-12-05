@@ -1,3 +1,3 @@
 #!/usr/bin/env sh
 
-PYTHONPATH=`pwd`:`pwd`/pypy python rpyforth/targetrpyforth.py $1
+PYTHONPATH=`pwd`:`pwd`/pypy pypy rpyforth/targetrpyforth.py $1
