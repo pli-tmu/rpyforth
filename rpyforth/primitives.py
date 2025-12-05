@@ -1,5 +1,5 @@
 from rpython.rlib.rfile import create_stdio
-from rpython.rlib.jit import promote, unroll_safe
+from rpython.rlib.jit import promote, unroll_safe, dont_look_inside
 from rpython.rlib.rfloat import formatd
 
 from rpyforth.objects import (
@@ -1114,6 +1114,7 @@ def prim_NUMGREATER(inner, cur, ip):
 
 
 # TYPE ( c-addr u -- )
+@dont_look_inside
 def prim_TYPE(inner, cur, ip):
     """GForth core 2012: display the character string."""
     w_s = inner.pop_ds()
@@ -1125,6 +1126,7 @@ def prim_TYPE(inner, cur, ip):
 
 
 # . ( n -- )
+@dont_look_inside
 def prim_DOT(inner, cur, ip):
     """GForth core 2012: display n according to current BASE."""
     x = inner.pop_ds_int()
@@ -1134,6 +1136,7 @@ def prim_DOT(inner, cur, ip):
     #stdout.flush()
     return ip
 
+@dont_look_inside
 def prim_U_DOT(inner, cur, ip):
     """GForth core 2012: display u in field format according to current BASE."""
     x = inner.pop_ds_int()
@@ -1147,6 +1150,7 @@ def prim_U_DOT(inner, cur, ip):
 
 
 # EMIT ( char -- )
+@dont_look_inside
 def prim_EMIT(inner, cur, ip):
     """GForth core 2012: display character with char code."""
     x = inner.pop_ds_int()
@@ -1157,6 +1161,7 @@ def prim_EMIT(inner, cur, ip):
 
 
 # SPACE ( -- )
+@dont_look_inside
 def prim_SPACE(inner, cur, ip):
     """GForth core 2012: display one space."""
     stdin, stdout, stderr = create_stdio()
@@ -1165,6 +1170,7 @@ def prim_SPACE(inner, cur, ip):
 
 
 # SPACES ( n -- )
+@dont_look_inside
 def prim_SPACES(inner, cur, ip):
     """GForth core 2012: display n spaces."""
     count = inner.pop_ds_int()
@@ -1176,6 +1182,7 @@ def prim_SPACES(inner, cur, ip):
 
 
 # CR ( -- )
+@dont_look_inside
 def prim_CR(inner, cur, ip):
     """GForth core 2012: cause subsequent output to appear at the beginning of the next line."""
     stdin, stdout, stderr = create_stdio()
@@ -1185,6 +1192,7 @@ def prim_CR(inner, cur, ip):
 
 
 # U. ( u -- )
+@dont_look_inside
 def prim_UDOT(inner, cur, ip):
     """GForth core 2012: display u as unsigned according to current BASE."""
     x = inner.pop_ds_int()
@@ -1198,6 +1206,7 @@ def prim_UDOT(inner, cur, ip):
 
 
 # KEY ( -- char )
+@dont_look_inside
 def prim_KEY(inner, cur, ip):
     """GForth core 2012: receive one character from input device."""
     stdin, stdout, stderr = create_stdio()
@@ -1211,6 +1220,7 @@ def prim_KEY(inner, cur, ip):
 
 
 # ACCEPT ( c-addr +n1 -- +n2 )
+@dont_look_inside
 def prim_ACCEPT(inner, cur, ip):
     """GForth core 2012: receive a string of at most +n1 characters from input."""
     max_count = inner.pop_ds_int()
@@ -1239,6 +1249,7 @@ def prim_ACCEPT(inner, cur, ip):
     return ip
 
 # U.R ( u n -- )
+@dont_look_inside
 def prim_UDOTR(inner, cur, ip):
     """Display unsigned number right-justified in n-character field."""
     n = inner.pop_ds_int()
@@ -1279,8 +1290,8 @@ def prim_LIT(inner, cur, ip):
 # EXIT ( -- )
 def prim_EXIT(inner, cur, ip):
     """GForth core 2012: terminate the current definition."""
-    from rpyforth.inner_interp import Exit
-    raise Exit
+    from rpyforth.inner_interp import EXIT_SENTINEL
+    return EXIT_SENTINEL
 
 
 # (ABORT") ( flag c-addr u -- )
@@ -1305,9 +1316,10 @@ def prim_ABORT_QUOTE_RUNTIME(inner, cur, ip):
         inner.ds_ptr_floats = 0
         inner.ds_ptr_locals = 0
         inner.rs_ptr = 0
-        # Signal abort by raising Exit
-        from rpyforth.inner_interp import Exit
-        raise Exit
+        inner.cs_ptr = 0  # Also clear call stack
+        # Signal abort by returning EXIT_SENTINEL
+        from rpyforth.inner_interp import EXIT_SENTINEL
+        return EXIT_SENTINEL
     return ip
 
 

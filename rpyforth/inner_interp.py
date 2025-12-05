@@ -15,7 +15,7 @@ from rpyforth.objects import (
 
 from rpython.rlib.rstruct.ieee import float_pack, float_unpack
 from rpython.rlib.rarithmetic import r_ulonglong
-from rpython.rlib.jit import JitDriver, promote, elidable, unroll_safe, promote_string
+from rpython.rlib.jit import JitDriver, promote, elidable, unroll_safe, promote_string, hint
 from rpython.rlib.rfile import create_stdio
 
 STACK_SIZE = 3096 # Increased for deeper nesting
@@ -23,6 +23,8 @@ BUF_SIZE = 1024
 HEAP_CELL_COUNT = 65536
 HEAP_SIZE_BYTES = HEAP_CELL_COUNT
 
+# Sentinel value for EXIT - indicates return from current definition
+EXIT_SENTINEL = -1
 
 class Exit(Exception):
     pass
@@ -37,16 +39,18 @@ def get_printable_location(ip, thread):
 jitdriver = JitDriver(
     greens=['ip', 'thread'],
     reds=['self'],
-    # virtualizables=['self'],
+    # virtualizables=['self'],  # Disabled: requires careful setup
     get_printable_location=get_printable_location
 )
 
 class InnerInterpreter(object):
     _immutable_fields_ = ["cell_size", "cell_size_bytes", "base"]
+    # _virtualizable_ disabled - requires more careful setup with RPython JIT
     # _virtualizable_ = [
     #     "ds_ptr_ints", "ds_ptr_floats", "ds_ptr_locals",
     #     "ds_ints[*]", "ds_floats[*]", "ds_locals[*]",
     #     "rs_ptr", "rs[*]",
+    #     "cs_ptr", "cs_threads[*]", "cs_ips[*]",
     # ]
 
 
@@ -117,20 +121,23 @@ class InnerInterpreter(object):
         limit = self.pop_rs()
         return limit, counter
 
+    @unroll_safe
     def peek_loop_counter(self, depth=0):
         """Get current loop counter without popping (raw int)."""
         # Counter is at top of each loop frame (2 cells per loop)
-        return self.peek_rs(depth * 2)
+        return self.peek_rs(promote(depth) * 2)
 
+    @unroll_safe
     def peek_loop_limit(self, depth=0):
         """Get current loop limit without popping (raw int)."""
         # Limit is below counter in each loop frame (2 cells per loop)
-        return self.peek_rs(depth * 2 + 1)
+        return self.peek_rs(promote(depth) * 2 + 1)
 
+    @unroll_safe
     def set_loop_counter(self, depth, value):
         """Set loop counter in place (raw int)."""
         # Counter is at top of each loop frame (2 cells per loop)
-        self.poke_rs(depth * 2, value)
+        self.poke_rs(promote(depth) * 2, value)
 
     def push_ds(self, w_x):
         assert isinstance(w_x, W_Object)
@@ -326,14 +333,14 @@ class InnerInterpreter(object):
             # Promote the primitive function pointer for better inlining
             prim = promote(w.prim)
             if prim is not None:
-                try:
-                    ip = prim(self, thread, ip)
-                except Exit:
-                    # EXIT - return to caller
+                ip = prim(self, thread, ip)
+                # Check for EXIT sentinel (faster than exception)
+                if ip == EXIT_SENTINEL:
                     if not self.is_call_stack_empty():
                         thread, ip = self.pop_call()
                     else:
                         break
+                    continue
             else:
                 # Colon definition - push current state and enter nested thread
                 nested_thread = promote(w.thread)
