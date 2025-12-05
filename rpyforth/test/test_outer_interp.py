@@ -12,319 +12,333 @@ def run(line):
     return inner
 
 def run_and_pop(line):
-    return run(line).pop_ds()
+    return run(line).pop_ds_int()
+
+def run_and_pop_float(line):
+    return run(line).pop_ds_float()
 
 def test_basic_primitives():
-    assert run_and_pop(": SQUARE DUP * ; 3 SQUARE").intval == 9
-    assert run_and_pop(": INC 1 + ;  5 INC").intval == 6
+    assert run_and_pop(": SQUARE DUP * ; 3 SQUARE") == 9
+    assert run_and_pop(": INC 1 + ;  5 INC") == 6
 
 def test_ZEROs():
-    assert run_and_pop("0 0=").intval == -1 # True
-    assert run_and_pop("5 0=").intval == 0  # False
-    assert run_and_pop("0 0<").intval == 0  # False
-    assert run_and_pop("-128 0<").intval == -1
-    assert run_and_pop("-128 0>").intval == -0
-    assert run_and_pop("47 0>").intval == -1
+    assert run_and_pop("0 0=") == -1 # True
+    assert run_and_pop("5 0=") == 0  # False
+    assert run_and_pop("0 0<") == 0  # False
+    assert run_and_pop("-128 0<") == -1
+    assert run_and_pop("-128 0>") == -0
+    assert run_and_pop("47 0>") == -1
 
 def test_STORE_FETCH():
-    assert run_and_pop("5 0 !    0 @").intval == 5
-    assert run_and_pop("VARIABLE X    123 X !    X @").intval == 123
-    assert run_and_pop("VARIABLE A    10 A !    A @ 5 + A !    A @").intval == 15
-    assert run_and_pop(""": SQUARE DUP * ;    VARIABLE N 7 N !    N @ SQUARE""").intval == 49
+    assert run_and_pop("5 0 !    0 @") == 5
+    assert run_and_pop("VARIABLE X    123 X !    X @") == 123
+    assert run_and_pop("VARIABLE A    10 A !    A @ 5 + A !    A @") == 15
+    assert run_and_pop(""": SQUARE DUP * ;    VARIABLE N 7 N !    N @ SQUARE""") == 49
     assert run_and_pop(""": SQUARE DUP * ;    VARIABLE N
-7 N !    N @ SQUARE""").intval == 49
+7 N !    N @ SQUARE""") == 49
     assert run_and_pop(""": SQUARE DUP * ;    VARIABLE N
-7 N !    N @ SQUARE""").intval == 49
-    assert run_and_pop("VARIABLE N   -42 N !   N @").intval == -42
+7 N !    N @ SQUARE""") == 49
+    assert run_and_pop("VARIABLE N   -42 N !   N @") == -42
 
 def test_cell_primitives():
     cell_bytes = CELL_SIZE_BYTES
-    assert run_and_pop("CELL").intval == cell_bytes
-    assert run_and_pop("3 CELLS").intval == 3 * cell_bytes
-    assert run_and_pop("VARIABLE X VARIABLE Y Y X -").intval == cell_bytes
-    assert run_and_pop("VARIABLE X VARIABLE Y X CELL+ Y -").intval == 0
+    assert run_and_pop("CELL") == cell_bytes
+    assert run_and_pop("3 CELLS") == 3 * cell_bytes
+    assert run_and_pop("VARIABLE X VARIABLE Y Y X -") == cell_bytes
+    assert run_and_pop("VARIABLE X VARIABLE Y X CELL+ Y -") == 0
 
-def test_drop():
-    assert run_and_pop("1 2 DROP").intval == 1
+def test_DROP():
+    assert run_and_pop("1 2 DROP") == 1
 
-def test_max():
-    assert run_and_pop("3 5 MAX").intval == 5
+def test_MAX():
+    assert run_and_pop("3 5 MAX") == 5
 
 def test_min():
-    assert run_and_pop("3 5 MIN").intval == 3
+    assert run_and_pop("3 5 MIN") == 3
 
 def test_abs():
-    assert run_and_pop("-3 ABS").intval == 3
-    assert run_and_pop("3 ABS").intval == 3
+    assert run_and_pop("-3 ABS") == 3
+    assert run_and_pop("3 ABS") == 3
 
 def test_negate():
-    assert run_and_pop("3 NEGATE").intval == -3
-    assert run_and_pop("-3 NEGATE").intval == 3
+    assert run_and_pop("3 NEGATE") == -3
+    assert run_and_pop("-3 NEGATE") == 3
 
 def test_rot():
-    assert run_and_pop("1 2 3 ROT").intval == 1
+    assert run_and_pop("1 2 3 ROT") == 1
 
 def test_2dup():
     inner = run("1 2 2DUP")
-    assert inner.pop_ds().intval == 2
-    assert inner.pop_ds().intval == 1
-    assert inner.pop_ds().intval == 2
-    assert inner.pop_ds().intval == 1
+    assert inner.pop_ds_int() == 2
+    assert inner.pop_ds_int() == 1
+    assert inner.pop_ds_int() == 2
+    assert inner.pop_ds_int() == 1
 
 def test_2drop():
-    inner = run_and_pop("1 2 3 2DROP").intval == 1
+    inner = run_and_pop("1 2 3 2DROP") == 1
 
 def test_2swap():
     inner = run("1 2 3 4 2SWAP")
-    assert inner.pop_ds().intval == 2
-    assert inner.pop_ds().intval == 1
-    assert inner.pop_ds().intval == 4
-    assert inner.pop_ds().intval == 3
+    assert inner.pop_ds_int() == 2
+    assert inner.pop_ds_int() == 1
+    assert inner.pop_ds_int() == 4
+    assert inner.pop_ds_int() == 3
 
 def test_2over():
     inner = run("1 2 3 4 2OVER")
-    assert inner.pop_ds().intval == 2
-    assert inner.pop_ds().intval == 1
-    assert inner.pop_ds().intval == 4
-    assert inner.pop_ds().intval == 3
-    assert inner.pop_ds().intval == 2
-    assert inner.pop_ds().intval == 1
+    assert inner.pop_ds_int() == 2
+    assert inner.pop_ds_int() == 1
+    assert inner.pop_ds_int() == 4
+    assert inner.pop_ds_int() == 3
+    assert inner.pop_ds_int() == 2
+    assert inner.pop_ds_int() == 1
 
 def test_mod():
-    assert run_and_pop("10 3 MOD").intval == 1
-    assert run_and_pop("-20 6 MOD").intval == 4
+    assert run_and_pop("10 3 MOD") == 1
+    assert run_and_pop("-20 6 MOD") == 4
 
 def test_inc():
-    assert run_and_pop("5 1+").intval == 6
-    assert run_and_pop("-1 1+").intval == 0
+    assert run_and_pop("5 1+") == 6
+    assert run_and_pop("-1 1+") == 0
 
 def test_dec():
-    assert run_and_pop("5 1-").intval == 4
-    assert run_and_pop("0 1-").intval == -1
+    assert run_and_pop("5 1-") == 4
+    assert run_and_pop("0 1-") == -1
 
 def test_BRANCH():
-    assert run_and_pop(": Z? 0= IF 1 ELSE 2 THEN ; 0 Z?").intval == 1
-    assert run_and_pop(": Z? 0= IF 1 ELSE 2 THEN ; 7 Z?").intval == 2
-    assert run_and_pop(": T1  1 0= IF 111 ELSE  0 0= IF 222 ELSE 333 THEN THEN ; T1").intval == 222
+    assert run_and_pop(": Z? 0= IF 1 ELSE 2 THEN ; 0 Z?") == 1
+    assert run_and_pop(": Z? 0= IF 1 ELSE 2 THEN ; 7 Z?") == 2
+    assert run_and_pop(": T1  1 0= IF 111 ELSE  0 0= IF 222 ELSE 333 THEN THEN ; T1") == 222
 
 def test_EMIT():
-    assert run_and_pop('10 65 EMIT').intval == 10
+    assert run_and_pop('10 65 EMIT') == 10
 
 def test_questiondup():
     inner = run("0 ?DUP")
-    assert inner.pop_ds().intval == 0
+    assert inner.pop_ds_int() == 0
     inner = run("5 ?DUP")
-    assert inner.pop_ds().intval == 5
-    assert inner.pop_ds().intval == 5
+    assert inner.pop_ds_int() == 5
+    assert inner.pop_ds_int() == 5
 
 def test_depth():
-    assert run_and_pop("0 1 DEPTH").intval == 2
-    assert run_and_pop("0 DEPTH").intval == 1
-    assert run_and_pop("DEPTH").intval == 0
+    assert run_and_pop("0 1 DEPTH") == 2
+    assert run_and_pop("0 DEPTH") == 1
+    assert run_and_pop("DEPTH") == 0
 
 def test_rshift():
-    assert run_and_pop("1 0 RSHIFT").intval == 1
-    assert run_and_pop("1 1 RSHIFT").intval == 0
-    assert run_and_pop("2 1 RSHIFT").intval == 1
-    assert run_and_pop("4 2 RSHIFT").intval == 1
-    assert run_and_pop("32768 15 RSHIFT").intval == 1
-    #assert run_and_pop("0x8000 0xF RSHIFT").intval == 1
+    assert run_and_pop("1 0 RSHIFT") == 1
+    assert run_and_pop("1 1 RSHIFT") == 0
+    assert run_and_pop("2 1 RSHIFT") == 1
+    assert run_and_pop("4 2 RSHIFT") == 1
+    assert run_and_pop("32768 15 RSHIFT") == 1
+    #assert run_and_pop("0x8000 0xF RSHIFT") == 1
 
 def test_lshift():
-    assert run_and_pop("1 0 LSHIFT").intval == 1
-    assert run_and_pop("1 1 LSHIFT").intval == 2
-    assert run_and_pop("1 2 LSHIFT").intval == 4
-    assert run_and_pop("1 15 LSHIFT").intval == 32768
-    #assert run_and_pop("1 0xF LSHIFT").intval == 0x8000
+    assert run_and_pop("1 0 LSHIFT") == 1
+    assert run_and_pop("1 1 LSHIFT") == 2
+    assert run_and_pop("1 2 LSHIFT") == 4
+    assert run_and_pop("1 15 LSHIFT") == 32768
+    #assert run_and_pop("1 0xF LSHIFT") == 0x8000
 
 
 def test_s_to_d():
     inner = run("1024 S>D")
-    assert inner.pop_ds().intval == 0
-    assert inner.pop_ds().intval == 1024
+    assert inner.pop_ds_int() == 0
+    assert inner.pop_ds_int() == 1024
     inner = run("-1024 S>D")
-    assert inner.pop_ds().intval == -1
-    assert inner.pop_ds().intval == -1024
+    assert inner.pop_ds_int() == -1
+    assert inner.pop_ds_int() == -1024
 
 def test_mul_star():
     inner = run("1024 4 M*")
-    assert inner.pop_ds().intval == 0
-    assert inner.pop_ds().intval == 4096
+    assert inner.pop_ds_int() == 0
+    assert inner.pop_ds_int() == 4096
     inner = run("-1024 4 M*")
-    assert inner.pop_ds().intval == -1
-    assert inner.pop_ds().intval == -4096
+    assert inner.pop_ds_int() == -1
+    assert inner.pop_ds_int() == -4096
     inner = run("-1024 -4 M*")
-    assert inner.pop_ds().intval == 0
-    assert inner.pop_ds().intval == 4096
+    assert inner.pop_ds_int() == 0
+    assert inner.pop_ds_int() == 4096
     inner = run("9223372036854775807 2 M*")
-    assert inner.pop_ds().intval == 0
-    assert inner.pop_ds().intval == -2
+    assert inner.pop_ds_int() == 0
+    assert inner.pop_ds_int() == -2
 
 def test_bl():
-    assert run_and_pop("BL").intval == 32
+    assert run_and_pop("BL") == 32
 
 def test_u_mul_star():
     inner = run("1024 4 UM*")
-    assert inner.pop_ds().intval == 0
-    assert inner.pop_ds().intval == 4096
+    assert inner.pop_ds_int() == 0
+    assert inner.pop_ds_int() == 4096
     inner = run("9223372036854775808 2 UM*")
-    assert inner.pop_ds().intval == 1
-    assert inner.pop_ds().intval == 0
+    assert inner.pop_ds_int() == 1
+    assert inner.pop_ds_int() == 0
     inner = run("18446744073709551615 2 UM*")
-    assert inner.pop_ds().intval == 1
-    assert inner.pop_ds().intval == 18446744073709551614
+    assert inner.pop_ds_int() == 1
+    assert inner.pop_ds_int() == 18446744073709551614
     inner = run("18446744073709551615 18446744073709551615 UM*")
-    assert inner.pop_ds().intval == 18446744073709551614
-    assert inner.pop_ds().intval == 1
+    assert inner.pop_ds_int() == 18446744073709551614
+    assert inner.pop_ds_int() == 1
 
 def test_and():
-    assert run_and_pop("6 3 AND").intval == 2
-    assert run_and_pop("0 9223372036854775807 AND").intval == 0
-    assert run_and_pop("-1 -1 AND").intval == -1
-    assert run_and_pop("18446744073709551615 18446744073709551615 AND").intval == 18446744073709551615
+    assert run_and_pop("6 3 AND") == 2
+    assert run_and_pop("0 9223372036854775807 AND") == 0
+    assert run_and_pop("-1 -1 AND") == -1
+    assert run_and_pop("18446744073709551615 18446744073709551615 AND") == 18446744073709551615
 
 def test_or():
-    assert run_and_pop("6 3 OR").intval == 7
-    assert run_and_pop("0 9223372036854775807 OR").intval == 9223372036854775807
-    assert run_and_pop("-1 -1 OR").intval == -1
-    assert run_and_pop("18446744073709551615 18446744073709551615 OR").intval == 18446744073709551615
+    assert run_and_pop("6 3 OR") == 7
+    assert run_and_pop("0 9223372036854775807 OR") == 9223372036854775807
+    assert run_and_pop("-1 -1 OR") == -1
+    assert run_and_pop("18446744073709551615 18446744073709551615 OR") == 18446744073709551615
 
 def test_xor():
-    assert run_and_pop("6 3 XOR").intval == 5
-    assert run_and_pop("0 9223372036854775807 XOR").intval == 9223372036854775807
-    assert run_and_pop("-1 -1 XOR").intval == 0
-    assert run_and_pop("18446744073709551615 18446744073709551615 XOR").intval == 0
+    assert run_and_pop("6 3 XOR") == 5
+    assert run_and_pop("0 9223372036854775807 XOR") == 9223372036854775807
+    assert run_and_pop("-1 -1 XOR") == 0
+    assert run_and_pop("18446744073709551615 18446744073709551615 XOR") == 0
 
 def test_2STAR():
-    assert run_and_pop("16384 2*").intval == 32768
-    assert run_and_pop("1 2*").intval == 2
-    assert run_and_pop("0 2*").intval == 0
+    assert run_and_pop("16384 2*") == 32768
+    assert run_and_pop("1 2*") == 2
+    assert run_and_pop("0 2*") == 0
 
 def test_2SLASH():
-    assert run_and_pop("16384 2/").intval == 8192
-    assert run_and_pop("2 2/").intval == 1
-    assert run_and_pop("-1 2/").intval == -1
+    assert run_and_pop("16384 2/") == 8192
+    assert run_and_pop("2 2/") == 1
+    assert run_and_pop("-1 2/") == -1
 
 def test_SDOUBLE_QUOTE():
     str = "Hello, World!"
     inner = run("S\" Hello, World!\"")
-    assert inner.pop_ds().intval == len(str)
-    assert inner.pop_ds().ptrval == len(str) # Cheating!
+    assert inner.pop_ds_int() == len(str)
+    ptr = inner.pop_ds_int()
+    # Verify the pointer points to valid buffer entry with the correct string
+    buf_entry = inner.buf[ptr]
+    assert buf_entry is not None
+    assert buf_entry.strval == str
 
 def test_DIV():
-    assert run_and_pop("10 3 /").intval == 3
-    assert run_and_pop("-20 6 /").intval == -4
-    assert run_and_pop("-9223372036854775808 -1 /").intval == 9223372036854775808
+    assert run_and_pop("10 3 /") == 3
+    assert run_and_pop("-20 6 /") == -4
+    assert run_and_pop("-9223372036854775808 -1 /") == 9223372036854775808
 
 def test_mul_slash():
-    assert run_and_pop("10 3 2 */").intval == 15
-    assert run_and_pop("-20 6 7 */").intval == -18
+    assert run_and_pop("10 3 2 */") == 15
+    assert run_and_pop("-20 6 7 */") == -18
 
 def test_div_mod():
     inner = run("10 3 /MOD")
-    assert inner.pop_ds().intval == 3
-    assert inner.pop_ds().intval == 1
+    assert inner.pop_ds_int() == 3
+    assert inner.pop_ds_int() == 1
     inner = run("-20 6 /MOD")
-    assert inner.pop_ds().intval == -4
-    assert inner.pop_ds().intval == 4
+    assert inner.pop_ds_int() == -4
+    assert inner.pop_ds_int() == 4
 
 def test_mul_div_mod():
     inner = run("10 2 3 */MOD")
-    assert inner.pop_ds().intval == 6
-    assert inner.pop_ds().intval == 2
+    assert inner.pop_ds_int() == 6
+    assert inner.pop_ds_int() == 2
     inner = run("-20 4 6 */MOD")
-    assert inner.pop_ds().intval == -14
-    assert inner.pop_ds().intval == 4
+    assert inner.pop_ds_int() == -14
+    assert inner.pop_ds_int() == 4
 
 def test_fm_div_mod():
     inner = run("20 S>D 3 FM/MOD")
-    assert inner.pop_ds().intval == 6
-    assert inner.pop_ds().intval == 2
+    assert inner.pop_ds_int() == 6
+    assert inner.pop_ds_int() == 2
     inner = run("-20 S>D 6 FM/MOD")
-    assert inner.pop_ds().intval == -4
-    assert inner.pop_ds().intval == 4
+    assert inner.pop_ds_int() == -4
+    assert inner.pop_ds_int() == 4
     inner = run("20 5 M* 3 FM/MOD")
-    assert inner.pop_ds().intval == 33
-    assert inner.pop_ds().intval == 1
+    assert inner.pop_ds_int() == 33
+    assert inner.pop_ds_int() == 1
     inner = run("-20 5 M* 6 FM/MOD")
-    assert inner.pop_ds().intval == -17
-    assert inner.pop_ds().intval == 2
+    assert inner.pop_ds_int() == -17
+    assert inner.pop_ds_int() == 2
 
 def test_um_div_mod():
     inner = run("0 1 2 UM/MOD")
-    assert inner.pop_ds().intval == -9223372036854775808
-    assert inner.pop_ds().intval == 0
+    assert inner.pop_ds_int() == -9223372036854775808
+    assert inner.pop_ds_int() == 0
     inner = run("3 0 2 UM/MOD")
-    assert inner.pop_ds().intval == 1
-    assert inner.pop_ds().intval == 1
+    assert inner.pop_ds_int() == 1
+    assert inner.pop_ds_int() == 1
     inner = run("18446744073709551615 2 UM* 2 UM/MOD")
-    assert inner.pop_ds().intval == -1
-    assert inner.pop_ds().intval == 0  # 36893488147419103230 % 2 = 0
+    assert inner.pop_ds_int() == -1
+    assert inner.pop_ds_int() == 0  # 36893488147419103230 % 2 = 0
 
 def test_sm_div_rem():
     inner = run("7 S>D 3 SM/REM")
-    assert inner.pop_ds().intval == 2
-    assert inner.pop_ds().intval == 1
+    assert inner.pop_ds_int() == 2
+    assert inner.pop_ds_int() == 1
     inner = run("-7 S>D 3 SM/REM")
-    assert inner.pop_ds().intval == -2
-    assert inner.pop_ds().intval == -1
+    assert inner.pop_ds_int() == -2
+    assert inner.pop_ds_int() == -1
     inner = run("7 S>D -3 SM/REM")
-    assert inner.pop_ds().intval == -2
-    assert inner.pop_ds().intval == 1
+    assert inner.pop_ds_int() == -2
+    assert inner.pop_ds_int() == 1
     inner = run("-7 S>D -3 SM/REM")
-    assert inner.pop_ds().intval == 2
-    assert inner.pop_ds().intval == -1
+    assert inner.pop_ds_int() == 2
+    assert inner.pop_ds_int() == -1
 
 def test_u_less():
-    assert run_and_pop("3 5 U<").intval == -1  # True
-    assert run_and_pop("5 3 U<").intval == 0   # False
-    assert run_and_pop("18446744073709551615 0 U<").intval == 0  # False
-    assert run_and_pop("0 18446744073709551615 U<").intval == -1  # True
-    assert run_and_pop("-1 0 U<").intval == 0  # False
-    assert run_and_pop("0 -1 U<").intval == -1 # True
+    assert run_and_pop("3 5 U<") == -1  # True
+    assert run_and_pop("5 3 U<") == 0   # False
+    assert run_and_pop("18446744073709551615 0 U<") == 0  # False
+    assert run_and_pop("0 18446744073709551615 U<") == -1  # True
+    assert run_and_pop("-1 0 U<") == 0  # False
+    assert run_and_pop("0 -1 U<") == -1 # True
 
 def test_u_dot():
-    assert run_and_pop("10 10 U.").intval == 10
+    assert run_and_pop("10 10 U.") == 10
 
 # Floating point tests
 def test_float_literals():
-    assert run_and_pop("1.0").floatval == 1.0
-    assert run_and_pop("3.14").floatval == 3.14
-    assert run_and_pop("-2.5").floatval == -2.5
-    assert run_and_pop("0.").floatval == 0.0
+    def run_and_pop(prog):
+        inner = run(prog)
+        return inner.pop_ds_float()
+    assert run_and_pop("1.0") == 1.0
+    assert run_and_pop("3.14") == 3.14
+    assert run_and_pop("-2.5") == -2.5
+    assert run_and_pop("0.") == 0.0
 
 def test_float_addition():
-    assert run_and_pop("1.0 2.0 F+").floatval == 3.0
-    assert run_and_pop("3.5 2.5 F+").floatval == 6.0
-    assert run_and_pop("-1.5 1.5 F+").floatval == 0.0
+    def run_and_pop(prog):
+        inner = run(prog)
+        return inner.pop_ds_float()
+
+    assert run_and_pop("1.0 2.0 F+") == 3.0
+    assert run_and_pop("3.5 2.5 F+") == 6.0
+    assert run_and_pop("-1.5 1.5 F+") == 0.0
 
 def test_float_subtraction():
-    assert run_and_pop("5.0 3.0 F-").floatval == 2.0
-    assert run_and_pop("10.5 2.5 F-").floatval == 8.0
-    assert run_and_pop("1.0 5.0 F-").floatval == -4.0
+    assert run_and_pop_float("5.0 3.0 F-") == 2.0
+    assert run_and_pop_float("10.5 2.5 F-") == 8.0
+    assert run_and_pop_float("1.0 5.0 F-") == -4.0
 
 def test_float_multiplication():
-    assert run_and_pop("3.0 4.0 F*").floatval == 12.0
-    assert run_and_pop("2.5 2.0 F*").floatval == 5.0
-    assert run_and_pop("-2.0 3.0 F*").floatval == -6.0
+    assert run_and_pop_float("3.0 4.0 F*") == 12.0
+    assert run_and_pop_float("2.5 2.0 F*") == 5.0
+    assert run_and_pop_float("-2.0 3.0 F*") == -6.0
 
 def test_float_division():
-    assert run_and_pop("10.0 2.0 F/").floatval == 5.0
-    assert run_and_pop("7.0 2.0 F/").floatval == 3.5
-    assert run_and_pop("1.0 4.0 F/").floatval == 0.25
+    assert run_and_pop_float("10.0 2.0 F/") == 5.0
+    assert run_and_pop_float("7.0 2.0 F/") == 3.5
+    assert run_and_pop_float("1.0 4.0 F/") == 0.25
 
 def test_float_comparison():
-    assert run_and_pop("5.0 3.0 F>").intval == -1  # True
-    assert run_and_pop("2.0 8.0 F>").intval == 0   # False
-    assert run_and_pop("3.0 3.0 F>").intval == 0   # False
+    assert run_and_pop("5.0 3.0 F>") == -1  # True
+    assert run_and_pop("2.0 8.0 F>") == 0   # False
+    assert run_and_pop("3.0 3.0 F>") == 0   # False
 
 def test_float_swap():
     inner = run("1.0 2.0 FSWAP")
-    assert inner.pop_ds().floatval == 1.0
-    assert inner.pop_ds().floatval == 2.0
+    assert inner.pop_ds_float() == 1.0
+    assert inner.pop_ds_float() == 2.0
 
 def test_float_in_colon_def():
-    assert run_and_pop(": CIRCLE-AREA 3.14159 F* ; 5.0 5.0 F* CIRCLE-AREA").floatval == 78.53975
+    assert run_and_pop_float(": CIRCLE-AREA 3.14159 F* ; 5.0 5.0 F* CIRCLE-AREA") == 78.53975
 
 # DO...LOOP tests
 def test_simple_do_loop():
@@ -332,103 +346,97 @@ def test_simple_do_loop():
     inner = run(": TEST 10 0 DO I LOOP ; TEST")
     results = []
     for i in range(10):
-        results.append(inner.pop_ds().intval)
+        results.append(inner.pop_ds_int())
     assert results == list(range(9, -1, -1))  # popped in reverse order
 
     inner = run(": SUM 0 5 0 DO I + LOOP ; SUM")
-    assert inner.pop_ds().intval == 10
+    assert inner.pop_ds_int() == 10
 
     run(": TEST 10 0 DO I . LOOP ; TEST")
-    assert run_and_pop(": SUM 0 5 0 DO I + LOOP ; SUM").intval == 10
+    assert run_and_pop(": SUM 0 5 0 DO I + LOOP ; SUM") == 10
 
 def test_nested_do_loops():
     inner = run(": NESTED 3 0 DO 3 0 DO I J * LOOP LOOP ; NESTED")
     expected = [0, 0, 0, 0, 1, 2, 0, 2, 4]
     results = []
     for i in range(9):
-        results.append(inner.pop_ds().intval)
+        results.append(inner.pop_ds_int())
     assert results == expected[::-1]  # reversed because stack
 
 def test_leave_in_loop():
     inner = run(": EARLY 10 0 DO I DUP 5 = IF LEAVE THEN LOOP ; EARLY")
     results = []
-    while inner.ds_ptr > 0:
-        results.append(inner.pop_ds().intval)
+    while inner.ds_ptr_ints > 0:
+        results.append(inner.pop_ds_int())
     assert results == [5, 4, 3, 2, 1, 0]
 
 def test_compare_op():
-    assert run_and_pop("5 3 >").intval == -1  # True
-    assert run_and_pop("2 8 >").intval == 0   # False
-    assert run_and_pop("3 3 >").intval == 0   # False
+    assert run_and_pop("5 3 >") == -1  # True
+    assert run_and_pop("2 8 >") == 0   # False
+    assert run_and_pop("3 3 >") == 0   # False
 
-    assert run_and_pop("5 3 <").intval == 0
-    assert run_and_pop("2 8 <").intval == -1
-    assert run_and_pop("3 3 <").intval == 0
+    assert run_and_pop("5 3 <") == 0
+    assert run_and_pop("2 8 <") == -1
+    assert run_and_pop("3 3 <") == 0
 
-    assert run_and_pop("5 5 =").intval == -1  # True
-    assert run_and_pop("3 7 =").intval == 0   # False
-    assert run_and_pop("0 0 =").intval == -1  # True
+    assert run_and_pop("5 5 =") == -1  # True
+    assert run_and_pop("3 7 =") == 0   # False
+    assert run_and_pop("0 0 =") == -1  # True
 
 def test_pick():
-    assert run_and_pop("10 20 30 0 PICK").intval == 30
-    assert run_and_pop("10 20 30 1 PICK").intval == 20
-    assert run_and_pop("10 20 30 2 PICK").intval == 10
+    assert run_and_pop("10 20 30 0 PICK") == 30
+    assert run_and_pop("10 20 30 1 PICK") == 20
+    assert run_and_pop("10 20 30 2 PICK") == 10
 
 def test_char_bracket():
     # [CHAR] A should compile character code for 'A'
-    assert run_and_pop(": TEST [CHAR] A ; TEST").intval == ord('A')
-    assert run_and_pop(": TEST [CHAR] Z ; TEST").intval == ord('Z')
-    assert run_and_pop(": TEST [CHAR] 0 ; TEST").intval == ord('0')
+    assert run_and_pop(": TEST [CHAR] A ; TEST") == ord('A')
+    assert run_and_pop(": TEST [CHAR] Z ; TEST") == ord('Z')
+    assert run_and_pop(": TEST [CHAR] 0 ; TEST") == ord('0')
 
 
 def test_float():
-    assert run_and_pop("1.0").floatval == 1.0
-    assert run_and_pop("3.14").floatval == 3.14
+    assert run_and_pop_float("1.0") == 1.0
+    assert run_and_pop_float("3.14") == 3.14
 
-    assert run_and_pop("1.0 2.0 F+").floatval == 3.0
-    assert run_and_pop("5.0 3.0 F-").floatval == 2.0
-    assert run_and_pop("3.0 4.0 F*").floatval == 12.0
-    assert run_and_pop("10.0 2.0 F/").floatval == 5.0
+    assert run_and_pop_float("1.0 2.0 F+") == 3.0
+    assert run_and_pop_float("5.0 3.0 F-") == 2.0
+    assert run_and_pop_float("3.0 4.0 F*") == 12.0
+    assert run_and_pop_float("10.0 2.0 F/") == 5.0
 
-    assert run_and_pop("5.0 3.0 F>").intval == -1
-    assert run_and_pop("2.0 8.0 F>").intval == 0
+    assert run_and_pop("5.0 3.0 F>") == -1
+    assert run_and_pop("2.0 8.0 F>") == 0
 
 def test_CHAR():
-    assert run_and_pop("CHAR Hello").intval == ord('H')
-    assert run_and_pop("CHAR ello").intval == ord('e')
+    assert run_and_pop("CHAR Hello") == ord('H')
+    assert run_and_pop("CHAR ello") == ord('e')
 
 def test_2STORE():
     inner = run("2VARIABLE buf 10 20 buf 2!")
-    assert inner.cell_fetch(W_IntObject(0)).intval == 10
-    assert inner.cell_fetch(W_IntObject(CELL_SIZE_BYTES)).intval == 20
+    assert inner.cell_fetch(0).intval == 10
+    assert inner.cell_fetch(CELL_SIZE_BYTES).intval == 20
 
 def test_s2f():
     """Test S>F (integer to float conversion)"""
-    result = run_and_pop("10 S>F")
-    assert isinstance(result, W_FloatObject)
-    assert result.floatval == 10.0
+    assert run_and_pop_float("10 S>F") == 10.0
 
 def test_fstore_ffetch():
     """Test F! and F@"""
-    result = run_and_pop("FVARIABLE X  3.14E0 X F!  X F@")
-    assert isinstance(result, W_FloatObject)
-    assert abs(result.floatval - 3.14) < 0.01
+    result = run_and_pop_float("FVARIABLE X  3.14E0 X F!  X F@")
+    assert abs(result - 3.14) < 0.01
 
 def test_fdup():
     """Test FDUP"""
     inner = run("5.5E0 FDUP")
-    f1 = inner.pop_ds()
-    f2 = inner.pop_ds()
-    assert isinstance(f1, W_FloatObject)
-    assert isinstance(f2, W_FloatObject)
-    assert f1.floatval == f2.floatval == 5.5
+    f1 = inner.pop_ds_float()
+    f2 = inner.pop_ds_float()
+    assert f1 == f2 == 5.5
 
 def test_begin_while_repeat():
     """Test BEGIN...WHILE...REPEAT loop"""
     # Count from 0 to 4
     result = run_and_pop(": TEST 0 BEGIN DUP 5 < WHILE 1+ REPEAT ; TEST")
-    assert isinstance(result, W_IntObject)
-    assert result.intval == 5
+    assert result == 5
 
 def test_to_r():
     """Test >R (to-R) - move value from data stack to return stack"""
@@ -437,16 +445,14 @@ def test_to_r():
     assert inner.ds_ptr == 0
     # Return stack should have 42
     result = inner.pop_rs()
-    assert isinstance(result, W_IntObject)
-    assert result.intval == 42
+    assert result == 42
 
 def test_r_from():
     """Test R> (R-from) - move value from return stack to data stack"""
     inner = run("42 >R R>")
     # Data stack should have 42
-    result = inner.pop_ds()
-    assert isinstance(result, W_IntObject)
-    assert result.intval == 42
+    result = inner.pop_ds_int()
+    assert result == 42
     # Return stack should be empty
     assert inner.rs_ptr == 0
 
@@ -454,13 +460,11 @@ def test_r_fetch():
     """Test R@ (R-fetch) - copy value from return stack to data stack"""
     inner = run("42 >R R@")
     # Data stack should have 42
-    result = inner.pop_ds()
-    assert isinstance(result, W_IntObject)
-    assert result.intval == 42
+    result = inner.pop_ds_int()
+    assert result == 42
     # Return stack should still have 42
     result2 = inner.pop_rs()
-    assert isinstance(result2, W_IntObject)
-    assert result2.intval == 42
+    assert result2 == 42
 
 def test_2to_r():
     """Test 2>R - move two values from data stack to return stack"""
@@ -470,21 +474,17 @@ def test_2to_r():
     # Return stack should have 20 on top, 10 below
     result2 = inner.pop_rs()
     result1 = inner.pop_rs()
-    assert isinstance(result1, W_IntObject)
-    assert isinstance(result2, W_IntObject)
-    assert result1.intval == 10
-    assert result2.intval == 20
+    assert result1 == 10
+    assert result2 == 20
 
 def test_2r_from():
     """Test 2R> - move two values from return stack to data stack"""
     inner = run("10 20 2>R 2R>")
     # Data stack should have 10 and 20
-    result2 = inner.pop_ds()
-    result1 = inner.pop_ds()
-    assert isinstance(result1, W_IntObject)
-    assert isinstance(result2, W_IntObject)
-    assert result1.intval == 10
-    assert result2.intval == 20
+    result2 = inner.pop_ds_int()
+    result1 = inner.pop_ds_int()
+    assert result1 == 10
+    assert result2 == 20
     # Return stack should be empty
     assert inner.rs_ptr == 0
 
@@ -492,51 +492,44 @@ def test_2r_fetch():
     """Test 2R@ - copy two values from return stack to data stack"""
     inner = run("10 20 2>R 2R@")
     # Data stack should have 10 and 20
-    result2 = inner.pop_ds()
-    result1 = inner.pop_ds()
-    assert isinstance(result1, W_IntObject)
-    assert isinstance(result2, W_IntObject)
-    assert result1.intval == 10
-    assert result2.intval == 20
+    result2 = inner.pop_ds_int()
+    result1 = inner.pop_ds_int()
+    assert result1 == 10
+    assert result2 == 20
     # Return stack should still have 10 and 20
     result2_rs = inner.pop_rs()
     result1_rs = inner.pop_rs()
-    assert isinstance(result1_rs, W_IntObject)
-    assert isinstance(result2_rs, W_IntObject)
-    assert result1_rs.intval == 10
-    assert result2_rs.intval == 20
+    assert result1_rs == 10
+    assert result2_rs == 20
 
 def test_return_stack_complex():
     """Test complex combination of return stack operations"""
     # Test: 1 2 3 >R >R >R R> R> R>
     # Should result in: 3 2 1
     inner = run("1 2 3 >R >R >R R> R> R>")
-    result1 = inner.pop_ds()
-    result2 = inner.pop_ds()
-    result3 = inner.pop_ds()
-    assert result1.intval == 3
-    assert result2.intval == 2
-    assert result3.intval == 1
+    result1 = inner.pop_ds_int()
+    result2 = inner.pop_ds_int()
+    result3 = inner.pop_ds_int()
+    assert result1 == 3
+    assert result2 == 2
+    assert result3 == 1
 
 # Data Space Tests
 
 def test_here():
     """Test HERE - return current data space pointer"""
     inner = run("HERE")
-    addr1 = inner.pop_ds()
-    assert isinstance(addr1, W_IntObject)
+    addr1 = inner.pop_ds_int()
     # HERE should return a valid address
-    assert addr1.intval >= 0
+    assert addr1 >= 0
 
 def test_comma():
     """Test , (comma) - store value at HERE and increment"""
     inner = run("HERE  42 ,  HERE")
-    addr2 = inner.pop_ds()
-    addr1 = inner.pop_ds()
-    assert isinstance(addr1, W_IntObject)
-    assert isinstance(addr2, W_IntObject)
+    addr2 = inner.pop_ds_int()
+    addr1 = inner.pop_ds_int()
     # addr2 should be addr1 + cell_size_bytes
-    assert addr2.intval == addr1.intval + inner.cell_size_bytes
+    assert addr2 == addr1 + inner.cell_size_bytes
     # Check that 42 was stored at addr1
     stored_val = inner.cell_fetch(addr1)
     assert stored_val.intval == 42
@@ -544,22 +537,18 @@ def test_comma():
 def test_c_comma():
     """Test C, - store character at HERE and increment by 1"""
     inner = run("HERE  65 C,  HERE")
-    addr2 = inner.pop_ds()
-    addr1 = inner.pop_ds()
-    assert isinstance(addr1, W_IntObject)
-    assert isinstance(addr2, W_IntObject)
+    addr2 = inner.pop_ds_int()
+    addr1 = inner.pop_ds_int()
     # addr2 should be addr1 + 1
-    assert addr2.intval == addr1.intval + 1
+    assert addr2 == addr1 + 1
 
 def test_allot():
     """Test ALLOT - allocate n address units"""
     inner = run("HERE  10 ALLOT  HERE")
-    addr2 = inner.pop_ds()
-    addr1 = inner.pop_ds()
-    assert isinstance(addr1, W_IntObject)
-    assert isinstance(addr2, W_IntObject)
+    addr2 = inner.pop_ds_int()
+    addr1 = inner.pop_ds_int()
     # addr2 should be addr1 + 10
-    assert addr2.intval == addr1.intval + 10
+    assert addr2 == addr1 + 10
 
 # Dictionary Tests
 
@@ -567,8 +556,7 @@ def test_create():
     """Test CREATE - create a new word with data field"""
     result = run_and_pop("CREATE MYDATA  MYDATA")
     # MYDATA should push its address
-    assert isinstance(result, W_IntObject)
-    assert result.intval >= 0
+    assert result >= 0
 
 def test_create_with_comma():
     """Test CREATE with , to store data"""
@@ -579,12 +567,12 @@ def test_create_with_comma():
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
     outer.interpret_line("CREATE MYVAR2  123 ,  456 ,  MYVAR2")
-    addr = inner.pop_ds()
+    addr = inner.pop_ds_int()
     # Fetch the first value
     val1 = inner.cell_fetch(addr)
     assert val1.intval == 123
     # Fetch the second value
-    addr2 = W_IntObject(addr.intval + CELL_SIZE_BYTES)
+    addr2 = addr + CELL_SIZE_BYTES
     val2 = inner.cell_fetch(addr2)
     assert val2.intval == 456
 
@@ -594,12 +582,10 @@ def test_find():
     outer = OuterInterpreter(inner)
     outer.interpret_line('S" DUP"')
     outer.interpret_line("FIND")
-    flag = inner.pop_ds()
+    flag = inner.pop_ds_int()
     xt = inner.pop_ds()
-    assert isinstance(flag, W_IntObject)
-    assert isinstance(xt, W_WordObject)
     assert xt.word.name == "DUP"
-    assert flag.intval == 1
+    assert flag == 1
 
 def test_find_not_found():
     """Test FIND with non-existent word"""
@@ -607,10 +593,10 @@ def test_find_not_found():
     outer = OuterInterpreter(inner)
     outer.interpret_line('S" NOTAWORD"')
     outer.interpret_line("FIND")
-    flag = inner.pop_ds()
-    u = inner.pop_ds()
-    caddr = inner.pop_ds()
-    assert flag.intval == 0
+    flag = inner.pop_ds_int()
+    u = inner.pop_ds_int()
+    caddr = inner.pop_ds_int()
+    assert flag == 0
 
 def test_execute():
     """Test EXECUTE - execute an execution token"""
@@ -618,15 +604,15 @@ def test_execute():
     outer = OuterInterpreter(inner)
     outer.interpret_line('S" DUP"')
     outer.interpret_line("FIND")
-    flag = inner.pop_ds()
+    flag = inner.pop_ds_int()
     xt = inner.pop_ds()
-    inner.push_ds(W_IntObject(42))
+    inner.push_ds_int(42)
     inner.push_ds(xt)
     outer.interpret_line("EXECUTE")
-    val2 = inner.pop_ds()
-    val1 = inner.pop_ds()
-    assert val1.intval == 42
-    assert val2.intval == 42
+    val2 = inner.pop_ds_int()
+    val1 = inner.pop_ds_int()
+    assert val1 == 42
+    assert val2 == 42
 
 def test_to_body():
     """Test >BODY - get body address from execution token"""
@@ -635,14 +621,14 @@ def test_to_body():
     outer.interpret_line("VARIABLE MYVAR")
     outer.interpret_line('S" MYVAR"')
     outer.interpret_line("FIND")
-    flag = inner.pop_ds()
+    flag = inner.pop_ds_int()
     xt = inner.pop_ds()
     inner.push_ds(xt)
     outer.interpret_line(">BODY")
-    body_addr = inner.pop_ds()
+    body_addr = inner.pop_ds_int()
     outer.interpret_line("MYVAR")
-    var_addr = inner.pop_ds()
-    assert body_addr.intval == var_addr.intval
+    var_addr = inner.pop_ds_int()
+    assert body_addr == var_addr
 
 # Source Input Tests
 
@@ -653,19 +639,17 @@ def test_source():
     test_line = "1 2 3 SOURCE"
     outer.interpret_line(test_line)
     # SOURCE pushes ( c-addr u )
-    u = inner.pop_ds()
-    caddr = inner.pop_ds()
+    u = inner.pop_ds_int()
+    caddr = inner.pop_ds_int()
     # Should return the length of the line
-    assert isinstance(u, W_IntObject)
-    assert u.intval == len(test_line)
+    assert u == len(test_line)
 
 def test_to_in():
     """Test >IN - returns address of parse position variable"""
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
     outer.interpret_line(">IN")
-    addr = inner.pop_ds()
-    assert isinstance(addr, W_IntObject)
+    addr = inner.pop_ds_int()
     # The address should contain the parse position
     pos = inner.cell_fetch(addr)
     assert isinstance(pos, W_IntObject)
@@ -689,10 +673,10 @@ def test_paren_comment():
     outer = OuterInterpreter(inner)
     # The parenthetical comment should be ignored
     outer.interpret_line("1 ( this is a comment ) 2")
-    val2 = inner.pop_ds()
-    val1 = inner.pop_ds()
-    assert val1.intval == 1
-    assert val2.intval == 2
+    val2 = inner.pop_ds_int()
+    val1 = inner.pop_ds_int()
+    assert val1 == 1
+    assert val2 == 2
 
 def test_tick_execute():
     """Test ' (tick) with EXECUTE"""
@@ -700,13 +684,13 @@ def test_tick_execute():
     outer = OuterInterpreter(inner)
     outer.interpret_line("' DUP")
     xt = inner.pop_ds()
-    inner.push_ds(W_IntObject(42))
+    inner.push_ds_int(42)
     inner.push_ds(xt)
     outer.interpret_line("EXECUTE")
-    val2 = inner.pop_ds()
-    val1 = inner.pop_ds()
-    assert val1.intval == 42
-    assert val2.intval == 42
+    val2 = inner.pop_ds_int()
+    val1 = inner.pop_ds_int()
+    assert val1 == 42
+    assert val2 == 42
 
 # Memory Access Tests
 
@@ -715,36 +699,36 @@ def test_plusstore():
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
     outer.interpret_line("VARIABLE X  10 X !  5 X +!  X @")
-    result = inner.pop_ds()
-    assert result.intval == 15
+    result = inner.pop_ds_int()
+    assert result == 15
 
 def test_2fetch():
     """Test 2@ - fetch cell pair"""
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
     outer.interpret_line("2VARIABLE BUF  10 20 BUF 2!  BUF 2@")
-    x2 = inner.pop_ds()
-    x1 = inner.pop_ds()
-    assert x1.intval == 10
-    assert x2.intval == 20
+    x2 = inner.pop_ds_int()
+    x1 = inner.pop_ds_int()
+    assert x1 == 10
+    assert x2 == 20
 
 def test_c_store_fetch():
     """Test C! and C@ - character store and fetch"""
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
     outer.interpret_line("VARIABLE CBUF  65 CBUF C!  CBUF C@")
-    result = inner.pop_ds()
-    assert result.intval == 65
+    result = inner.pop_ds_int()
+    assert result == 65
 
 def test_char_plus():
     """Test CHAR+ - increment address by character size"""
     result = run_and_pop("10 CHAR+")
-    assert result.intval == 11
+    assert result == 11
 
 def test_chars():
     """Test CHARS - convert character count to address units"""
     result = run_and_pop("5 CHARS")
-    assert result.intval == 5
+    assert result == 5
 
 def test_align():
     """Test ALIGN - align data space pointer"""
@@ -752,19 +736,19 @@ def test_align():
     outer = OuterInterpreter(inner)
     # Set HERE to unaligned position
     outer.interpret_line("HERE  1 C,  ALIGN  HERE")
-    here_after = inner.pop_ds()
-    here_before = inner.pop_ds()
+    here_after = inner.pop_ds_int()
+    here_before = inner.pop_ds_int()
     # After ALIGN, HERE should be aligned to cell boundary
-    assert here_after.intval % CELL_SIZE_BYTES == 0
+    assert here_after % CELL_SIZE_BYTES == 0
 
 def test_aligned():
     """Test ALIGNED - return aligned address"""
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
     outer.interpret_line("1 ALIGNED")
-    result = inner.pop_ds()
+    result = inner.pop_ds_int()
     # Should be aligned to cell boundary
-    assert result.intval % CELL_SIZE_BYTES == 0
+    assert result % CELL_SIZE_BYTES == 0
 
 # Parsing Tests
 
@@ -775,18 +759,18 @@ def test_count():
     # Create a counted string manually
     # Store length 3 at HERE
     outer.interpret_line("HERE  3 ,")
-    addr = inner.pop_ds()
+    addr = inner.pop_ds_int()
     # Store characters 'A', 'B', 'C'
     outer.interpret_line("65 C,  66 C,  67 C,")
     # Now use COUNT on the counted string address
-    inner.push_ds(addr)
+    inner.push_ds_int(addr)
     outer.interpret_line("COUNT")
-    u = inner.pop_ds()
-    caddr2 = inner.pop_ds()
+    u = inner.pop_ds_int()
+    caddr2 = inner.pop_ds_int()
     # Length should be 3
-    assert u.intval == 3
+    assert u == 3
     # caddr2 should be addr + cell_size (skipping the count cell)
-    assert caddr2.intval == addr.intval + CELL_SIZE_BYTES
+    assert caddr2 == addr + CELL_SIZE_BYTES
 
 def test_word():
     """Test WORD - parse word delimited by character"""
@@ -795,7 +779,7 @@ def test_word():
     # Parse a word delimited by space (32)
     # Use separate calls to avoid "World" being executed
     outer.interpret_line("32 WORD Hello")
-    caddr = inner.pop_ds()
+    caddr = inner.pop_ds_int()
     # caddr points to counted string
     # Fetch the length
     length = inner.cell_fetch(caddr)
@@ -807,15 +791,20 @@ def test_word_count():
     outer = OuterInterpreter(inner)
     # Parse a word and use COUNT to get addr/len
     outer.interpret_line("32 WORD Test COUNT")
-    u = inner.pop_ds()
-    caddr2 = inner.pop_ds()
+    u = inner.pop_ds_int()
+    caddr2 = inner.pop_ds_int()
     # Length should be 4 ("Test")
-    assert u.intval == 4
+    assert u == 4
 
 # Pictured Numeric Output Tests
 
 def test_PNO():
     # #S expects double-cell number (ud.lo ud.hi), so push 0 as high-order cell
+    def run_and_pop(line):
+        inner = InnerInterpreter()
+        outer = OuterInterpreter(inner)
+        outer.interpret_line(line)
+        return inner.pop_ds()
     assert run_and_pop("DECIMAL  12345 0 <# #S #>").strval == '12345'
     assert run_and_pop("HEX      255 0   <# #S #>").strval == 'FF'
     assert run_and_pop("BINARY   5 0     <# #S #>").strval == '101'
@@ -871,8 +860,8 @@ def test_move():
     outer.interpret_line("SRC1 DST 3 MOVE")
     # Verify first value was copied
     outer.interpret_line("DST @")
-    result = inner.pop_ds()
-    assert result.intval == 10
+    result = inner.pop_ds_int()
+    assert result == 10
 
 def test_state():
     """Test STATE - get interpreter state"""
@@ -880,8 +869,8 @@ def test_state():
     outer = OuterInterpreter(inner)
     # In interpret mode, STATE should return address with 0
     outer.interpret_line("STATE @")
-    state_val = inner.pop_ds()
-    assert state_val.intval == 0
+    state_val = inner.pop_ds_int()
+    assert state_val == 0
 
 def test_evaluate():
     """Test EVALUATE - evaluate string as Forth"""
@@ -890,8 +879,8 @@ def test_evaluate():
     # Create a string and evaluate it
     outer.interpret_line('S" 1 2 +"')
     outer.interpret_line("EVALUATE")
-    result = inner.pop_ds()
-    assert result.intval == 3
+    result = inner.pop_ds_int()
+    assert result == 3
 
 def test_abort_quote_false():
     """Test ABORT\" with false condition - should not abort"""
@@ -902,7 +891,7 @@ def test_abort_quote_false():
     # False flag should not abort
     outer.interpret_line('0 ABORT" This should not print"')
     # Stack should still have values
-    assert inner.ds_ptr == 3
+    assert inner.ds_ptr_ints == 3
 
 def test_abort_quote_true():
     """Test ABORT\" with true condition - should abort"""
@@ -913,7 +902,7 @@ def test_abort_quote_true():
     # True flag should abort and clear stack
     outer.interpret_line('-1 ABORT" Error occurred"')
     # Stack should be cleared
-    assert inner.ds_ptr == 0
+    assert inner.ds_ptr_ints == 0
 
 
 # ============================================
@@ -925,85 +914,85 @@ def test_abort_quote_true():
 def test_divmod():
     """Test /MOD - division with remainder"""
     inner = run("10 3 /MOD")
-    quot = inner.pop_ds()
-    rem = inner.pop_ds()
-    assert quot.intval == 3
-    assert rem.intval == 1
+    quot = inner.pop_ds_int()
+    rem = inner.pop_ds_int()
+    assert quot == 3
+    assert rem == 1
 
 def test_starslash():
     """Test */ - multiply then divide"""
-    assert run_and_pop("10 3 2 */").intval == 15  # (10*3)/2
+    assert run_and_pop("10 3 2 */") == 15  # (10*3)/2
 
 def test_starslashmod():
     """Test */MOD - multiply then divide with remainder"""
     inner = run("10 3 4 */MOD")
-    quot = inner.pop_ds()
-    rem = inner.pop_ds()
+    quot = inner.pop_ds_int()
+    rem = inner.pop_ds_int()
     # (10*3)/4 = 30/4 = 7 remainder 2
-    assert quot.intval == 7
-    assert rem.intval == 2
+    assert quot == 7
+    assert rem == 2
 
 def test_fmslashmod():
     """Test FM/MOD - floored division"""
     inner = run("7 0 3 FM/MOD")
-    quot = inner.pop_ds()
-    rem = inner.pop_ds()
-    assert quot.intval == 2
-    assert rem.intval == 1
+    quot = inner.pop_ds_int()
+    rem = inner.pop_ds_int()
+    assert quot == 2
+    assert rem == 1
 
 def test_smslashrem():
     """Test SM/REM - symmetric division"""
     inner = run("7 0 3 SM/REM")
-    quot = inner.pop_ds()
-    rem = inner.pop_ds()
-    assert quot.intval == 2
-    assert rem.intval == 1
+    quot = inner.pop_ds_int()
+    rem = inner.pop_ds_int()
+    assert quot == 2
+    assert rem == 1
 
 def test_umslashmod():
     """Test UM/MOD - unsigned division"""
     inner = run("10 0 3 UM/MOD")
-    quot = inner.pop_ds()
-    rem = inner.pop_ds()
-    assert quot.intval == 3
-    assert rem.intval == 1
+    quot = inner.pop_ds_int()
+    rem = inner.pop_ds_int()
+    assert quot == 3
+    assert rem == 1
 
 # Bitwise Tests
 
 def test_invert():
     """Test INVERT - bitwise NOT"""
-    assert run_and_pop("0 INVERT").intval == -1
-    assert run_and_pop("-1 INVERT").intval == 0
+    assert run_and_pop("0 INVERT") == -1
+    assert run_and_pop("-1 INVERT") == 0
 
 # Comparison Tests
 
 def test_u_less():
     """Test U< - unsigned less than"""
-    assert run_and_pop("1 2 U<").intval == -1  # True
-    assert run_and_pop("2 1 U<").intval == 0   # False
-    assert run_and_pop("-1 1 U<").intval == 0  # -1 is large when unsigned
+    assert run_and_pop("1 2 U<") == -1  # True
+    assert run_and_pop("2 1 U<") == 0   # False
+    assert run_and_pop("-1 1 U<") == 0  # -1 is large when unsigned
 
 # Control Flow Tests
 
 def test_plusloop():
     """Test +LOOP with positive increment"""
     result = run_and_pop(": TEST 0 10 0 DO I + 2 +LOOP ; TEST")
-    assert result.intval == 20  # 0+2+4+6+8 = 20
+    assert result == 20  # 0+2+4+6+8 = 20
 
 def test_again():
     """Test BEGIN...AGAIN loop (needs EXIT to break)"""
     result = run_and_pop(": TEST 0 BEGIN 1+ DUP 5 = IF EXIT THEN AGAIN ; TEST")
-    assert result.intval == 5
+    assert result == 5
 
 def test_until():
     """Test BEGIN...UNTIL loop"""
     result = run_and_pop(": TEST 0 BEGIN 1+ DUP 5 = UNTIL ; TEST")
-    assert result.intval == 5
+    assert result == 5
 
 def test_unloop():
     """Test UNLOOP - remove loop parameters from return stack"""
     # Keep I on stack before comparison by duplicating it
     result = run_and_pop(": TEST 5 0 DO I DUP 3 = IF UNLOOP EXIT THEN DROP LOOP 99 ; TEST")
-    assert result.intval == 3  # Should exit when I=3
+    assert result == 3  # Should exit when I=3
 
 # Compilation Tests
 
@@ -1020,12 +1009,12 @@ def test_immediate():
 def test_literal():
     """Test LITERAL - compile literal at compile time"""
     result = run_and_pop(": TEST [ 5 3 + ] LITERAL ; TEST")
-    assert result.intval == 8
+    assert result == 8
 
 def test_bracket():
     """Test [ and ] - switch between interpret and compile modes"""
     result = run_and_pop(": TEST [ 2 3 + ] LITERAL 10 + ; TEST")
-    assert result.intval == 15  # (2+3) + 10
+    assert result == 15  # (2+3) + 10
 
 def test_bracket_tick():
     """Test ['] - compile execution token"""
@@ -1042,23 +1031,23 @@ def test_base():
     """Test BASE - returns address of base variable"""
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
-    outer.interpret_line("BASE @")
-    result = inner.pop_ds()
+    outer.interpret_line("BASE@")
+    result = inner.pop_ds_int()
     # Default base should be 10 (decimal)
-    assert result.intval == 10
+    assert result == 10
 
 def test_base_change():
     """Test changing BASE via HEX/DECIMAL"""
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
     outer.interpret_line("HEX")  # Set to hex
-    outer.interpret_line("BASE @")
-    result = inner.pop_ds()
-    assert result.intval == 16
+    outer.interpret_line("BASE@")
+    result = inner.pop_ds_int()
+    assert result == 16
     outer.interpret_line("DECIMAL")  # Set back to decimal
-    outer.interpret_line("BASE @")
-    result2 = inner.pop_ds()
-    assert result2.intval == 10
+    outer.interpret_line("BASE@")
+    result2 = inner.pop_ds_int()
+    assert result2 == 10
 
 # I/O Tests
 
@@ -1079,28 +1068,28 @@ def test_environment_core():
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
     outer.interpret_line('S" CORE" ENVIRONMENT?')
-    flag = inner.pop_ds()
-    result = inner.pop_ds()
-    assert flag.intval == -1  # True
-    assert result.intval == -1  # CORE is present
+    flag = inner.pop_ds_int()
+    result = inner.pop_ds_int()
+    assert flag == -1  # True
+    assert result == -1  # CORE is present
 
 def test_environment_stack_cells():
     """Test ENVIRONMENT? with STACK-CELLS query"""
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
     outer.interpret_line('S" STACK-CELLS" ENVIRONMENT?')
-    flag = inner.pop_ds()
-    result = inner.pop_ds()
-    assert flag.intval == -1  # True
-    assert result.intval == 64  # Stack size
+    flag = inner.pop_ds_int()
+    result = inner.pop_ds_int()
+    assert flag == -1  # True
+    assert result == 64  # Stack size
 
 def test_environment_unknown():
     """Test ENVIRONMENT? with unknown query"""
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
     outer.interpret_line('S" UNKNOWN-QUERY" ENVIRONMENT?')
-    flag = inner.pop_ds()
-    assert flag.intval == 0  # False - unknown
+    flag = inner.pop_ds_int()
+    assert flag == 0  # False - unknown
 
 
 # RECURSE Tests
@@ -1108,12 +1097,12 @@ def test_environment_unknown():
 def test_recurse_factorial():
     """Test RECURSE for recursive factorial"""
     result = run_and_pop(": FACT DUP 1 > IF DUP 1- RECURSE * THEN ; 5 FACT")
-    assert result.intval == 120  # 5! = 120
+    assert result == 120  # 5! = 120
 
 def test_recurse_countdown():
     """Test RECURSE for countdown"""
     result = run_and_pop(": COUNTDOWN DUP 0 > IF 1- RECURSE THEN ; 5 COUNTDOWN")
-    assert result.intval == 0
+    assert result == 0
 
 # Compiled ABORT" Tests
 
@@ -1123,8 +1112,8 @@ def test_abort_quote_compiled_false():
     outer = OuterInterpreter(inner)
     outer.interpret_line(': TEST 0 ABORT" Should not abort" 42 ;')
     outer.interpret_line("TEST")
-    result = inner.pop_ds()
-    assert result.intval == 42
+    result = inner.pop_ds_int()
+    assert result == 42
 
 def test_abort_quote_compiled_true():
     """Test compiled ABORT\" with true condition"""

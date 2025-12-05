@@ -2,7 +2,7 @@
 \ ackermann's function
 \ http://www.bagley.org/~doug/shootout/
 
-6 constant NUM
+5 constant NUM
 
 : ack  recursive
     dup 0=

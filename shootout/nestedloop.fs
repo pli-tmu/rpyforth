@@ -1,4 +1,4 @@
-10 constant NUM
+30 constant NUM
 
 : nestedloops
   NUM 0 do
@@ -16,10 +16,6 @@
   loop ;
 
 \ run test and print result
-: main
-    100 0 DO
-        0 nestedloops 1
-    LOOP
-;
+0 nestedloops 1 U.R CR
 
-main
+bye

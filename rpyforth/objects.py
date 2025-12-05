@@ -79,7 +79,7 @@ class W_IntObject(W_Object):
 
     @elidable
     def to_string(self):
-        return str(self.intval)
+        return 'W_IntObject(%s)' % str(self.intval)
 
     @elidable
     def is_true(self):
@@ -287,6 +287,19 @@ HEX     = W_IntObject(16)
 DECIMAL = W_IntObject(10)
 OCTAL   = W_IntObject(8)
 BINARY  = W_IntObject(2)
+
+SMALL_INT_MIN = -128
+SMALL_INT_MAX = 2048  # Extended range for loop counters (covers 0-1000 loops)
+
+# Pre-initialize the cache as a list at module load time for O(1) access
+_small_int_cache = [W_IntObject(i) for i in range(SMALL_INT_MIN, SMALL_INT_MAX)]
+
+@elidable
+def make_int(val):
+    """Get a cached W_IntObject for small integers, or create a new one."""
+    if SMALL_INT_MIN <= val < SMALL_INT_MAX:
+        return _small_int_cache[val - SMALL_INT_MIN]
+    return W_IntObject(val)
 
 # data space characteristics
 CELL_SIZE_BYTES = LONG_BIT // 8
