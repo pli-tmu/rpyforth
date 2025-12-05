@@ -13,6 +13,8 @@
     +
     then ;
 
+UTIME 2>R
 NUM fib 1 u.r cr
+UTIME 2R> D- ." Elapsed: " D. ." usec" CR
 
 bye

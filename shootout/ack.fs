@@ -2,7 +2,7 @@
 \ ackermann's function
 \ http://www.bagley.org/~doug/shootout/
 
-4 constant NUM
+8 constant NUM
 
 : ack  recursive
     dup 0=
@@ -19,6 +19,10 @@
 \ END ACK
 
 \ run ack(3, NUM) and print result from stack
-." Ack: " NUM 3 ack 1 u.r CR
+: main ." Ack: " NUM 3 ack 1 u.r CR ;
+
+utime 2>R
+main
+utime 2R> D- ." Elapsed: " D. ." usec" CR
 
 bye
