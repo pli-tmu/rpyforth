@@ -285,19 +285,21 @@ class OuterInterpreter(object):
             print "CONSTANT requires a name"
             return -1
         name, i = self._read_tok(toks, i)
-        # Check tag to determine if it's an unboxed int/float or boxed object
-        ds_ptr = self.inner.ds_ptr - 1
-        if ds_ptr >= 0 and self.inner.ds_tags[ds_ptr] == 0:
+        # Check which stack has data and pop from it
+        if self.inner.ds_ptr_ints > 0:
             # Unboxed integer
             intval = self.inner.pop_ds_int()
             val = W_IntObject(intval)
-        elif ds_ptr >= 0 and self.inner.ds_tags[ds_ptr] == 1:
+        elif self.inner.ds_ptr_floats > 0:
             # Unboxed float
             floatval = self.inner.pop_ds_float()
             val = W_FloatObject(floatval)
-        else:
+        elif self.inner.ds_ptr_locals > 0:
             # Boxed object
             val = self.inner.pop_ds()
+        else:
+            print "CONSTANT: stack underflow"
+            return -1
         self._define_simple_word(name, val)
         return i
 
@@ -366,7 +368,7 @@ class OuterInterpreter(object):
         self._emit_with_target(self.wLOOP, entry.index)
         loop_end = self.cc_ptr
         for leave_addr in entry.leave_addrs:
-            self.current_lits[leave_addr] = loop_end
+            self.current_lits[leave_addr] = W_IntObject(loop_end)
         return True
 
     def _compile_begin(self):
@@ -415,7 +417,7 @@ class OuterInterpreter(object):
         self._emit_with_target(self.wPLUSLOOP, entry.index)
         loop_end = self.cc_ptr
         for leave_addr in entry.leave_addrs:
-            self.current_lits[leave_addr] = loop_end
+            self.current_lits[leave_addr] = W_IntObject(loop_end)
         return True
 
     def _compile_again(self):
@@ -441,6 +443,20 @@ class OuterInterpreter(object):
             return False
         self._emit_with_target(self.w0BR, entry.index)
         return True
+
+    def _compile_leave(self):
+        """Compile LEAVE."""
+        # Find the innermost DO loop on the control stack
+        for i in range(len(self.ctrl) - 1, -1, -1):
+            entry = self.ctrl[i]
+            if entry.kind == CTRL_DO:
+                # Emit LEAVE with a placeholder target (will be patched by LOOP/+LOOP)
+                leave_addr = self.cc_ptr
+                self._emit_with_target(self.wLEAVE, 0)  # 0 is placeholder
+                entry.leave_addrs.append(leave_addr)
+                return True
+        print "LEAVE without DO"
+        return False
 
     def _compile_char(self, toks, i):
         """Compile [CHAR]."""
@@ -477,20 +493,21 @@ class OuterInterpreter(object):
                 # Special case for LITERAL: it needs compilation-time handling
                 if w.name == "LITERAL" or to_upper(w.name) == "LITERAL":
                     # Pop value from stack and compile it as a literal
-                    # Check tag to determine if it's an unboxed int or boxed object
-                    ds_ptr = self.inner.ds_ptr - 1
-                    if ds_ptr >= 0 and self.inner.ds_tags[ds_ptr] == 0:
+                    # Check the integer stack first (most common case)
+                    if self.inner.ds_ptr_ints > 0:
                         # Unboxed integer
                         intval = self.inner.pop_ds_int()
                         self._emit_lit(W_IntObject(intval))
-                    elif ds_ptr >= 0 and self.inner.ds_tags[ds_ptr] == 1:
+                    elif self.inner.ds_ptr_floats > 0:
                         # Unboxed float
                         floatval = self.inner.pop_ds_float()
                         self._emit_lit(W_FloatObject(floatval))
-                    else:
+                    elif self.inner.ds_ptr_locals > 0:
                         # Boxed object
                         val = self.inner.pop_ds()
                         self._emit_lit(val)
+                    else:
+                        print "LITERAL: stack underflow"
                 else:
                     # Other immediate words: execute them
                     self.inner.execute_word_now(w)
@@ -645,7 +662,9 @@ class OuterInterpreter(object):
 
         if flag != 0:
             print "ABORT:", abort_msg
-            self.inner.ds_ptr = 0
+            self.inner.ds_ptr_ints = 0
+            self.inner.ds_ptr_floats = 0
+            self.inner.ds_ptr_locals = 0
             self.inner.rs_ptr = 0
             self.state = INTERPRET
             return i, True  # Signal to return from interpret_line
@@ -974,6 +993,11 @@ class OuterInterpreter(object):
 
                 if tkey == "UNTIL":
                     if not self._compile_until():
+                        return
+                    continue
+
+                if tkey == "LEAVE":
+                    if not self._compile_leave():
                         return
                     continue
 

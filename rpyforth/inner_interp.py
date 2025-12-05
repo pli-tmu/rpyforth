@@ -14,7 +14,7 @@ from rpyforth.objects import (
 
 
 from rpython.rlib.rstruct.ieee import float_pack, float_unpack
-from rpython.rlib.rarithmetic import r_ulonglong, intmask
+from rpython.rlib.rarithmetic import r_ulonglong
 from rpython.rlib.jit import JitDriver, promote, elidable, unroll_safe, promote_string
 from rpython.rlib.rfile import create_stdio
 
@@ -39,18 +39,26 @@ jitdriver = JitDriver(
 
 class InnerInterpreter(object):
     _immutable_fields_ = ["cell_size", "cell_size_bytes", "base"]
-    _virtualizable_ = ["ds_ptr", "ds_ints[*]", "ds_tags[*]", "ds[*]", "rs_ptr", "rs[*]",
-                       "cs_ptr", "cs_threads[*]", "cs_ips[*]",
-                       "loop_ptr", "loop_counters[*]", "loop_limits[*]"]
+    _virtualizable_ = ["ds_ptr_ints", "ds_ptr_floats", "ds_ptr_locals",
+                       "ds_ints[*]", "ds_floats[*]", "ds_locals[*]",
+                       "rs_ptr", "rs[*]",
+                       "cs_ptr", "cs_threads[*]", "cs_ips[*]"]
 
 
     def __init__(self):
         # Pre-allocate larger stacks to reduce growth overhead
         self.ds_ints = [0] * STACK_SIZE # unboxed integer data stack
+        self.ds_ptr_ints = 0
+
         self.ds_floats = [0.0] * STACK_SIZE
-        self.ds_tags = [0] * STACK_SIZE # 0=int, 1=object
-        self.ds = [None] * STACK_SIZE # boxed object data stack (for non-ints)
-        self.ds_ptr = 0
+        self.ds_ptr_floats = 0
+
+        self.ds_locals = [None] * STACK_SIZE
+        self.ds_ptr_locals = 0
+
+        # self.ds_tags = [0] * STACK_SIZE # 0=int, 1=object
+        # self.ds = [None] * STACK_SIZE # boxed object data stack (for non-ints)
+        # self.ds_ptr = 0
 
         self.rs = [0] * STACK_SIZE  # return stack
         self.rs_ptr = 0
@@ -59,11 +67,6 @@ class InnerInterpreter(object):
         self.cs_threads = [None] * 128  # return threads
         self.cs_ips = [0] * 128       # return IPs
         self.cs_ptr = 0
-
-        # Dedicated integer loop stack for DO...LOOP (avoids W_IntObject allocation)
-        self.loop_counters = [0] * 32  # raw int counters
-        self.loop_limits = [0] * 32    # raw int limits
-        self.loop_ptr = 0
 
         self.mem = [None] * HEAP_SIZE_BYTES
         self.cell_size = CELL_SIZE
@@ -99,110 +102,98 @@ class InnerInterpreter(object):
         return self.cs_ptr == 0
 
     def push_loop(self, limit, counter):
-        """Push loop parameters (raw integers) onto dedicated loop stack."""
-        ptr = self.loop_ptr
-        self.loop_limits[ptr] = limit
-        self.loop_counters[ptr] = counter
-        self.loop_ptr = ptr + 1
+        """Push loop parameters onto return stack (limit first, then counter on top)."""
+        self.push_rs(limit)
+        self.push_rs(counter)
 
     def pop_loop(self):
-        """Pop loop parameters from dedicated loop stack."""
-        ptr = self.loop_ptr - 1
-        assert ptr >= 0
-        self.loop_ptr = ptr
-        limit = self.loop_limits[ptr]
-        counter = self.loop_counters[ptr]
+        """Pop loop parameters from return stack."""
+        counter = self.pop_rs()
+        limit = self.pop_rs()
         return limit, counter
 
     def peek_loop_counter(self, depth=0):
         """Get current loop counter without popping (raw int)."""
-        ptr = self.loop_ptr - 1 - depth
-        assert ptr >= 0
-        return self.loop_counters[ptr]
+        # Counter is at top of each loop frame (2 cells per loop)
+        return self.peek_rs(depth * 2)
 
     def peek_loop_limit(self, depth=0):
         """Get current loop limit without popping (raw int)."""
-        ptr = self.loop_ptr - 1 - depth
-        assert ptr >= 0
-        return self.loop_limits[ptr]
+        # Limit is below counter in each loop frame (2 cells per loop)
+        return self.peek_rs(depth * 2 + 1)
 
     def set_loop_counter(self, depth, value):
         """Set loop counter in place (raw int)."""
-        ptr = self.loop_ptr - 1 - depth
-        assert ptr >= 0
-        self.loop_counters[ptr] = value
+        # Counter is at top of each loop frame (2 cells per loop)
+        self.poke_rs(depth * 2, value)
 
     def push_ds(self, w_x):
-        ds_ptr = self.ds_ptr
-        self.ds[ds_ptr] = w_x
-        self.ds_tags[ds_ptr] = 2
-        self.ds_ptr = ds_ptr + 1
+        assert isinstance(w_x, W_Object)
+        ds_ptr = self.ds_ptr_locals
+        self.ds_locals[ds_ptr] = w_x
+        self.ds_ptr_locals = ds_ptr + 1
 
     def pop_ds(self):
-        ds_ptr = self.ds_ptr - 1
+        ds_ptr = self.ds_ptr_locals - 1
         assert ds_ptr >= 0
         # Return boxed object
-        w_x = self.ds[ds_ptr]
-        self.ds[ds_ptr] = None
-        self.ds_ptr = ds_ptr
+        w_x = self.ds_locals[ds_ptr]
+        assert isinstance(w_x, W_Object)
+        self.ds_locals[ds_ptr] = None
+        self.ds_ptr_locals = ds_ptr
         return w_x
 
     def push_ds_int(self, intval):
-        ds_ptr = self.ds_ptr
+        ds_ptr = self.ds_ptr_ints
         self.ds_ints[ds_ptr] = intval
-        self.ds_tags[ds_ptr] = 0
-        self.ds_ptr = ds_ptr + 1
+        #self.ds_tags[ds_ptr] = 0
+        self.ds_ptr_ints = ds_ptr + 1
 
     def push_ds_float(self, floatval):
-        ds_ptr = self.ds_ptr
+        ds_ptr = self.ds_ptr_floats
         self.ds_floats[ds_ptr] = floatval
-        self.ds_tags[ds_ptr] = 1
-        self.ds_ptr = ds_ptr + 1
+        #self.ds_tags[ds_ptr] = 1
+        self.ds_ptr_floats = ds_ptr + 1
 
     def pop_ds_int(self):
-        ds_ptr = self.ds_ptr - 1
+        ds_ptr = self.ds_ptr_ints - 1
         assert ds_ptr >= 0
-        assert self.ds_tags[ds_ptr] == 0, "Expected int on stack"
+        #assert self.ds_tags[ds_ptr] == 0, "Expected int on stack"
         intval = self.ds_ints[ds_ptr]
-        self.ds_ptr = ds_ptr
+        self.ds_ptr_ints = ds_ptr
         return intval
 
     def pop_ds_float(self):
-        ds_ptr = self.ds_ptr - 1
+        ds_ptr = self.ds_ptr_floats - 1
         assert ds_ptr >= 0
-        assert self.ds_tags[ds_ptr] == 1, "Expected float on stack"
+        #assert self.ds_tags[ds_ptr] == 1, "Expected float on stack"
         floatval = self.ds_floats[ds_ptr]
-        self.ds_ptr = ds_ptr
+        self.ds_ptr_floats = ds_ptr
         return floatval
 
     def peek_ds_int(self, depth=0):
-        ptr = self.ds_ptr - 1 - depth
+        ptr = self.ds_ptr_ints - 1 - depth
         assert ptr >= 0
-        assert self.ds_tags[ptr] == 0, "Expected int on stack"
+        #assert self.ds_tags[ptr] == 0, "Expected int on stack"
         return self.ds_ints[ptr]
 
     def peek_ds_float(self, depth=0):
-        ptr = self.ds_ptr - 1 - depth
+        ptr = self.ds_ptr_floats - 1 - depth
         assert ptr >= 0
-        assert self.ds_tags[ptr] == 1, "Expected float on stack"
+        #assert self.ds_tags[ptr] == 1, "Expected float on stack"
         return self.ds_floats[ptr]
 
     def peek_ds(self, depth=0):
         """Peek at stack value without popping (returns boxed W_Object)."""
-        ptr = self.ds_ptr - 1 - depth
+        ptr = self.ds_ptr_locals - 1 - depth
         assert ptr >= 0
-        tag = self.ds_tags[ptr]
-        if tag == 0:
-            return W_IntObject(self.ds_ints[ptr])
-        else:
-            return self.ds[ptr]
+        return self.ds_locals[ptr]
 
     def poke_ds_int(self, depth, intval):
         """Set raw integer at depth (unboxed)."""
-        ptr = self.ds_ptr - 1 - depth
+        ptr = self.ds_ptr_ints - 1 - depth
         assert ptr >= 0
         self.ds_ints[ptr] = intval
-        self.ds_tags[ptr] = 0
 
     def top2_ds(self):
         w_y = self.pop_ds()

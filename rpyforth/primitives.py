@@ -265,7 +265,7 @@ def prim_MIN(inner, cur, ip):
 # DEPTH ( -- +n )
 def prim_DEPTH(inner, cur, ip):
     """GForth core 2012: +n is the number of single-cell values contained in the data stack."""
-    inner.push_ds_int(inner.ds_ptr)
+    inner.push_ds_int(inner.ds_ptr_ints)
     return ip
 
 
@@ -814,7 +814,8 @@ def prim_DO_RUNTIME(inner, cur, ip):
     start = inner.pop_ds_int()
     limit = inner.pop_ds_int()
     # Push to dedicated loop stack (raw integers, no boxing!)
-    inner.push_loop(limit, start)
+    inner.push_rs(limit)
+    inner.push_rs(start)
     return ip
 
 
@@ -891,9 +892,9 @@ def prim_UNLOOP(inner, cur, ip):
 def prim_LEAVE(inner, cur, ip):
     """Exit the current loop by cleaning up return stack and jumping to end."""
     inner.pop_loop()  # Pop from dedicated loop stack
-    target = cur.lits[ip - 2]
+    target = cur.lits[ip - 1]
     assert isinstance(target, W_IntObject)
-    ip = target.intval + 1
+    ip = target.intval
     return ip
 
 # I ( -- n ) ( R: limit counter -- limit counter )
@@ -975,7 +976,6 @@ def prim_NUMSIGN(inner, cur, ip):
         inner.print_str(W_StringObject("# outside <# #>"))
         return ip
     x = inner.pop_ds_int()
-    assert isinstance(x, W_IntObject)
     base = inner.base
     q = x // base
     r = x % base
@@ -1242,7 +1242,9 @@ def prim_ABORT_QUOTE_RUNTIME(inner, cur, ip):
         stdout.write(msg)
         stdout.write("\n")
         # Clear stacks
-        inner.ds_ptr = 0
+        inner.ds_ptr_ints = 0
+        inner.ds_ptr_floats = 0
+        inner.ds_ptr_locals = 0
         inner.rs_ptr = 0
         # Signal abort by raising Exit
         from rpyforth.inner_interp import Exit
