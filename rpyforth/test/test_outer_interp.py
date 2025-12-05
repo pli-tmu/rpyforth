@@ -442,7 +442,7 @@ def test_to_r():
     """Test >R (to-R) - move value from data stack to return stack"""
     inner = run("42 >R")
     # Data stack should be empty
-    assert inner.ds_ptr == 0
+    assert inner.ds_ptr_ints == 0
     # Return stack should have 42
     result = inner.pop_rs()
     assert result == 42
@@ -470,7 +470,7 @@ def test_2to_r():
     """Test 2>R - move two values from data stack to return stack"""
     inner = run("10 20 2>R")
     # Data stack should be empty
-    assert inner.ds_ptr == 0
+    assert inner.ds_ptr_ints == 0
     # Return stack should have 20 on top, 10 below
     result2 = inner.pop_rs()
     result1 = inner.pop_rs()
@@ -1124,4 +1124,4 @@ def test_abort_quote_compiled_true():
     outer.interpret_line("99")
     outer.interpret_line("TEST")
     # After abort, stack should be cleared
-    assert inner.ds_ptr == 0
+    assert inner.ds_ptr_ints == 0
