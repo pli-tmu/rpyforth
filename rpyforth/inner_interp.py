@@ -27,6 +27,10 @@ HEAP_SIZE_BYTES = HEAP_CELL_COUNT
 class Exit(Exception):
     pass
 
+class Bye(Exception):
+    """Raised by BYE to exit the Forth system cleanly."""
+    pass
+
 def get_printable_location(ip, thread):
     return "ip=%d %s %s" % (ip, thread.code[ip].to_string(), thread.lits[ip].to_string())
 

@@ -1714,9 +1714,8 @@ def prim_EQUAL(inner, cur, ip):
 # BYE ( -- )
 def prim_BYE(inner, cur, ip):
     """GForth core 2012: exit the Forth system."""
-    import os
-    os._exit(0)
-    return -1
+    from rpyforth.inner_interp import Bye
+    raise Bye()
 
 
 # <= ( n1 n2 -- flag )

@@ -1,6 +1,6 @@
 import sys
 
-from rpyforth.inner_interp import InnerInterpreter
+from rpyforth.inner_interp import InnerInterpreter, Bye
 from rpyforth.outer_interp import OuterInterpreter
 
 from rpython.rlib import jit
@@ -29,8 +29,11 @@ def entry_point(argv):
     if len(argv) > 1:
         args = argv[2:]
     f = open_file_as_stream(path)
-    for line in f.readall().split('\n'):
-        outer.interpret_line(line)
+    try:
+        for line in f.readall().split('\n'):
+            outer.interpret_line(line)
+    except Bye:
+        pass
     f.close()
     return 0
 
