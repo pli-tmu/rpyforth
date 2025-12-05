@@ -1,5 +1,6 @@
 from rpython.rlib.rfile import create_stdio
 from rpython.rlib.jit import promote, unroll_safe
+from rpython.rlib.rfloat import formatd
 
 from rpyforth.objects import (
     BINARY,
@@ -296,6 +297,64 @@ def prim_S_TO_D(inner, cur, ip):
     else:
         inner.push_ds_int(-1)
     return ip
+
+
+# D+ ( d1 d2 -- d3 )
+def prim_D_PLUS(inner, cur, ip):
+    """GForth double 2012: add d1 to d2, giving the sum d3."""
+    # Stack: d1.lo d1.hi d2.lo d2.hi (d2.hi on top)
+    d2_hi = inner.pop_ds_int()
+    d2_lo = inner.pop_ds_int()
+    d1_hi = inner.pop_ds_int()
+    d1_lo = inner.pop_ds_int()
+    BIT_MASK = (1 << LONG_BIT) - 1
+    # Combine into 128-bit values (using Python's arbitrary precision)
+    d1 = d1_lo + (d1_hi << LONG_BIT)
+    d2 = d2_lo + (d2_hi << LONG_BIT)
+    result = d1 + d2
+    # Split back into low and high cells
+    result_lo = result & BIT_MASK
+    result_hi = (result >> LONG_BIT) & BIT_MASK
+    inner.push_ds_int(result_lo)
+    inner.push_ds_int(result_hi)
+    return ip
+
+
+# D- ( d1 d2 -- d3 )
+def prim_D_MINUS(inner, cur, ip):
+    """GForth double 2012: subtract d2 from d1, giving the difference d3."""
+    # Stack: d1.lo d1.hi d2.lo d2.hi (d2.hi on top)
+    d2_hi = inner.pop_ds_int()
+    d2_lo = inner.pop_ds_int()
+    d1_hi = inner.pop_ds_int()
+    d1_lo = inner.pop_ds_int()
+    BIT_MASK = (1 << LONG_BIT) - 1
+    # Combine into 128-bit values (using Python's arbitrary precision)
+    d1 = d1_lo + (d1_hi << LONG_BIT)
+    d2 = d2_lo + (d2_hi << LONG_BIT)
+    result = d1 - d2
+    # Split back into low and high cells
+    result_lo = result & BIT_MASK
+    result_hi = (result >> LONG_BIT) & BIT_MASK
+    inner.push_ds_int(result_lo)
+    inner.push_ds_int(result_hi)
+    return ip
+
+
+# D. ( d -- )
+def prim_D_DOT(inner, cur, ip):
+    """GForth double 2012: display d according to current BASE."""
+    from rpython.rlib.rfile import create_stdio
+    # Stack: d.lo d.hi (d.hi on top)
+    d_hi = inner.pop_ds_int()
+    d_lo = inner.pop_ds_int()
+    # Combine into full value
+    d = d_lo + (d_hi << LONG_BIT)
+    stdin, stdout, stderr = create_stdio()
+    stdout.write(str(d))
+    stdout.write(' ')
+    return ip
+
 
 # BL ( -- char )
 def prim_BL(inner, cur, ip):
@@ -1660,6 +1719,395 @@ def prim_BYE(inner, cur, ip):
     return -1
 
 
+# <= ( n1 n2 -- flag )
+def prim_LESSEQUAL(inner, cur, ip):
+    """Flag is true when n1 is less than or equal to n2."""
+    n2 = inner.pop_ds_int()
+    n1 = inner.pop_ds_int()
+    if n1 <= n2:
+        inner.push_ds_int(-1)
+    else:
+        inner.push_ds_int(0)
+    return ip
+
+
+# >= ( n1 n2 -- flag )
+def prim_GREATEREQUAL(inner, cur, ip):
+    """Flag is true when n1 is greater than or equal to n2."""
+    n2 = inner.pop_ds_int()
+    n1 = inner.pop_ds_int()
+    if n1 >= n2:
+        inner.push_ds_int(-1)
+    else:
+        inner.push_ds_int(0)
+    return ip
+
+
+# <> ( n1 n2 -- flag )
+def prim_NOTEQUAL(inner, cur, ip):
+    """Flag is true when n1 is not equal to n2."""
+    n2 = inner.pop_ds_int()
+    n1 = inner.pop_ds_int()
+    if n1 != n2:
+        inner.push_ds_int(-1)
+    else:
+        inner.push_ds_int(0)
+    return ip
+
+
+# F< ( r1 r2 -- flag )
+def prim_FLESS(inner, cur, ip):
+    """Flag is true when r1 is less than r2."""
+    f2 = inner.pop_ds_float()
+    f1 = inner.pop_ds_float()
+    if f1 < f2:
+        inner.push_ds_int(-1)
+    else:
+        inner.push_ds_int(0)
+    return ip
+
+
+# F= ( r1 r2 -- flag )
+def prim_FEQUAL(inner, cur, ip):
+    """Flag is true when r1 equals r2."""
+    f2 = inner.pop_ds_float()
+    f1 = inner.pop_ds_float()
+    if f1 == f2:
+        inner.push_ds_int(-1)
+    else:
+        inner.push_ds_int(0)
+    return ip
+
+
+# F0< ( r -- flag )
+def prim_FZEROLESS(inner, cur, ip):
+    """Flag is true when r is less than zero."""
+    f = inner.pop_ds_float()
+    if f < 0.0:
+        inner.push_ds_int(-1)
+    else:
+        inner.push_ds_int(0)
+    return ip
+
+
+# F0= ( r -- flag )
+def prim_FZEROEQUAL(inner, cur, ip):
+    """Flag is true when r equals zero."""
+    f = inner.pop_ds_float()
+    if f == 0.0:
+        inner.push_ds_int(-1)
+    else:
+        inner.push_ds_int(0)
+    return ip
+
+
+# FNEGATE ( r1 -- r2 )
+def prim_FNEGATE(inner, cur, ip):
+    """Negate r1."""
+    f = inner.pop_ds_float()
+    inner.push_ds_float(-f)
+    return ip
+
+
+# FABS ( r1 -- r2 )
+def prim_FABS(inner, cur, ip):
+    """Return absolute value of r1."""
+    f = inner.pop_ds_float()
+    if f < 0.0:
+        inner.push_ds_float(-f)
+    else:
+        inner.push_ds_float(f)
+    return ip
+
+
+# FOVER ( r1 r2 -- r1 r2 r1 )
+def prim_FOVER(inner, cur, ip):
+    """Copy second float to top of float stack."""
+    f2 = inner.pop_ds_float()
+    f1 = inner.pop_ds_float()
+    inner.push_ds_float(f1)
+    inner.push_ds_float(f2)
+    inner.push_ds_float(f1)
+    return ip
+
+
+# FDROP ( r -- )
+def prim_FDROP(inner, cur, ip):
+    """Drop top float from stack."""
+    inner.pop_ds_float()
+    return ip
+
+
+# FROT ( r1 r2 r3 -- r2 r3 r1 )
+def prim_FROT(inner, cur, ip):
+    """Rotate top three floats."""
+    f3 = inner.pop_ds_float()
+    f2 = inner.pop_ds_float()
+    f1 = inner.pop_ds_float()
+    inner.push_ds_float(f2)
+    inner.push_ds_float(f3)
+    inner.push_ds_float(f1)
+    return ip
+
+
+# FLOAT+ ( f-addr1 -- f-addr2 )
+def prim_FLOATPLUS(inner, cur, ip):
+    """Add size of float to address."""
+    addr = inner.pop_ds_int()
+    inner.push_ds_int(addr + 8)  # 8 bytes for a double
+    return ip
+
+
+# ALLOCATE ( u -- a-addr ior )
+def prim_ALLOCATE(inner, cur, ip):
+    """Allocate u bytes of memory, return address and 0 (success) or non-zero (failure)."""
+    size = inner.pop_ds_int()
+    # Use the inner interpreter's memory buffer
+    # Allocate from 'here' and advance
+    addr = inner.here
+    inner.here = addr + size
+    # Initialize memory (ensure we have space in mem array)
+    if inner.here < len(inner.mem):
+        inner.push_ds_int(addr)
+        inner.push_ds_int(0)  # success
+    else:
+        inner.push_ds_int(0)
+        inner.push_ds_int(-1)  # failure
+    return ip
+
+
+# FREE ( a-addr -- ior )
+def prim_FREE(inner, cur, ip):
+    """Free previously allocated memory. Always succeeds in this simple implementation."""
+    inner.pop_ds_int()  # Discard address
+    inner.push_ds_int(0)  # Always success (no actual deallocation)
+    return ip
+
+
+# THROW ( k*x n -- k*x | i*x n )
+def prim_THROW(inner, cur, ip):
+    """Throw exception. If n is 0, do nothing. Otherwise, abort with message."""
+    n = inner.pop_ds_int()
+    if n != 0:
+        print "THROW: exception", n
+        import os
+        os._exit(1)
+    return ip
+
+
+# Precision for floating point output
+_float_precision = [6]  # Default precision, stored as list for mutability
+
+
+# SET-PRECISION ( u -- )
+def prim_SET_PRECISION(inner, cur, ip):
+    """Set number of significant digits for floating point output."""
+    prec = inner.pop_ds_int()
+    _float_precision[0] = prec
+    return ip
+
+
+# PRECISION ( -- u )
+def prim_PRECISION(inner, cur, ip):
+    """Return current floating point precision."""
+    inner.push_ds_int(_float_precision[0])
+    return ip
+
+
+# F. ( r -- )
+def prim_FDOT(inner, cur, ip):
+    """Print floating point number."""
+    f = inner.pop_ds_float()
+    prec = _float_precision[0]
+    result = formatd(f, 'g', prec)
+    stdin, stdout, stderr = create_stdio()
+    stdout.write(result + " ")
+    stdout.flush()
+    return ip
+
+
+# D>F ( d -- r )
+def prim_D2F(inner, cur, ip):
+    """Convert double-cell integer to float."""
+    high = inner.pop_ds_int()
+    low = inner.pop_ds_int()
+    if LONG_BIT == 64:
+        d = low  # or combine if needed
+    else:
+        d = (high << 32) | (low & 0xFFFFFFFF)
+    inner.push_ds_float(float(d))
+    return ip
+
+
+# F>D ( r -- d )
+def prim_F2D(inner, cur, ip):
+    """Convert float to double-cell integer (truncate toward zero)."""
+    f = inner.pop_ds_float()
+    d = int(f)
+    # Push as double (two cells)
+    if LONG_BIT == 64:
+        inner.push_ds_int(d)
+        inner.push_ds_int(0)  # high part
+    else:
+        inner.push_ds_int(d & 0xFFFFFFFF)  # low
+        inner.push_ds_int(d >> 32)  # high
+    return ip
+
+
+# FMIN ( r1 r2 -- r3 )
+def prim_FMIN(inner, cur, ip):
+    """Return the lesser of r1 and r2."""
+    f2 = inner.pop_ds_float()
+    f1 = inner.pop_ds_float()
+    if f1 < f2:
+        inner.push_ds_float(f1)
+    else:
+        inner.push_ds_float(f2)
+    return ip
+
+
+# FMAX ( r1 r2 -- r3 )
+def prim_FMAX(inner, cur, ip):
+    """Return the greater of r1 and r2."""
+    f2 = inner.pop_ds_float()
+    f1 = inner.pop_ds_float()
+    if f1 > f2:
+        inner.push_ds_float(f1)
+    else:
+        inner.push_ds_float(f2)
+    return ip
+
+
+# FLOOR ( r1 -- r2 )
+def prim_FLOOR(inner, cur, ip):
+    """Round r1 toward negative infinity."""
+    import math
+    f = inner.pop_ds_float()
+    inner.push_ds_float(math.floor(f))
+    return ip
+
+
+# FROUND ( r1 -- r2 )
+def prim_FROUND(inner, cur, ip):
+    """Round r1 to nearest integer."""
+    f = inner.pop_ds_float()
+    inner.push_ds_float(float(int(f + 0.5 if f >= 0 else f - 0.5)))
+    return ip
+
+
+# FLITERAL ( F: r -- ) compilation; ( -- F: r ) run-time
+def prim_FLITERAL(inner, cur, ip):
+    """Compile a float literal. At run-time, push the float onto the float stack."""
+    # Pop float from float stack
+    if inner.ds_ptr_floats > 0:
+        floatval = inner.pop_ds_float()
+        # Emit LIT <float> into the compilation buffer
+        outer = inner.outer
+        if outer is not None:
+            outer._emit_lit(W_FloatObject(floatval))
+    elif inner.ds_ptr_locals > 0:
+        val = inner.pop_ds()
+        outer = inner.outer
+        if outer is not None:
+            outer._emit_lit(val)
+    else:
+        print "FLITERAL: float stack underflow"
+    return ip
+
+
+# Time-related primitives
+
+# MS ( u -- )
+def prim_MS(inner, cur, ip):
+    """Wait at least u milliseconds."""
+    import time
+    u = inner.pop_ds_int()
+    if u > 0:
+        # Convert milliseconds to seconds for time.sleep
+        time.sleep(u / 1000.0)
+    return ip
+
+
+# TIME&DATE ( -- nsec nmin nhour nday nmonth nyear )
+def prim_TIME_AND_DATE(inner, cur, ip):
+    raise NotImplementedError
+
+
+# UTIME ( -- d )
+def prim_UTIME(inner, cur, ip):
+    from rpython.rlib.rtime import time
+    # Get current time in seconds (float), convert to microseconds
+    t = time()
+    usecs = int(t * 1000000.0)
+    # Push as double-cell (low, high)
+    BIT_MASK = (1 << LONG_BIT) - 1
+    low = usecs & BIT_MASK
+    high = usecs >> LONG_BIT
+    inner.push_ds_int(low)
+    inner.push_ds_int(high)
+    return ip
+
+
+# CPUTIME ( -- duser dsystem )
+def prim_CPUTIME(inner, cur, ip):
+    """Report CPU times in microseconds. duser is user-level CPU time, dsystem is system-level CPU time."""
+    # Try to get process times if available
+    try:
+        import os
+        # os.times() returns (user, system, children_user, children_system, elapsed)
+        times = os.times()
+        user_secs = times[0]
+        sys_secs = times[1]
+    except:
+        # Fallback: use elapsed time for user, 0 for system
+        from rpython.rlib.rtime import time
+        user_secs = time()
+        sys_secs = 0.0
+
+    # Convert to microseconds
+    user_usecs = int(user_secs * 1000000.0)
+    sys_usecs = int(sys_secs * 1000000.0)
+
+    BIT_MASK = (1 << LONG_BIT) - 1
+
+    # Push duser (low, high)
+    user_low = user_usecs & BIT_MASK
+    user_high = user_usecs >> LONG_BIT
+    inner.push_ds_int(user_low)
+    inner.push_ds_int(user_high)
+
+    # Push dsystem (low, high)
+    sys_low = sys_usecs & BIT_MASK
+    sys_high = sys_usecs >> LONG_BIT
+    inner.push_ds_int(sys_low)
+    inner.push_ds_int(sys_high)
+    return ip
+
+
+# LITERAL ( x -- ) compilation; ( -- x ) run-time
+def prim_LITERAL(inner, cur, ip):
+    """Compile a literal. At run-time, push the value onto the stack."""
+    # Pop value from stack
+    if inner.ds_ptr_ints > 0:
+        intval = inner.pop_ds_int()
+        outer = inner.outer
+        if outer is not None:
+            outer._emit_lit(W_IntObject(intval))
+    elif inner.ds_ptr_floats > 0:
+        floatval = inner.pop_ds_float()
+        outer = inner.outer
+        if outer is not None:
+            outer._emit_lit(W_FloatObject(floatval))
+    elif inner.ds_ptr_locals > 0:
+        val = inner.pop_ds()
+        outer = inner.outer
+        if outer is not None:
+            outer._emit_lit(val)
+    else:
+        print "LITERAL: stack underflow"
+    return ip
+
+
 def install_primitives(outer):
     outer.define_prim("0=", prim_ZEROEQUAL)
     outer.define_prim("0<", prim_ZEROLESS)
@@ -1693,6 +2141,9 @@ def install_primitives(outer):
     outer.define_prim("LSHIFT", prim_LSHIFT)
 
     outer.define_prim("S>D", prim_S_TO_D)
+    outer.define_prim("D+", prim_D_PLUS)
+    outer.define_prim("D-", prim_D_MINUS)
+    outer.define_prim("D.", prim_D_DOT)
     outer.define_prim("BL", prim_BL)
     outer.define_prim("FILL", prim_FILL)
     outer.define_prim("MOVE", prim_MOVE)
@@ -1805,13 +2256,32 @@ def install_primitives(outer):
     outer.define_prim("F-", prim_FSUB)
     outer.define_prim("F/", prim_FDIV)
     outer.define_prim("F>", prim_FGREATER)
+    outer.define_prim("F<", prim_FLESS)
+    outer.define_prim("F=", prim_FEQUAL)
+    outer.define_prim("F0<", prim_FZEROLESS)
+    outer.define_prim("F0=", prim_FZEROEQUAL)
     outer.define_prim("FSWAP", prim_FSWAP)
     outer.define_prim("S>F", prim_S2F)
     outer.define_prim("F!", prim_FSTORE)
     outer.define_prim("F@", prim_FFETCH)
     outer.define_prim("FDUP", prim_FDUP)
+    outer.define_prim("FDROP", prim_FDROP)
+    outer.define_prim("FOVER", prim_FOVER)
+    outer.define_prim("FROT", prim_FROT)
+    outer.define_prim("FNEGATE", prim_FNEGATE)
+    outer.define_prim("FABS", prim_FABS)
+    outer.define_prim("FMIN", prim_FMIN)
+    outer.define_prim("FMAX", prim_FMAX)
+    outer.define_prim("FLOOR", prim_FLOOR)
+    outer.define_prim("FROUND", prim_FROUND)
     outer.define_prim("FLOAT", prim_FLOAT)
     outer.define_prim("FLOATS", prim_FLOATS)
+    outer.define_prim("FLOAT+", prim_FLOATPLUS)
+    outer.define_prim("F.", prim_FDOT)
+    outer.define_prim("D>F", prim_D2F)
+    outer.define_prim("F>D", prim_F2D)
+    outer.define_prim("SET-PRECISION", prim_SET_PRECISION)
+    outer.define_prim("PRECISION", prim_PRECISION)
 
     # stack manipulation
     outer.define_prim("PICK", prim_PICK)
@@ -1836,6 +2306,22 @@ def install_primitives(outer):
 
     # comparison
     outer.define_prim("=", prim_EQUAL)
+    outer.define_prim("<=", prim_LESSEQUAL)
+    outer.define_prim(">=", prim_GREATEREQUAL)
+    outer.define_prim("<>", prim_NOTEQUAL)
+
+    # memory allocation
+    outer.define_prim("ALLOCATE", prim_ALLOCATE)
+    outer.define_prim("FREE", prim_FREE)
+
+    # exception handling
+    outer.define_prim("THROW", prim_THROW)
 
     # system
     outer.define_prim("BYE", prim_BYE)
+
+    # time
+    outer.define_prim("MS", prim_MS)
+    outer.define_prim("TIME&DATE", prim_TIME_AND_DATE)
+    outer.define_prim("UTIME", prim_UTIME)
+    outer.define_prim("CPUTIME", prim_CPUTIME)

@@ -31,6 +31,7 @@ class OuterInterpreter(object):
 
     def __init__(self, inner):
         self.inner = inner
+        inner.outer = self    # Back-reference for LITERAL/FLITERAL primitives
         self.dict = {}         # dictionary is owned here (case-insensitive by uppercase keys)
         self.state = INTERPRET # state for compilation
         self.comment = False
@@ -65,6 +66,8 @@ class OuterInterpreter(object):
 
         # Define LITERAL as an immediate word (for POSTPONE to find it)
         self._define_literal_word()
+        # Define FLITERAL as an immediate word for floating point literals
+        self._define_fliteral_word()
 
     def reset_code(self):
         self.current_code = [None] * 128
@@ -105,11 +108,18 @@ class OuterInterpreter(object):
 
     def _define_literal_word(self):
         """Define LITERAL as an immediate word that compiles a literal."""
-        # LITERAL is IMMEDIATE and should compile LIT <value>
-        # We can't use a real primitive because it needs access to compilation state
-        # So we use a dummy word that will be handled specially
-        w = Word("LITERAL", prim=None, immediate=True, thread=None)
+        # LITERAL is IMMEDIATE and uses prim_LITERAL from primitives.py
+        from rpyforth.primitives import prim_LITERAL
+        w = Word("LITERAL", prim=prim_LITERAL, immediate=True, thread=None)
         self.dict["LITERAL"] = w
+        self.last_word = w
+
+    def _define_fliteral_word(self):
+        """Define FLITERAL as an immediate word that compiles a float literal."""
+        # FLITERAL is IMMEDIATE and uses prim_FLITERAL from primitives.py
+        from rpyforth.primitives import prim_FLITERAL
+        w = Word("FLITERAL", prim=prim_FLITERAL, immediate=True, thread=None)
+        self.dict["FLITERAL"] = w
         self.last_word = w
 
     def _emit_word(self, w):
@@ -194,7 +204,12 @@ class OuterInterpreter(object):
 
     def _to_float(self, s):
         """Convert string to float"""
-        # Python's float() handles the format we need
+        # Handle Forth-style notation like '1e' (meaning 1e0)
+        # Python requires a digit after 'e', so append '0' if needed
+        if s.endswith('e') or s.endswith('E'):
+            s = s + '0'
+        elif s.endswith('e+') or s.endswith('E+') or s.endswith('e-') or s.endswith('E-'):
+            s = s + '0'
         return float(s)
 
     def _emit_with_target(self, w, target_index):
@@ -490,27 +505,9 @@ class OuterInterpreter(object):
         if w is not None:
             # Check if word is immediate - if so, execute it now
             if w.immediate:
-                # Special case for LITERAL: it needs compilation-time handling
-                if w.name == "LITERAL" or to_upper(w.name) == "LITERAL":
-                    # Pop value from stack and compile it as a literal
-                    # Check the integer stack first (most common case)
-                    if self.inner.ds_ptr_ints > 0:
-                        # Unboxed integer
-                        intval = self.inner.pop_ds_int()
-                        self._emit_lit(W_IntObject(intval))
-                    elif self.inner.ds_ptr_floats > 0:
-                        # Unboxed float
-                        floatval = self.inner.pop_ds_float()
-                        self._emit_lit(W_FloatObject(floatval))
-                    elif self.inner.ds_ptr_locals > 0:
-                        # Boxed object
-                        val = self.inner.pop_ds()
-                        self._emit_lit(val)
-                    else:
-                        print "LITERAL: stack underflow"
-                else:
-                    # Other immediate words: execute them
-                    self.inner.execute_word_now(w)
+                # Immediate words (including LITERAL, FLITERAL) are executed immediately
+                # LITERAL and FLITERAL have primitives that pop from the stack and emit literals
+                self.inner.execute_word_now(w)
             else:
                 self._emit_word(w)
         elif self._is_float(t):
@@ -1060,16 +1057,9 @@ class OuterInterpreter(object):
                     if name_upper in self.dict:
                         word = self.dict[name_upper]
                         if word.immediate:
-                            # For immediate words, compile code that will compile them
-                            # Special case for LITERAL since it has custom handling
-                            if name_upper == "LITERAL":
-                                # POSTPONE LITERAL: pop value now and compile it as a literal
-                                # This means when float-literal executes, it will compile (LIT <value>)
-                                val = self.inner.pop_ds()
-                                self._emit_lit(val)
-                            else:
-                                # For other immediate words, compile them to be executed
-                                self._emit_word(word)
+                            # For immediate words, compile them to be executed at run-time
+                            # (not at compile-time as they normally would be)
+                            self._emit_word(word)
                         else:
                             # For non-immediate words, compile code to compile them
                             # Push the xt and compile EXECUTE

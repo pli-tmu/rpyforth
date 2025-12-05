@@ -18,7 +18,7 @@ from rpython.rlib.rarithmetic import r_ulonglong
 from rpython.rlib.jit import JitDriver, promote, elidable, unroll_safe, promote_string
 from rpython.rlib.rfile import create_stdio
 
-STACK_SIZE = 128 # Increased for deeper nesting
+STACK_SIZE = 3096 # Increased for deeper nesting
 BUF_SIZE = 1024
 HEAP_CELL_COUNT = 65536
 HEAP_SIZE_BYTES = HEAP_CELL_COUNT
@@ -33,19 +33,23 @@ def get_printable_location(ip, thread):
 jitdriver = JitDriver(
     greens=['ip', 'thread'],
     reds=['self'],
-    virtualizables=['self'],
+    # virtualizables=['self'],
     get_printable_location=get_printable_location
 )
 
 class InnerInterpreter(object):
     _immutable_fields_ = ["cell_size", "cell_size_bytes", "base"]
-    _virtualizable_ = ["ds_ptr_ints", "ds_ptr_floats", "ds_ptr_locals",
-                       "ds_ints[*]", "ds_floats[*]", "ds_locals[*]",
-                       "rs_ptr", "rs[*]",
-                       "cs_ptr", "cs_threads[*]", "cs_ips[*]"]
+    # _virtualizable_ = [
+    #     "ds_ptr_ints", "ds_ptr_floats", "ds_ptr_locals",
+    #     "ds_ints[*]", "ds_floats[*]", "ds_locals[*]",
+    #     "rs_ptr", "rs[*]",
+    # ]
 
 
     def __init__(self):
+        # Reference to outer interpreter (set later)
+        self.outer = None
+
         # Pre-allocate larger stacks to reduce growth overhead
         self.ds_ints = [0] * STACK_SIZE # unboxed integer data stack
         self.ds_ptr_ints = 0
@@ -56,16 +60,12 @@ class InnerInterpreter(object):
         self.ds_locals = [None] * STACK_SIZE
         self.ds_ptr_locals = 0
 
-        # self.ds_tags = [0] * STACK_SIZE # 0=int, 1=object
-        # self.ds = [None] * STACK_SIZE # boxed object data stack (for non-ints)
-        # self.ds_ptr = 0
-
         self.rs = [0] * STACK_SIZE  # return stack
         self.rs_ptr = 0
 
         # Virtualized call stack for JIT optimization
-        self.cs_threads = [None] * 128  # return threads
-        self.cs_ips = [0] * 128       # return IPs
+        self.cs_threads = [None] * STACK_SIZE  # return threads
+        self.cs_ips = [0] * STACK_SIZE       # return IPs
         self.cs_ptr = 0
 
         self.mem = [None] * HEAP_SIZE_BYTES
@@ -83,6 +83,7 @@ class InnerInterpreter(object):
     def push_call(self, thread, ip):
         """Push return address onto virtualized call stack."""
         ptr = self.cs_ptr
+        assert ptr < len(self.cs_threads)
         self.cs_threads[ptr] = thread
         self.cs_ips[ptr] = ip
         self.cs_ptr = ptr + 1
@@ -335,7 +336,6 @@ class InnerInterpreter(object):
                 self.push_call(thread, ip)
                 thread = nested_thread
                 ip = 0
-                # Signal JIT that this is a potential loop entry point (for recursion)
                 jitdriver.can_enter_jit(
                     ip=ip,
                     thread=thread,

@@ -1125,3 +1125,115 @@ def test_abort_quote_compiled_true():
     outer.interpret_line("TEST")
     # After abort, stack should be cleared
     assert inner.ds_ptr_ints == 0
+
+
+def test_utime():
+    """Test UTIME - returns current time in microseconds as double-cell"""
+    inner = run("UTIME")
+    # UTIME pushes ( d.low d.high )
+    high = inner.pop_ds_int()
+    low = inner.pop_ds_int()
+    # Reconstruct the double-cell value
+    # On 64-bit systems, high should typically be 0 for reasonable times
+    # The value should be positive and represent a reasonable timestamp
+    assert high >= 0
+    assert low >= 0
+    # Combined value should be non-zero (current time)
+    usecs = low + (high << 64)
+    assert usecs > 0
+
+
+def test_utime_increases():
+    """Test that UTIME increases over time"""
+    inner = InnerInterpreter()
+    outer = OuterInterpreter(inner)
+    # Define a word that does some work
+    outer.interpret_line(": DELAY 1000 0 DO LOOP ;")
+    # Get first timestamp
+    outer.interpret_line("UTIME")
+    high1 = inner.pop_ds_int()
+    low1 = inner.pop_ds_int()
+    # Do some work
+    outer.interpret_line("DELAY")
+    # Get second timestamp
+    outer.interpret_line("UTIME")
+    high2 = inner.pop_ds_int()
+    low2 = inner.pop_ds_int()
+    # Second should be >= first (time should not go backwards)
+    time1 = low1 + (high1 << 64)
+    time2 = low2 + (high2 << 64)
+    assert time2 >= time1
+
+
+def test_cputime():
+    """Test CPUTIME - returns CPU times as two double-cells"""
+    inner = run("CPUTIME")
+    # CPUTIME pushes ( duser.low duser.high dsystem.low dsystem.high )
+    sys_high = inner.pop_ds_int()
+    sys_low = inner.pop_ds_int()
+    user_high = inner.pop_ds_int()
+    user_low = inner.pop_ds_int()
+    # Values should be non-negative
+    assert user_high >= 0
+    assert user_low >= 0
+    assert sys_high >= 0
+    assert sys_low >= 0
+
+
+def test_cputime_user_increases():
+    """Test that CPUTIME user time increases with work"""
+    inner = InnerInterpreter()
+    outer = OuterInterpreter(inner)
+    # Define a word that does CPU-intensive work
+    outer.interpret_line(": WORK 10000 0 DO I DROP LOOP ;")
+    # Get first CPU time
+    outer.interpret_line("CPUTIME")
+    sys_high1 = inner.pop_ds_int()
+    sys_low1 = inner.pop_ds_int()
+    user_high1 = inner.pop_ds_int()
+    user_low1 = inner.pop_ds_int()
+    # Do some CPU-intensive work
+    outer.interpret_line("WORK")
+    # Get second CPU time
+    outer.interpret_line("CPUTIME")
+    sys_high2 = inner.pop_ds_int()
+    sys_low2 = inner.pop_ds_int()
+    user_high2 = inner.pop_ds_int()
+    user_low2 = inner.pop_ds_int()
+    # User time should increase (or at least not decrease)
+    user1 = user_low1 + (user_high1 << 64)
+    user2 = user_low2 + (user_high2 << 64)
+    assert user2 >= user1
+
+
+def test_d_plus():
+    """Test D+ - add two double-cell numbers"""
+    # 100 as double (100 0) + 200 as double (200 0) = 300 as double (300 0)
+    inner = run("100 S>D 200 S>D D+")
+    high = inner.pop_ds_int()
+    low = inner.pop_ds_int()
+    assert low == 300
+    assert high == 0
+
+
+def test_d_minus():
+    """Test D- - subtract two double-cell numbers"""
+    # 500 as double (500 0) - 200 as double (200 0) = 300 as double (300 0)
+    inner = run("500 S>D 200 S>D D-")
+    high = inner.pop_ds_int()
+    low = inner.pop_ds_int()
+    assert low == 300
+    assert high == 0
+
+
+def test_d_minus_with_utime():
+    """Test D- with UTIME for elapsed time measurement"""
+    # Use run() helper which initializes primitives including DO/LOOP
+    # Test the actual D- usage pattern for timing
+    inner = run("UTIME 100 S>D D+ UTIME 2SWAP D-")
+    # Result should be elapsed microseconds (very small positive or zero)
+    high = inner.pop_ds_int()
+    low = inner.pop_ds_int()
+    elapsed = low + (high << 64)
+    # Elapsed time should be non-negative
+    assert elapsed >= 0
