@@ -153,6 +153,15 @@ def prim_2DROP(inner, cur, ip):
 # SWAP ( x1 x2 -- x2 x1 )
 def prim_SWAP(inner, cur, ip):
     """GForth core 2012: exchange the top two stack items."""
+    a, b = inner.top2_ds_int()
+    inner.push_ds_int(b)
+    inner.push_ds_int(a)
+    return ip
+
+
+# 2SWAP ( x1 x2 x3 x4 -- x3 x4 x1 x2 )
+def prim_2SWAP(inner, cur, ip):
+    """GForth core 2012: exchange the top two stack items."""
     d = inner.peek_ds_int(0)  # x4 (top)
     c = inner.peek_ds_int(1)  # x3
     b = inner.peek_ds_int(2)  # x2
