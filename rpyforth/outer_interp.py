@@ -41,6 +41,7 @@ class OuterInterpreter(object):
         # Input source tracking for SOURCE and >IN
         self.source_buffer = ''  # Current input line
         self.source_index = 0    # Current parse position (>IN)
+        self.string_token_count = 0  # Counter for string tokens (S", .") on current line
 
         # BASE variable address
         self.base_addr = 0  # Will be set after initialization
@@ -226,8 +227,75 @@ class OuterInterpreter(object):
     # Helper methods for interpret_line refactoring
 
     @unroll_safe
+    def _find_nth_occurrence(self, line, token, n):
+        """Find the Nth occurrence (0-indexed) of token in line. Returns position after token, or -1."""
+        line_len = len(line)
+        token_len = len(token)
+        count = 0
+        pos = 0
+
+        while pos < line_len:
+            # Skip whitespace
+            while pos < line_len and line[pos] in ' \t\n\r\v\f':
+                pos += 1
+            if pos >= line_len:
+                break
+
+            # Read a token
+            tok_start = pos
+            while pos < line_len and line[pos] not in ' \t\n\r\v\f':
+                pos += 1
+            tok = line[tok_start:pos]
+
+            if tok == token:
+                if count == n:
+                    return pos
+                count += 1
+
+        return -1
+
+    @unroll_safe
+    def _parse_string_at_occurrence(self, start_token, occurrence):
+        """Parse string from the Nth occurrence of start_token in source_buffer.
+
+        Returns the string content (without quotes).
+        """
+        line = self.source_buffer
+        line_len = len(line)
+
+        pos = self._find_nth_occurrence(line, start_token, occurrence)
+        if pos < 0:
+            return ''
+
+        # Skip one space after token
+        if pos < line_len and line[pos] == ' ':
+            pos += 1
+
+        # Read the string content until closing quote
+        str_start = pos
+        while pos < line_len and line[pos] != '"':
+            pos += 1
+
+        return line[str_start:pos]
+
+    @unroll_safe
+    def _skip_tokens_until_quote(self, toks, i):
+        """Skip tokens until we find one ending with quote. Returns new index."""
+        toks_len = len(toks)
+        while i < toks_len:
+            t = toks[i]
+            i += 1
+            t_len = len(t)
+            if t_len > 0 and t[t_len - 1] == '"':
+                break
+        return i
+
+    @unroll_safe
     def _parse_string_until_quote(self, toks, i):
-        """Parse tokens until closing quote, return (parsed_string, new_index)."""
+        """Parse tokens until closing quote, return (parsed_string, new_index).
+
+        Note: This is kept for ABORT" in compile mode where we need token-based parsing.
+        """
         toks_len = len(toks)
         parts = []
         while i < toks_len:
@@ -243,7 +311,9 @@ class OuterInterpreter(object):
 
     def _handle_s_quote(self, toks, i):
         """Handle S" - parse string and push c-addr and length."""
-        parsed_str, i = self._parse_string_until_quote(toks, i)
+        parsed_str = self._parse_string_at_occurrence('S"', self.string_token_count)
+        self.string_token_count += 1
+        i = self._skip_tokens_until_quote(toks, i)
         size = len(parsed_str)
         c_addr = self.inner.alloc_buf(parsed_str, size)
         self.inner.push_ds_int(c_addr)
@@ -252,7 +322,9 @@ class OuterInterpreter(object):
 
     def _handle_dot_quote(self, toks, i):
         """Handle ." - parse string and print or compile."""
-        parsed_str, i = self._parse_string_until_quote(toks, i)
+        parsed_str = self._parse_string_at_occurrence('."', self.string_token_count)
+        self.string_token_count += 1
+        i = self._skip_tokens_until_quote(toks, i)
         w_str = W_StringObject(parsed_str)
         if self.state == INTERPRET:
             self.inner.print_str(w_str)
@@ -632,6 +704,112 @@ class OuterInterpreter(object):
         assert isinstance(buf_str, W_StringObject)
         self.interpret_line(buf_str.strval)
 
+    # >NUMBER ( ud1 c-addr1 u1 -- ud2 c-addr2 u2 )
+    def _handle_to_number(self):
+        """Convert string to number according to BASE."""
+        u1 = self.inner.pop_ds_int()
+        c_addr1 = self.inner.pop_ds_int()
+        ud1_hi = self.inner.pop_ds_int()
+        ud1_lo = self.inner.pop_ds_int()
+
+        base = self.inner.base
+        addr = c_addr1
+        length = u1
+        value = ud1_lo
+
+        # Process each character
+        chars_processed = 0
+        for j in range(length):
+            ch_obj = self.inner.cell_fetch(addr + j)
+            ch = chr(ch_obj.intval)
+
+            # Convert character to digit value
+            digit = -1
+            if '0' <= ch <= '9':
+                digit = ord(ch) - ord('0')
+            elif 'A' <= ch <= 'Z':
+                digit = ord(ch) - ord('A') + 10
+            elif 'a' <= ch <= 'z':
+                digit = ord(ch) - ord('a') + 10
+
+            if digit < 0 or digit >= base:
+                # Invalid character, stop conversion
+                break
+
+            value = value * base + digit
+            chars_processed += 1
+
+        # Return updated values
+        self.inner.push_ds_int(value)
+        self.inner.push_ds_int(0)  # ud2 high
+        self.inner.push_ds_int(addr + chars_processed)
+        self.inner.push_ds_int(length - chars_processed)
+
+    # ENVIRONMENT? ( c-addr u -- false | i*x true )
+    def _handle_environment_query(self):
+        """Query environmental information."""
+        u = self.inner.pop_ds_int()
+        c_addr = self.inner.pop_ds_int()
+
+        # Extract the query string from buffer
+        assert 0 <= c_addr < len(self.inner.buf)
+        buf_entry = self.inner.buf[c_addr]
+        strval = buf_entry.strval
+        assert 0 <= u <= len(strval)
+        query = strval[:u]
+        query_upper = to_upper(query)
+
+        # Handle known queries
+        if query_upper == "/COUNTED-STRING":
+            self.inner.push_ds_int(255)  # max counted string length
+            self.inner.push_ds_int(-1)
+        elif query_upper == "/HOLD":
+            self.inner.push_ds_int(128)  # hold buffer size
+            self.inner.push_ds_int(-1)
+        elif query_upper == "/PAD":
+            self.inner.push_ds_int(256)  # pad buffer size
+            self.inner.push_ds_int(-1)
+        elif query_upper == "ADDRESS-UNIT-BITS":
+            self.inner.push_ds_int(8)  # bits per address unit
+            self.inner.push_ds_int(-1)
+        elif query_upper == "CORE":
+            self.inner.push_ds_int(-1)  # CORE wordset is present
+            self.inner.push_ds_int(-1)
+        elif query_upper == "CORE-EXT":
+            self.inner.push_ds_int(0)  # CORE-EXT not fully present
+            self.inner.push_ds_int(-1)
+        elif query_upper == "FLOORED":
+            self.inner.push_ds_int(0)  # division is symmetric, not floored
+            self.inner.push_ds_int(-1)
+        elif query_upper == "MAX-CHAR":
+            self.inner.push_ds_int(255)  # max character value
+            self.inner.push_ds_int(-1)
+        elif query_upper == "MAX-N":
+            self.inner.push_ds_int(2147483647)  # max signed single
+            self.inner.push_ds_int(-1)
+        elif query_upper == "MAX-U":
+            self.inner.push_ds_int(-1)  # max unsigned (all bits set)
+            self.inner.push_ds_int(-1)
+        elif query_upper == "RETURN-STACK-CELLS":
+            self.inner.push_ds_int(64)  # return stack size
+            self.inner.push_ds_int(-1)
+        elif query_upper == "STACK-CELLS":
+            self.inner.push_ds_int(64)  # data stack size
+            self.inner.push_ds_int(-1)
+        else:
+            self.inner.push_ds_int(0)  # false - unknown query
+
+    # BASE ( -- a-addr )
+    def _handle_base(self):
+        """Return address of BASE variable."""
+        if self.base_addr == 0:
+            # Allocate a cell for BASE
+            self.base_addr = self.inner.here
+            self.inner.here += self.inner.cell_size_bytes
+        # Store the current base at that address
+        self.inner.cell_store(self.base_addr, self.inner.base)
+        self.inner.push_ds_int(self.base_addr)
+
     # ABORT ( -- )
     def _handle_abort(self):
         self.inner.ds_ptr = 0
@@ -673,12 +851,261 @@ class OuterInterpreter(object):
         self.inner.rs_ptr = 0
         self.state = INTERPRET
 
+    # IMMEDIATE ( -- )
+    def _handle_immediate(self):
+        """Mark the last defined word as immediate."""
+        if self.last_word is not None:
+            self.last_word.immediate = True
+        else:
+            print "IMMEDIATE: no word to mark"
+
+    # Dispatch methods for interpret and compile modes
+
+    def _dispatch_interpret(self, tkey, toks, i, toks_len):
+        """Dispatch interpret-mode words. Returns (handled, new_i, should_return)."""
+        if tkey == "VARIABLE" or tkey == "FVARIABLE":
+            result = self._handle_variable(toks, i)
+            if result < 0:
+                return True, i, True
+            return True, result, False
+
+        if tkey == "2VARIABLE":
+            result = self._handle_2variable(toks, i)
+            if result < 0:
+                return True, i, True
+            return True, result, False
+
+        if tkey == "CONSTANT" or tkey == "FCONSTANT":
+            result = self._handle_constant(toks, i)
+            if result < 0:
+                return True, i, True
+            return True, result, False
+
+        if tkey == "CREATE":
+            result = self._handle_create(toks, i)
+            if result < 0:
+                return True, i, True
+            return True, result, False
+
+        if tkey == "FIND":
+            self._handle_find()
+            return True, i, False
+
+        if tkey == "SOURCE":
+            self._handle_source()
+            return True, i, False
+
+        if tkey == ">IN":
+            self._handle_to_in()
+            return True, i, False
+
+        if tkey == "'":
+            i = self._handle_tick(toks, i)
+            return True, i, False
+
+        if tkey == "(":
+            i = self._handle_paren_comment(toks, i)
+            return True, i, False
+
+        if tkey == "COUNT":
+            self._handle_count()
+            return True, i, False
+
+        if tkey == "WORD":
+            i = self._handle_word(toks, i)
+            return True, i, False
+
+        if tkey == "STATE":
+            self._handle_state()
+            return True, i, False
+
+        if tkey == "EVALUATE":
+            self._handle_evaluate()
+            return True, i, False
+
+        if tkey == "ABORT":
+            self._handle_abort()
+            return True, i, True
+
+        if tkey == 'ABORT"':
+            i, should_return = self._handle_abort_quote(toks, i)
+            return True, i, should_return
+
+        if tkey == "QUIT":
+            self._handle_quit()
+            return True, i, True
+
+        if tkey == "IMMEDIATE":
+            self._handle_immediate()
+            return True, i, False
+
+        if tkey == "]":
+            self.state = COMPILE
+            return True, i, False
+
+        if tkey == "BASE":
+            self._handle_base()
+            return True, i, False
+
+        if tkey == ">NUMBER":
+            self._handle_to_number()
+            return True, i, False
+
+        if tkey == "ENVIRONMENT?":
+            self._handle_environment_query()
+            return True, i, False
+
+        return False, i, False
+
+    def _dispatch_compile(self, tkey, toks, i, toks_len):
+        """Dispatch compile-mode words. Returns (handled, new_i, should_return)."""
+        if tkey == "IF":
+            self._compile_if()
+            return True, i, False
+
+        if tkey == "ELSE":
+            if not self._compile_else():
+                return True, i, True
+            return True, i, False
+
+        if tkey == "THEN":
+            if not self._compile_then():
+                return True, i, True
+            return True, i, False
+
+        if tkey == "DO":
+            self._compile_do()
+            return True, i, False
+
+        if tkey == "LOOP":
+            if not self._compile_loop():
+                return True, i, True
+            return True, i, False
+
+        if tkey == "+LOOP":
+            if not self._compile_plusloop():
+                return True, i, True
+            return True, i, False
+
+        if tkey == "BEGIN":
+            self._compile_begin()
+            return True, i, False
+
+        if tkey == "WHILE":
+            if not self._compile_while():
+                return True, i, True
+            return True, i, False
+
+        if tkey == "REPEAT":
+            if not self._compile_repeat():
+                return True, i, True
+            return True, i, False
+
+        if tkey == "AGAIN":
+            if not self._compile_again():
+                return True, i, True
+            return True, i, False
+
+        if tkey == "UNTIL":
+            if not self._compile_until():
+                return True, i, True
+            return True, i, False
+
+        if tkey == "LEAVE":
+            if not self._compile_leave():
+                return True, i, True
+            return True, i, False
+
+        if tkey == "[CHAR]":
+            i = self._compile_char(toks, i)
+            return True, i, False
+
+        if tkey == "RECURSIVE":
+            if self.current_name:
+                thread = CodeThread([], [])
+                self.define_colon(self.current_name, thread)
+            return True, i, False
+
+        if tkey == "RECURSE":
+            if self.current_name:
+                name_upper = to_upper(self.current_name)
+                if name_upper in self.dict:
+                    self._emit_word(self.dict[name_upper])
+                else:
+                    thread = CodeThread([], [])
+                    word = self.define_colon(self.current_name, thread)
+                    self._emit_word(word)
+            else:
+                print "RECURSE outside of definition"
+            return True, i, False
+
+        if tkey == 'ABORT"':
+            parsed_str, i = self._parse_string_until_quote(toks, i)
+            w_str = W_StringObject(parsed_str)
+            self._emit_lit(w_str)
+            self._emit_lit(W_IntObject(len(parsed_str)))
+            self._emit_word(self.wABORTQUOTE)
+            return True, i, False
+
+        if tkey == "[":
+            self.state = INTERPRET
+            return True, i, False
+
+        if tkey == "POSTPONE":
+            if i >= toks_len:
+                print "POSTPONE requires a following word"
+                return True, i, True
+            name, i = self._read_tok(toks, i)
+            name_upper = to_upper(name)
+            if name_upper in self.dict:
+                word = self.dict[name_upper]
+                if word.immediate:
+                    self._emit_word(word)
+                else:
+                    self._emit_lit(W_WordObject(word))
+                    self._emit_word(self.dict["EXECUTE"])
+            else:
+                print "POSTPONE: word not found:", name
+            return True, i, False
+
+        if tkey == "[']":
+            if i >= toks_len:
+                print "['] requires a following word"
+                return True, i, True
+            name, i = self._read_tok(toks, i)
+            name_upper = to_upper(name)
+            if name_upper in self.dict:
+                word = self.dict[name_upper]
+                self._emit_lit(W_WordObject(word))
+            else:
+                print "['] word not found:", name
+            return True, i, False
+
+        if tkey == "DOES>":
+            self._emit_word(self.wEXIT)
+            does_ip = self.cc_ptr
+            if self.last_word is not None:
+                self.last_word.does_ip = does_ip
+            if self.current_name:
+                name_upper = to_upper(self.current_name)
+                if name_upper not in self.dict:
+                    thread = CodeThread([], [])
+                    self.define_colon(self.current_name, thread)
+                w = self.dict[name_upper]
+                self._emit_word(w)
+            else:
+                print "DOES> outside definition"
+            return True, i, False
+
+        return False, i, False
+
     # main outer interpreter
     @unroll_safe
     def interpret_line(self, line):
         # Store the source line for SOURCE word
         self.source_buffer = line
         self.source_index = 0
+        self.string_token_count = 0  # Reset counter for each new line
 
         toks = split_whitespace(line)
         toks_len = len(toks)
@@ -686,6 +1113,7 @@ class OuterInterpreter(object):
         while i < toks_len:
             t, i = self._read_tok(toks, i)
 
+            # Handle string literals (case-sensitive)
             if t == 'S"':
                 i = self._handle_s_quote(toks, i)
                 continue
@@ -699,7 +1127,7 @@ class OuterInterpreter(object):
                 self.inner.push_ds_int(ord(s[0]))
                 continue
 
-            # handle ':' and ';' lexically (not as immediate words)
+            # Handle ':' and ';' lexically (not as immediate words)
             if t == ':':
                 if i >= toks_len:
                     print ": requires a name"
@@ -713,400 +1141,27 @@ class OuterInterpreter(object):
                 if self.state != COMPILE:
                     print "; outside definition"
                     continue
-
-                # append EXIT and install
-                self._emit_word(self.wEXIT)
-                # Create new lists with only the used portion (RPython needs proper list sizes)
-                code = [self.current_code[idx] for idx in range(self.cc_ptr)]
-                lits = [self.current_lits[idx] for idx in range(self.lit_ptr)]
-                thread = CodeThread(code, lits)
-
-                # Check if word already exists (RECURSIVE was used)
-                name_upper = to_upper(self.current_name)
-                if name_upper in self.dict:
-                    # Update existing word's thread
-                    existing_word = self.dict[name_upper]
-                    existing_word.thread = thread
-                else:
-                    self.define_colon(self.current_name, thread)
-
-                # reset
-                self.state = INTERPRET
-                self.current_name = ''
-                self.reset_code()
+                self._finalize_definition()
                 continue
 
+            # Dispatch based on current state
             tkey = to_upper(t)
+
             if self.state == INTERPRET:
-                if tkey == "VARIABLE" or tkey == "FVARIABLE":
-                    result = self._handle_variable(toks, i)
-                    if result < 0:
-                        return
-                    i = result
-                    continue
-
-                if tkey == "2VARIABLE":
-                    result = self._handle_2variable(toks, i)
-                    if result < 0:
-                        return
-                    i = result
-                    continue
-
-                if tkey == "CONSTANT" or tkey == "FCONSTANT":
-                    result = self._handle_constant(toks, i)
-                    if result < 0:
-                        return
-                    i = result
-                    continue
-
-                if tkey == "CREATE":
-                    result = self._handle_create(toks, i)
-                    if result < 0:
-                        return
-                    i = result
-                    continue
-
-                if tkey == "FIND":
-                    self._handle_find()
-                    continue
-
-                if tkey == "SOURCE":
-                    self._handle_source()
-                    continue
-
-                if tkey == ">IN":
-                    self._handle_to_in()
-                    continue
-
-                if tkey == "'":
-                    i = self._handle_tick(toks, i)
-                    continue
-
-                if tkey == "(":
-                    i = self._handle_paren_comment(toks, i)
-                    continue
-
-                if tkey == "COUNT":
-                    self._handle_count()
-                    continue
-
-                if tkey == "WORD":
-                    i = self._handle_word(toks, i)
-                    continue
-
-                if tkey == "STATE":
-                    self._handle_state()
-                    continue
-
-                if tkey == "EVALUATE":
-                    self._handle_evaluate()
-                    continue
-
-                if tkey == "ABORT":
-                    self._handle_abort()
-                    return
-
-                if tkey == 'ABORT"':
-                    i, should_return = self._handle_abort_quote(toks, i)
+                handled, i, should_return = self._dispatch_interpret(tkey, toks, i, toks_len)
+                if handled:
                     if should_return:
                         return
                     continue
 
-                if tkey == "QUIT":
-                    self._handle_quit()
-                    return
-
-                if tkey == "IMMEDIATE":
-                    if self.last_word is not None:
-                        self.last_word.immediate = True
-                    else:
-                        print "IMMEDIATE: no word to mark"
-                    continue
-
-                if tkey == "]":
-                    self.state = COMPILE
-                    continue
-
-                if tkey == "BASE":
-                    # BASE returns an address; we use a special cell in memory
-                    if self.base_addr == 0:
-                        # Allocate a cell for BASE
-                        self.base_addr = self.inner.here
-                        self.inner.here += self.inner.cell_size_bytes
-                    # Store the current base at that address
-                    self.inner.cell_store(self.base_addr, self.inner.base)
-                    self.inner.push_ds_int(self.base_addr)
-                    continue
-
-                if tkey == ">NUMBER":
-                    # >NUMBER ( ud1 c-addr1 u1 -- ud2 c-addr2 u2 )
-                    # Convert string to number according to BASE
-                    u1 = self.inner.pop_ds_int()
-                    c_addr1 = self.inner.pop_ds_int()
-                    ud1_hi = self.inner.pop_ds_int()
-                    ud1_lo = self.inner.pop_ds_int()
-
-                    # assert isinstance(u1, W_IntObject)
-                    # assert isinstance(c_addr1, W_IntObject)
-                    # assert isinstance(ud1_hi, W_IntObject)
-                    # assert isinstance(ud1_lo, W_IntObject)
-
-                    base = self.inner.base
-                    addr = c_addr1
-                    length = u1
-                    value = ud1_lo
-
-                    # Process each character
-                    chars_processed = 0
-                    for j in range(length):
-                        ch_obj = self.inner.cell_fetch(addr + j)
-                        ch = chr(ch_obj.intval)
-
-                        # Convert character to digit value
-                        digit = -1
-                        if '0' <= ch <= '9':
-                            digit = ord(ch) - ord('0')
-                        elif 'A' <= ch <= 'Z':
-                            digit = ord(ch) - ord('A') + 10
-                        elif 'a' <= ch <= 'z':
-                            digit = ord(ch) - ord('a') + 10
-
-                        if digit < 0 or digit >= base:
-                            # Invalid character, stop conversion
-                            break
-
-                        value = value * base + digit
-                        chars_processed += 1
-
-                    # Return updated values
-                    self.inner.push_ds_int(value)
-                    self.inner.push_ds_int(0)  # ud2 high
-                    self.inner.push_ds_int(addr + chars_processed)
-                    self.inner.push_ds_int(length - chars_processed)
-                    continue
-
-                if tkey == "ENVIRONMENT?":
-                    # ENVIRONMENT? ( c-addr u -- false | i*x true )
-                    # Query environmental information
-                    u = self.inner.pop_ds_int()
-                    c_addr = self.inner.pop_ds_int()
-
-                    # Extract the query string from buffer
-                    assert 0 <= c_addr < len(self.inner.buf)
-                    buf_entry = self.inner.buf[c_addr]
-                    strval = buf_entry.strval
-                    assert 0 <= u <= len(strval)
-                    query = strval[:u]
-                    query_upper = to_upper(query)
-
-                    # Handle known queries
-                    if query_upper == "/COUNTED-STRING":
-                        self.inner.push_ds_int(255)  # max counted string length
-                        self.inner.push_ds_int(-1)
-                    elif query_upper == "/HOLD":
-                        self.inner.push_ds_int(128)  # hold buffer size
-                        self.inner.push_ds_int(-1)
-                    elif query_upper == "/PAD":
-                        self.inner.push_ds_int(256)  # pad buffer size
-                        self.inner.push_ds_int(-1)
-                    elif query_upper == "ADDRESS-UNIT-BITS":
-                        self.inner.push_ds_int(8)  # bits per address unit
-                        self.inner.push_ds_int(-1)
-                    elif query_upper == "CORE":
-                        self.inner.push_ds_int(-1)  # CORE wordset is present
-                        self.inner.push_ds_int(-1)
-                    elif query_upper == "CORE-EXT":
-                        self.inner.push_ds_int(0)  # CORE-EXT not fully present
-                        self.inner.push_ds_int(-1)
-                    elif query_upper == "FLOORED":
-                        self.inner.push_ds_int(0)  # division is symmetric, not floored
-                        self.inner.push_ds_int(-1)
-                    elif query_upper == "MAX-CHAR":
-                        self.inner.push_ds_int(255)  # max character value
-                        self.inner.push_ds_int(-1)
-                    elif query_upper == "MAX-N":
-                        self.inner.push_ds_int(2147483647)  # max signed single
-                        self.inner.push_ds_int(-1)
-                    elif query_upper == "MAX-U":
-                        self.inner.push_ds_int(-1)  # max unsigned (all bits set)
-                        self.inner.push_ds_int(-1)
-                    elif query_upper == "RETURN-STACK-CELLS":
-                        self.inner.push_ds_int(64)  # return stack size
-                        self.inner.push_ds_int(-1)
-                    elif query_upper == "STACK-CELLS":
-                        self.inner.push_ds_int(64)  # data stack size
-                        self.inner.push_ds_int(-1)
-                    else:
-                        self.inner.push_ds_int(0)  # false - unknown query
-                    continue
-
             if self.state == COMPILE:
-                if tkey == "IF":
-                    self._compile_if()
-                    continue
-
-                if tkey == "ELSE":
-                    if not self._compile_else():
+                handled, i, should_return = self._dispatch_compile(tkey, toks, i, toks_len)
+                if handled:
+                    if should_return:
                         return
                     continue
 
-                if tkey == "THEN":
-                    if not self._compile_then():
-                        return
-                    continue
-
-                if tkey == "DO":
-                    self._compile_do()
-                    continue
-
-                if tkey == "LOOP":
-                    if not self._compile_loop():
-                        return
-                    continue
-
-                if tkey == "+LOOP":
-                    if not self._compile_plusloop():
-                        return
-                    continue
-
-                if tkey == "BEGIN":
-                    self._compile_begin()
-                    continue
-
-                if tkey == "WHILE":
-                    if not self._compile_while():
-                        return
-                    continue
-
-                if tkey == "REPEAT":
-                    if not self._compile_repeat():
-                        return
-                    continue
-
-                if tkey == "AGAIN":
-                    if not self._compile_again():
-                        return
-                    continue
-
-                if tkey == "UNTIL":
-                    if not self._compile_until():
-                        return
-                    continue
-
-                if tkey == "LEAVE":
-                    if not self._compile_leave():
-                        return
-                    continue
-
-                if tkey == "[CHAR]":
-                    i = self._compile_char(toks, i)
-                    continue
-
-                if tkey == "RECURSIVE":
-                    # Make the current word visible to itself during compilation
-                    # Add word to dictionary now so it can reference itself
-                    # The thread will be finalized when ; is reached
-                    if self.current_name:
-                        # Create word with empty thread as placeholder
-                        thread = CodeThread([], [])
-                        self.define_colon(self.current_name, thread)
-                    continue
-
-                if tkey == "RECURSE":
-                    # Compile a call to the current word being defined
-                    if self.current_name:
-                        name_upper = to_upper(self.current_name)
-                        if name_upper in self.dict:
-                            # Word already exists (RECURSIVE was used)
-                            self._emit_word(self.dict[name_upper])
-                        else:
-                            # Create word now so we can compile a reference to it
-                            thread = CodeThread([], [])
-                            word = self.define_colon(self.current_name, thread)
-                            self._emit_word(word)
-                    else:
-                        print "RECURSE outside of definition"
-                    continue
-
-                if tkey == 'ABORT"':
-                    # Compile ABORT" in compile mode
-                    # Parse the message string
-                    parsed_str, i = self._parse_string_until_quote(toks, i)
-                    w_str = W_StringObject(parsed_str)
-                    # Compile: push string, push length, call (ABORT")
-                    self._emit_lit(w_str)
-                    self._emit_lit(W_IntObject(len(parsed_str)))
-                    self._emit_word(self.wABORTQUOTE)
-                    continue
-
-                if tkey == "[":
-                    # Switch to interpret mode during compilation
-                    self.state = INTERPRET
-                    continue
-
-                # Note: LITERAL is now handled as an immediate word in the dictionary
-                # so it will be found by the word lookup below
-
-                if tkey == "POSTPONE":
-                    # Compile execution of the next word (even if immediate)
-                    if i >= toks_len:
-                        print "POSTPONE requires a following word"
-                        return
-                    name, i = self._read_tok(toks, i)
-                    name_upper = to_upper(name)
-                    if name_upper in self.dict:
-                        word = self.dict[name_upper]
-                        if word.immediate:
-                            # For immediate words, compile them to be executed at run-time
-                            # (not at compile-time as they normally would be)
-                            self._emit_word(word)
-                        else:
-                            # For non-immediate words, compile code to compile them
-                            # Push the xt and compile EXECUTE
-                            self._emit_lit(W_WordObject(word))
-                            self._emit_word(self.dict["EXECUTE"])
-                    else:
-                        print "POSTPONE: word not found:", name
-                    continue
-
-                if tkey == "[']":
-                    # Compile the xt of the next word as a literal
-                    if i >= toks_len:
-                        print "['] requires a following word"
-                        return
-                    name, i = self._read_tok(toks, i)
-                    name_upper = to_upper(name)
-                    if name_upper in self.dict:
-                        word = self.dict[name_upper]
-                        self._emit_lit(W_WordObject(word))
-                    else:
-                        print "['] word not found:", name
-                    continue
-
-                if tkey == "DOES>":
-                    # DOES> ends the CREATE part and starts the DOES> behavior
-                    # Compile EXIT to end the CREATE-time behavior
-                    self._emit_word(self.wEXIT)
-                    # Mark the current position as the DOES> entry point
-                    # Store the does_ip for the last defined word
-                    does_ip = self.cc_ptr
-                    if self.last_word is not None:
-                        # Store does_ip in the word for later use
-                        self.last_word.does_ip = does_ip
-                    # Compile a call to the word currently being defined
-                    if self.current_name:
-                        name_upper = to_upper(self.current_name)
-                        # If not already in dictionary, add it now
-                        if name_upper not in self.dict:
-                            thread = CodeThread([], [])
-                            self.define_colon(self.current_name, thread)
-                        # Emit the current word
-                        w = self.dict[name_upper]
-                        self._emit_word(w)
-                    else:
-                        print "RECURSE outside definition"
-                    continue
-
+            # Default: look up word in dictionary and execute/compile
             w = self.dict.get(tkey, None)
             w = promote(w)
             if self.state == INTERPRET:
@@ -1115,3 +1170,26 @@ class OuterInterpreter(object):
                 self._compile_word_or_literal(w, t)
             else:
                 assert 0, "unreachable state"
+
+    def _finalize_definition(self):
+        """Finalize the current colon definition."""
+        # Append EXIT and install
+        self._emit_word(self.wEXIT)
+        # Create new lists with only the used portion (RPython needs proper list sizes)
+        code = [self.current_code[idx] for idx in range(self.cc_ptr)]
+        lits = [self.current_lits[idx] for idx in range(self.lit_ptr)]
+        thread = CodeThread(code, lits)
+
+        # Check if word already exists (RECURSIVE was used)
+        name_upper = to_upper(self.current_name)
+        if name_upper in self.dict:
+            # Update existing word's thread
+            existing_word = self.dict[name_upper]
+            existing_word.thread = thread
+        else:
+            self.define_colon(self.current_name, thread)
+
+        # Reset state
+        self.state = INTERPRET
+        self.current_name = ''
+        self.reset_code()
