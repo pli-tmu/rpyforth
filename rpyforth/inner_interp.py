@@ -10,6 +10,7 @@ from rpyforth.objects import (
     W_FloatObject,
     CELL_SIZE_BYTES,
     CELL_SIZE,
+    make_int,
 )
 
 
@@ -87,6 +88,8 @@ class InnerInterpreter(object):
         self.base = 10                # DECIMAL
         self._pno_active = False      # inside <# ... #> or not
         self._pno_buf = []            # buffer for pno (pictured numeric output)
+        # Cache stdio handles once to avoid repeated rlib lookups in hot paths
+        self.stdin, self.stdout, self.stderr = create_stdio()
 
     def push_call(self, thread, ip):
         """Push return address onto virtualized call stack."""
@@ -241,15 +244,13 @@ class InnerInterpreter(object):
 
     def print_int(self, x):
         assert isinstance(x, W_IntObject)
-        _, stdout, _ = create_stdio()
-        stdout.write(x.to_string())
-        stdout.flush()
+        self.stdout.write(x.to_string())
+        self.stdout.flush()
 
     def print_str(self, s):
         assert isinstance(s, W_StringObject)
-        _, stdout, _ = create_stdio()
-        stdout.write(s.to_string())
-        stdout.flush()
+        self.stdout.write(s.to_string())
+        self.stdout.flush()
 
     def alloc_buf(self, content, size):
         addr = self.here
@@ -265,8 +266,8 @@ class InnerInterpreter(object):
         """! ( x addr -- ) - Store value at cell address."""
         assert isinstance(addr, int)
         assert 0 <= addr < HEAP_CELL_COUNT
-        value_obj = W_IntObject(intval)
-        self.mem[addr] = value_obj
+        # Reuse cached boxed ints to reduce allocations on tight memory loops
+        self.mem[addr] = make_int(intval)
 
     def cell_fetch(self, addr):
         """@ ( addr -- x ) - Fetch value from cell address."""
@@ -279,8 +280,8 @@ class InnerInterpreter(object):
     def cell_2store(self, addr, x1_int, x2_int):
         """2! ( x1 x2 addr -- ) - Store cell pair."""
         assert 0 <= addr < HEAP_CELL_COUNT - self.cell_size_bytes
-        self.mem[addr] = W_IntObject(x1_int)
-        self.mem[addr + self.cell_size_bytes] = W_IntObject(x2_int)
+        self.mem[addr] = make_int(x1_int)
+        self.mem[addr + self.cell_size_bytes] = make_int(x2_int)
 
     def cell_2fetch(self, addr):
         """2@ ( addr -- x1 x2 ) - Fetch cell pair."""

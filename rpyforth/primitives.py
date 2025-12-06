@@ -1,4 +1,3 @@
-from rpython.rlib.rfile import create_stdio
 from rpython.rlib.jit import promote, unroll_safe, dont_look_inside
 from rpython.rlib.rfloat import formatd
 
@@ -322,13 +321,12 @@ def prim_D_MINUS(inner, cur, ip):
 # D. ( d -- )
 def prim_D_DOT(inner, cur, ip):
     """GForth double 2012: display d according to current BASE."""
-    from rpython.rlib.rfile import create_stdio
     # Stack: d.lo d.hi (d.hi on top)
     d_hi = inner.pop_ds_int()
     d_lo = inner.pop_ds_int()
     # Combine into full value
     d = d_lo + (d_hi << LONG_BIT)
-    stdin, stdout, stderr = create_stdio()
+    stdout = inner.stdout
     stdout.write(str(d))
     stdout.write(' ')
     return ip
@@ -1138,7 +1136,7 @@ def prim_TYPE(inner, cur, ip):
 def prim_DOT(inner, cur, ip):
     """GForth core 2012: display n according to current BASE."""
     x = inner.pop_ds_int()
-    stdin, stdout, stderr = create_stdio()
+    stdout = inner.stdout
     stdout.write(str(x))
     stdout.write(' ')
     #stdout.flush()
@@ -1148,7 +1146,7 @@ def prim_DOT(inner, cur, ip):
 def prim_U_DOT(inner, cur, ip):
     """GForth core 2012: display u in field format according to current BASE."""
     x = inner.pop_ds_int()
-    stdin, stdout, stderr = create_stdio()
+    stdout = inner.stdout
     BIT_MASK = (1 << LONG_BIT) - 1  #111...11 64bits
     u_value = x & BIT_MASK
     stdout.write(str(u_value))
@@ -1162,7 +1160,7 @@ def prim_U_DOT(inner, cur, ip):
 def prim_EMIT(inner, cur, ip):
     """GForth core 2012: display character with char code."""
     x = inner.pop_ds_int()
-    stdin, stdout, stderr = create_stdio()
+    stdout = inner.stdout
     stdout.write(chr(x))
     stdout.flush()
     return ip
@@ -1172,7 +1170,7 @@ def prim_EMIT(inner, cur, ip):
 @dont_look_inside
 def prim_SPACE(inner, cur, ip):
     """GForth core 2012: display one space."""
-    stdin, stdout, stderr = create_stdio()
+    stdout = inner.stdout
     stdout.write(' ')
     return ip
 
@@ -1183,7 +1181,7 @@ def prim_SPACES(inner, cur, ip):
     """GForth core 2012: display n spaces."""
     count = inner.pop_ds_int()
     if count > 0:
-        stdin, stdout, stderr = create_stdio()
+        stdout = inner.stdout
         for i in range(count):
             stdout.write(' ')
     return ip
@@ -1193,7 +1191,7 @@ def prim_SPACES(inner, cur, ip):
 @dont_look_inside
 def prim_CR(inner, cur, ip):
     """GForth core 2012: cause subsequent output to appear at the beginning of the next line."""
-    stdin, stdout, stderr = create_stdio()
+    stdout = inner.stdout
     stdout.write('\n')
     stdout.flush()
     return ip
@@ -1207,7 +1205,7 @@ def prim_UDOT(inner, cur, ip):
     # Treat as unsigned
     BIT_MASK = (1 << LONG_BIT) - 1
     val = x & BIT_MASK
-    stdin, stdout, stderr = create_stdio()
+    stdout = inner.stdout
     stdout.write(str(val))
     stdout.write(' ')
     return ip
@@ -1217,7 +1215,7 @@ def prim_UDOT(inner, cur, ip):
 @dont_look_inside
 def prim_KEY(inner, cur, ip):
     """GForth core 2012: receive one character from input device."""
-    stdin, stdout, stderr = create_stdio()
+    stdin = inner.stdin
     ch = stdin.read(1)
     if len(ch) > 0:
         # Index into string to get a single character for ord()
@@ -1234,7 +1232,7 @@ def prim_ACCEPT(inner, cur, ip):
     max_count = inner.pop_ds_int()
     addr = inner.pop_ds_int()
 
-    stdin, stdout, stderr = create_stdio()
+    stdin = inner.stdin
     line = stdin.readline()
     # Remove trailing newline if present
     line_len = len(line)
@@ -1272,7 +1270,7 @@ def prim_UDOTR(inner, cur, ip):
     num_str = str(u)
     width = n
 
-    stdin, stdout, stderr = create_stdio()
+    stdout = inner.stdout
     # Right-justify: add leading spaces if needed
     if len(num_str) < width:
         stdout.write(' ' * (width - len(num_str)))
@@ -1315,7 +1313,7 @@ def prim_ABORT_QUOTE_RUNTIME(inner, cur, ip):
             msg = c_addr.strval
         else:
             msg = "ABORT"
-        stdin, stdout, stderr = create_stdio()
+        stdout = inner.stdout
         stdout.write("ABORT: ")
         stdout.write(msg)
         stdout.write("\n")
@@ -1466,25 +1464,10 @@ def prim_PICK(inner, cur, ip):
     """Copy the u-th stack item to the top (0 PICK is equivalent to DUP)."""
     u = inner.pop_ds_int()
 
-    # We need to access virtualizable stack without direct indexing
-    # Pop items off, find the one we want, and push them all back
-    if u == 0:
-        # 0 PICK is just DUP
-        item = inner.pop_ds_int()
-        inner.push_ds_int(item)
-        inner.push_ds_int(item)
-    else:
-        # Pop u_val+1 items to get to the target
-        temp = []
-        for i in range(u + 1):
-            temp.append(inner.pop_ds_int())
-        # The item we want is at the end
-        item = temp[u]
-        # Push everything back
-        for i in range(u, -1, -1):
-            inner.push_ds_int(temp[i])
-        # Push the picked item
-        inner.push_ds_int(item)
+    # With virtualization disabled we can index directly for O(1) PICK
+    target_index = inner.ds_ptr_ints - 1 - u
+    assert target_index >= 0
+    inner.push_ds_int(inner.ds_ints[target_index])
     return ip
 
 
@@ -1949,7 +1932,7 @@ def prim_FDOT(inner, cur, ip):
     f = inner.pop_ds_float()
     prec = _float_precision[0]
     result = formatd(f, 'g', prec)
-    stdin, stdout, stderr = create_stdio()
+    stdout = inner.stdout
     stdout.write(result + " ")
     stdout.flush()
     return ip
