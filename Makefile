@@ -27,6 +27,16 @@ test: _pypy_binary/bin/python setup-pypy
 coverage:
 	python3 check_coverage.py
 
+.PHONY: setup-gforth
+setup-gforth:
+	wget https://www.complang.tuwien.ac.at/forth/gforth/Snapshots/current/gforth.tar.xz
+	tar xvfJ gforth.tar.xz
+	cd gforth-*
+	./install-deps.sh
+	./configure
+	make
+	sudo make install
+
 _pypy_binary/bin/python:  ## Download a PyPy binary
 	mkdir -p _pypy_binary
 	python3 get_pypy_to_download.py
