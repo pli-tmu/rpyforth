@@ -55,7 +55,7 @@ def compute_statistics(times):
         "median": np.median(arr)
     }
 
-def plot_bar_comparison(data, output_file="benchmark_comparison.png"):
+def plot_bar_comparison(data, output_file="benchmark_comparison.pdf"):
     """Create a bar chart comparing gforth and rpyforth execution times."""
     benchmarks = sorted(data.keys())
 
@@ -96,7 +96,7 @@ def plot_bar_comparison(data, output_file="benchmark_comparison.png"):
     plt.close()
     print(f"Saved bar chart to {output_file}")
 
-def plot_speedup(data, output_file="benchmark_speedup.png"):
+def plot_speedup(data, output_file="benchmark_speedup.pdf"):
     """Create a speedup chart (gforth time / rpyforth time)."""
     benchmarks = sorted(data.keys())
 
@@ -138,7 +138,7 @@ def plot_speedup(data, output_file="benchmark_speedup.png"):
     plt.close()
     print(f"Saved speedup chart to {output_file}")
 
-def plot_boxplot(data, output_file="benchmark_boxplot.png"):
+def plot_boxplot(data, output_file="benchmark_boxplot.pdf"):
     """Create box plots for each benchmark comparing both interpreters."""
     benchmarks = sorted(data.keys())
     n_benchmarks = len(benchmarks)
@@ -226,10 +226,7 @@ def main():
     plot_speedup(data)
     plot_boxplot(data)
 
-    print("\nDone! Generated files:")
-    print("  - benchmark_comparison.png")
-    print("  - benchmark_speedup.png")
-    print("  - benchmark_boxplot.png")
+    print("\nDone!")
 
 if __name__ == "__main__":
     main()
