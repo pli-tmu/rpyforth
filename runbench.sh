@@ -1,18 +1,38 @@
 #!/bin/bash
+BENCHMARKS=(fibo.fs ack.fs nestedloop.fs sieve.fs heap.fs ary.fs)
+COMMANDS=(gforth ./rpyforth.sh)
+WARMUP_RUNS=5
+MEASURE_RUNS=50
 
-benchmarks=(fibo.fs ack.fs nestedloop.fs sieve.fs heap.fs ary.fs)
-commands=(gforth ./rpyforth.sh)
+# Create a unique directory for this batch
+TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
+LOG_DIR="logs/${TIMESTAMP}"
+mkdir -p "$LOG_DIR"
 
-if [ ! -d logs ]; then
-    mkdir logs
-fi
+echo "---------------------------------------------------"
+echo "Starting Benchmark Batch: $TIMESTAMP"
+echo "Logs directory: $LOG_DIR"
+echo "---------------------------------------------------"
 
-for bm in "${benchmarks[@]}"; do
-    for cmd in "${commands[@]}"; do
-        cmd_cleaned="${cmd#./}"
-        echo "Running ${cmd_cleaned} against ${bm}..."
-        for i in `seq 1 100`; do
-            ${cmd} shootout/${bm} > logs/${bm}_${cmd_cleaned}_${i}.log
+for bm in "${BENCHMARKS[@]}"; do
+    for cmd in "${COMMANDS[@]}"; do
+        # Clean command name for filename (e.g., ./rpyforth.sh -> rpyforth)
+        cmd_name=$(basename "${cmd}" .sh)
+
+        echo "[Target: ${cmd_name} | Bench: ${bm}]"
+
+        # 1. Warmup Phase (JIT Training)
+        echo "  - Warming up (${WARMUP_RUNS} runs)..."
+        for i in $(seq 1 $WARMUP_RUNS); do
+            ${cmd} "shootout/${bm}" > "${LOG_DIR}/${bm}_${cmd_name}_warmup_${i}.log" 2>&1
+        done
+
+        # 2. Measurement Phase (Steady State)
+        echo "  - Measuring (${MEASURE_RUNS} runs)..."
+        for i in $(seq 1 $MEASURE_RUNS); do
+            ${cmd} "shootout/${bm}" > "${LOG_DIR}/${bm}_${cmd_name}_${i}.log" 2>&1
         done
     done
 done
+
+echo "Done. All logs saved to ${LOG_DIR}"
