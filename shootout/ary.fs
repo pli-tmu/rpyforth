@@ -27,7 +27,7 @@ NUM cells allocate drop Y !
 UTIME 2>R
 ary
 Y @ @ 1 u.r ."  " NUM 1 - cells Y @ + @ 1 u.r cr
-UTIME 2R> D- ." Elapsed: " D. ." microseconds" CR
+UTIME 2R> D- ." Elapsed: " D. ." usec" CR
 
 
 bye \ th-th-that's all folks!

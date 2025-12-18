@@ -126,6 +126,6 @@ fvariable rra        \ temporary float value
 10 set-precision
 UTIME 2>R
 main
-UTIME 2R> D- ." Elapsed: " D. ." microseconds" CR
+UTIME 2R> D- ." Elapsed: " D. ." usec" CR
 bye
 

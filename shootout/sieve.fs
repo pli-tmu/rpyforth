@@ -67,7 +67,7 @@ Flags SIZE + constant EndFlags
 \ now print count of how many Flags are now "true"
 UTIME 2>R
 ." Count: " benchmark  1 u.r cr
-UTIME 2R> D- ." Elapsed: " D. ." microseconds" CR
+UTIME 2R> D- ." Elapsed: " D. ." usec" CR
 
 
 \ PPRIMES
