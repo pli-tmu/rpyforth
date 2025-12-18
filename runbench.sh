@@ -2,7 +2,9 @@
 BENCHMARKS=(fibo.fs ack.fs nestedloop.fs sieve.fs heap.fs ary.fs)
 COMMANDS=(gforth ./rpyforth.sh)
 WARMUP_RUNS=5
-MEASURE_RUNS=50
+MEASURE_RUNS=10
+
+trap 'echo -e "\n\n[Aborted by user] Exiting..."; exit 1' INT
 
 # Create a unique directory for this batch
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
@@ -30,7 +32,7 @@ for bm in "${BENCHMARKS[@]}"; do
         # 2. Measurement Phase (Steady State)
         echo "  - Measuring (${MEASURE_RUNS} runs)..."
         for i in $(seq 1 $MEASURE_RUNS); do
-            ${cmd} "shootout/${bm}" > "${LOG_DIR}/${bm}_${cmd_name}_${i}.log" 2>&1
+            ${cmd} "shootout/${bm}" > "${LOG_DIR}/${bm}_${cmd_name}_run_${i}.log" 2>&1
         done
     done
 done
