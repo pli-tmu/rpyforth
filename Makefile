@@ -44,3 +44,8 @@ _pypy_binary/bin/python:  ## Download a PyPy binary
 	rm pypy.tar.bz2
 	./_pypy_binary/bin/python -m ensurepip
 	./_pypy_binary/bin/python -mpip install "hypothesis<4.40" junit_xml coverage==5.5 "pdbpp==0.10.3"
+
+.PHONY: setup-gforth
+setup-gforth:
+	wget https://www.complang.tuwien.ac.at/forth/gforth/Snapshots/current/gforth.tar.xz
+
