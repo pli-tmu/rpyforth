@@ -39,19 +39,15 @@ def get_printable_location(ip, thread):
 jitdriver = JitDriver(
     greens=['ip', 'thread'],
     reds=['self'],
-    # virtualizables=['self'],  # Disabled: requires careful setup
+    virtualizables=['self'],
     get_printable_location=get_printable_location
 )
 
 class InnerInterpreter(object):
     _immutable_fields_ = ["cell_size", "cell_size_bytes", "base"]
-    # _virtualizable_ disabled - requires more careful setup with RPython JIT
-    # _virtualizable_ = [
-    #     "ds_ptr_ints", "ds_ptr_floats", "ds_ptr_locals",
-    #     "ds_ints[*]", "ds_floats[*]", "ds_locals[*]",
-    #     "rs_ptr", "rs[*]",
-    #     "cs_ptr", "cs_threads[*]", "cs_ips[*]",
-    # ]
+    _virtualizable_ = ["ds_ints", "ds_floats", "ds_locals",
+                       "ds_ptr_ints", "ds_ptr_floats", "ds_ptr_locals",
+                       "rs", "rs_ptr", "cs_threads",  "cs_ips", "cs_ptr"]
 
 
     def __init__(self):
