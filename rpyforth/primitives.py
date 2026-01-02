@@ -120,18 +120,17 @@ def prim_U_LESS(inner, cur, ip):
 # DUP ( x -- x x )
 def prim_DUP(inner, cur, ip):
     """GForth core 2012: duplicate x, leaving two copies on the stack."""
-    a = inner.pop_ds_int()
-    inner.push_ds_int(a)
+    # Optimized: peek instead of pop+push cycle
+    a = inner.peek_ds_int(0)
     inner.push_ds_int(a)
     return ip
 
 
 # 2DUP ( x1 x2 -- x1 x2 x1 x2 )
 def prim_2DUP(inner, cur, ip):
-    b = inner.pop_ds_int()
-    a = inner.pop_ds_int()
-    inner.push_ds_int(a)
-    inner.push_ds_int(b)
+    # Optimized: peek instead of pop+push cycle
+    b = inner.peek_ds_int(0)
+    a = inner.peek_ds_int(1)
     inner.push_ds_int(a)
     inner.push_ds_int(b)
     return ip
@@ -140,8 +139,8 @@ def prim_2DUP(inner, cur, ip):
 # ?DUP ( x -- 0 | x x )
 def prim_QUESTIONDUP(inner, cur, ip):
     """GForth core 2012: duplicate x if it is non-zero."""
-    a = inner.pop_ds_int()
-    inner.push_ds_int(a)
+    # Optimized: use peek instead of pop+push
+    a = inner.peek_ds_int(0)
     if a != 0:
         inner.push_ds_int(a)
     return ip
@@ -157,9 +156,10 @@ def prim_DROP(inner, cur, ip):
 # NIP ( x1 x2 -- x2 )
 def prim_NIP(inner, cur, ip):
     """GForth core 2012: discard the second stack item."""
-    x2 = inner.pop_ds_int()
-    inner.pop_ds_int()  # discard x1
-    inner.push_ds_int(x2)
+    # Optimized: copy top to second position, then drop top
+    x2 = inner.peek_ds_int(0)
+    inner.pop_ds_int()
+    inner.poke_ds_int(0, x2)
     return ip
 
 
@@ -173,31 +173,34 @@ def prim_2DROP(inner, cur, ip):
 # SWAP ( x1 x2 -- x2 x1 )
 def prim_SWAP(inner, cur, ip):
     """GForth core 2012: exchange the top two stack items."""
-    a, b = inner.top2_ds_int()
-    inner.push_ds_int(b)
-    inner.push_ds_int(a)
+    # Optimized: use peek/poke for in-place swap
+    a = inner.peek_ds_int(1)
+    b = inner.peek_ds_int(0)
+    inner.poke_ds_int(1, b)
+    inner.poke_ds_int(0, a)
     return ip
 
 
 # 2SWAP ( x1 x2 x3 x4 -- x3 x4 x1 x2 )
 def prim_2SWAP(inner, cur, ip):
     """GForth core 2012: exchange the top two cell pairs."""
-    c, d = inner.top2_ds_int()
-    a, b = inner.top2_ds_int()
-    inner.push_ds_int(c)
-    inner.push_ds_int(d)
-    inner.push_ds_int(a)
-    inner.push_ds_int(b)
+    # Optimized: use peek/poke for in-place swap
+    a = inner.peek_ds_int(3)
+    b = inner.peek_ds_int(2)
+    c = inner.peek_ds_int(1)
+    d = inner.peek_ds_int(0)
+    inner.poke_ds_int(3, c)
+    inner.poke_ds_int(2, d)
+    inner.poke_ds_int(1, a)
+    inner.poke_ds_int(0, b)
     return ip
 
 
 # OVER ( x1 x2 -- x1 x2 x1 )
 def prim_OVER(inner, cur, ip):
     """GForth core 2012: copy the second stack item to the top."""
-    b = inner.pop_ds_int()
-    a = inner.pop_ds_int()
-    inner.push_ds_int(a)
-    inner.push_ds_int(b)
+    # Optimized: peek instead of pop+push cycle
+    a = inner.peek_ds_int(1)
     inner.push_ds_int(a)
     return ip
 
@@ -205,14 +208,9 @@ def prim_OVER(inner, cur, ip):
 # 2OVER ( x1 x2 x3 x4 -- x1 x2 x3 x4 x1 x2 )
 def prim_2OVER(inner, cur, ip):
     """GForth core 2012: copy cell pair x1 x2 to the top of the stack."""
-    d = inner.pop_ds_int()
-    c = inner.pop_ds_int()
-    b = inner.pop_ds_int()
-    a = inner.pop_ds_int()
-    inner.push_ds_int(a)
-    inner.push_ds_int(b)
-    inner.push_ds_int(c)
-    inner.push_ds_int(d)
+    # Optimized: peek instead of pop+push cycle
+    a = inner.peek_ds_int(3)
+    b = inner.peek_ds_int(2)
     inner.push_ds_int(a)
     inner.push_ds_int(b)
     return ip
@@ -220,24 +218,26 @@ def prim_2OVER(inner, cur, ip):
 
 # ROT ( x1 x2 x3 -- x2 x3 x1 )
 def prim_ROT(inner, cur, ip):
-    c = inner.pop_ds_int()
-    b = inner.pop_ds_int()
-    a = inner.pop_ds_int()
-    inner.push_ds_int(b)
-    inner.push_ds_int(c)
-    inner.push_ds_int(a)
+    # Optimized: use peek/poke for in-place rotation
+    a = inner.peek_ds_int(2)
+    b = inner.peek_ds_int(1)
+    c = inner.peek_ds_int(0)
+    inner.poke_ds_int(2, b)
+    inner.poke_ds_int(1, c)
+    inner.poke_ds_int(0, a)
     return ip
 
 
 # -ROT ( x1 x2 x3 -- x3 x1 x2 )
 def prim_NROT(inner, cur, ip):
     """Inverse of ROT."""
-    c = inner.pop_ds_int()
-    b = inner.pop_ds_int()
-    a = inner.pop_ds_int()
-    inner.push_ds_int(c)
-    inner.push_ds_int(a)
-    inner.push_ds_int(b)
+    # Optimized: use peek/poke for in-place rotation
+    a = inner.peek_ds_int(2)
+    b = inner.peek_ds_int(1)
+    c = inner.peek_ds_int(0)
+    inner.poke_ds_int(2, c)
+    inner.poke_ds_int(1, a)
+    inner.poke_ds_int(0, b)
     return ip
 
 
@@ -1446,26 +1446,9 @@ def prim_2RFETCH(inner, cur, ip):
 def prim_PICK(inner, cur, ip):
     """Copy the u-th stack item to the top (0 PICK is equivalent to DUP)."""
     u = inner.pop_ds_int()
-
-    # We need to access virtualizable stack without direct indexing
-    # Pop items off, find the one we want, and push them all back
-    if u == 0:
-        # 0 PICK is just DUP
-        item = inner.pop_ds_int()
-        inner.push_ds_int(item)
-        inner.push_ds_int(item)
-    else:
-        # Pop u_val+1 items to get to the target
-        temp = []
-        for i in range(u + 1):
-            temp.append(inner.pop_ds_int())
-        # The item we want is at the end
-        item = temp[u]
-        # Push everything back
-        for i in range(u, -1, -1):
-            inner.push_ds_int(temp[i])
-        # Push the picked item
-        inner.push_ds_int(item)
+    # Optimized: use peek_ds_int to directly access the item
+    item = inner.peek_ds_int(u)
+    inner.push_ds_int(item)
     return ip
 
 
