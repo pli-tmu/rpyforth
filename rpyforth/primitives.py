@@ -847,7 +847,7 @@ def prim_0BRANCH(inner, cur, ip):
     if x == 0:
         w_target = promote(cur.lits[origin_ip])
         assert isinstance(w_target, W_IntObject)
-        target_ip = w_target.intval
+        target_ip = promote(w_target.intval)
         ip = target_ip
         _maybe_enter_jit(inner, target_ip, origin_ip, cur)
     return ip
@@ -859,7 +859,7 @@ def prim_BRANCH(inner, cur, ip):
     origin_ip = ip - 1
     target = promote(cur.lits[origin_ip])
     assert isinstance(target, W_IntObject)
-    target_ip = target.intval
+    target_ip = promote(target.intval)
     ip = target_ip
     _maybe_enter_jit(inner, target_ip, origin_ip, cur)
     return ip
@@ -891,7 +891,7 @@ def prim_LOOP_RUNTIME(inner, cur, ip):
         origin_ip = ip - 1
         target = promote(cur.lits[origin_ip])
         assert isinstance(target, W_IntObject)
-        target_ip = target.intval
+        target_ip = promote(target.intval)
         ip = target_ip
         _maybe_enter_jit(inner, target_ip, origin_ip, cur)
     else:
@@ -906,7 +906,8 @@ def prim_PLUSLOOP_RUNTIME(inner, cur, ip):
 
     # Use dedicated integer loop stack - no object allocation!
     counter_val = inner.peek_loop_counter(0)
-    limit_val = inner.peek_loop_limit(0)
+    # Promote limit for JIT specialization (constant in most loops)
+    limit_val = promote(inner.peek_loop_limit(0))
     new_counter_val = counter_val + inc_val
 
     # Check if loop should continue based on crossing the boundary
@@ -931,7 +932,7 @@ def prim_PLUSLOOP_RUNTIME(inner, cur, ip):
         origin_ip = ip - 1
         target = promote(cur.lits[origin_ip])
         assert isinstance(target, W_IntObject)
-        target_ip = target.intval
+        target_ip = promote(target.intval)
         ip = target_ip
         _maybe_enter_jit(inner, target_ip, origin_ip, cur)
     else:
