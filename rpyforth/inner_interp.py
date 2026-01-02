@@ -73,6 +73,8 @@ class InnerInterpreter(object):
         self.cs_ptr = 0
 
         self.mem = [None] * HEAP_SIZE_BYTES
+        # Unboxed byte array for character operations (C!, C@)
+        self.char_mem = [0] * HEAP_SIZE_BYTES
         self.cell_size = CELL_SIZE
         self.cell_size_bytes = CELL_SIZE_BYTES
 
@@ -288,6 +290,16 @@ class InnerInterpreter(object):
         if x2 is None:
             x2 = ZERO
         return x1, x2
+
+    def char_store(self, addr, intval):
+        """C! ( char c-addr -- ) - Store character (unboxed, no allocation)."""
+        assert 0 <= addr < HEAP_CELL_COUNT
+        self.char_mem[addr] = intval & 0xFF
+
+    def char_fetch(self, addr):
+        """C@ ( c-addr -- char ) - Fetch character (unboxed, no allocation)."""
+        assert 0 <= addr < HEAP_CELL_COUNT
+        return self.char_mem[addr]
 
     def float_store(self, addr, value):
         """F! ( addr -- ) ( F: f -- ) - Store float."""

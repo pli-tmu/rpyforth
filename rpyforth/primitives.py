@@ -1543,40 +1543,45 @@ def prim_TOBODY(inner, cur, ip):
 # System Operations
 
 # FILL ( c-addr u char -- )
+@unroll_safe
 def prim_FILL(inner, cur, ip):
     """GForth core 2012: fill u bytes of memory starting at c-addr with char."""
     char = inner.pop_ds_int()
     u = inner.pop_ds_int()
     addr = inner.pop_ds_int()
 
-    # Fill memory with char
+    # Optimized: use unboxed char_store (no W_IntObject allocation)
     for i in range(u):
-        inner.cell_store(addr+i, char)
+        inner.char_store(addr + i, char)
     return ip
 
 
 # MOVE ( addr1 addr2 u -- )
+@unroll_safe
 def prim_MOVE(inner, cur, ip):
     """GForth core 2012: copy u bytes from addr1 to addr2."""
     u = inner.pop_ds_int()
     addr2 = inner.pop_ds_int()
     addr1 = inner.pop_ds_int()
 
-    # Copy u bytes from addr1 to addr2
-    # Handle overlapping regions by using a temporary buffer
-    src = addr1
-    dst = addr2
-
-    # Read all values first (in case of overlap)
-    values = []
-    for i in range(u):
-        w_x = inner.cell_fetch(src+i)
-        assert isinstance(w_x, W_IntObject)
-        values.append(w_x.intval)
-
-    # Write to destination
-    for i in range(u):
-        inner.cell_store(dst+i, values[i])
+    # Check if we have cell data (W_Object in mem) or character data
+    # If first cell has an object, use cell memory; otherwise use char memory
+    if addr1 < len(inner.mem) and inner.mem[addr1] is not None:
+        # Cell memory path (for backward compatibility with cell operations)
+        values = []
+        for i in range(u):
+            w_x = inner.cell_fetch(addr1 + i)
+            assert isinstance(w_x, W_IntObject)
+            values.append(w_x.intval)
+        for i in range(u):
+            inner.cell_store(addr2 + i, values[i])
+    else:
+        # Character memory path (optimized for byte operations)
+        values = [0] * u
+        for i in range(u):
+            values[i] = inner.char_fetch(addr1 + i)
+        for i in range(u):
+            inner.char_store(addr2 + i, values[i])
     return ip
 
 
@@ -1616,8 +1621,8 @@ def prim_C_STORE(inner, cur, ip):
     """GForth core 2012: store char at c-addr."""
     addr = inner.pop_ds_int()
     char = inner.pop_ds_int()
-    # Store just the character (we'll use cell_store for simplicity)
-    inner.cell_store(addr, char)
+    # Optimized: use unboxed char_store (no W_IntObject allocation)
+    inner.char_store(addr, char)
     return ip
 
 
@@ -1625,9 +1630,9 @@ def prim_C_STORE(inner, cur, ip):
 def prim_C_FETCH(inner, cur, ip):
     """GForth core 2012: fetch the character stored at c-addr."""
     addr = inner.pop_ds_int()
-    char = inner.cell_fetch(addr)
-    assert isinstance(char, W_IntObject)
-    inner.push_ds_int(char.intval)
+    # Optimized: use unboxed char_fetch (no W_IntObject boxing/unboxing)
+    char = inner.char_fetch(addr)
+    inner.push_ds_int(char)
     return ip
 
 
