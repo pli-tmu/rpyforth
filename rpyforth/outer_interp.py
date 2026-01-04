@@ -1172,24 +1172,35 @@ class OuterInterpreter(object):
                 assert 0, "unreachable state"
 
     def _finalize_definition(self):
-        """Finalize the current colon definition."""
-        # Append EXIT and install
-        self._emit_word(self.wEXIT)
-        # Create new lists with only the used portion (RPython needs proper list sizes)
+        tail_call_applied = False
+        if self.cc_ptr > 0:
+            last_word = self.current_code[self.cc_ptr - 1]
+            # Check if it's a colon definition (not a primitive) and not a control word
+            if last_word is not None and last_word.prim is None and last_word.thread is not None:
+                # Replace the last word with TAILCALL and store the word in its literal slot
+                self.cc_ptr -= 1  # Remove the last word
+                self.lit_ptr -= 1  # Remove its literal
+                # Emit TAILCALL with the word as literal
+                wTAILCALL = self.dict.get("TAILCALL", None)
+                if wTAILCALL is not None:
+                    self.push_code(wTAILCALL)
+                    self.push_lit(W_WordObject(last_word))
+                    tail_call_applied = True
+
+        if not tail_call_applied:
+            self._emit_word(self.wEXIT)
+
         code = [self.current_code[idx] for idx in range(self.cc_ptr)]
         lits = [self.current_lits[idx] for idx in range(self.lit_ptr)]
         thread = CodeThread(code, lits)
 
-        # Check if word already exists (RECURSIVE was used)
         name_upper = to_upper(self.current_name)
         if name_upper in self.dict:
-            # Update existing word's thread
             existing_word = self.dict[name_upper]
             existing_word.thread = thread
         else:
             self.define_colon(self.current_name, thread)
 
-        # Reset state
         self.state = INTERPRET
         self.current_name = ''
         self.reset_code()

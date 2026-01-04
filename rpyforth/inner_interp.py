@@ -26,6 +26,9 @@ HEAP_SIZE_BYTES = HEAP_CELL_COUNT
 # Sentinel value for EXIT - indicates return from current definition
 EXIT_SENTINEL = -1
 
+# Sentinel value for TAILCALL - indicates a tail call to another word
+TAILCALL_SENTINEL = -2
+
 class Exit(Exception):
     pass
 
@@ -349,8 +352,34 @@ class InnerInterpreter(object):
                     else:
                         break
                     continue
+                # Check for TAILCALL sentinel - perform tail call optimization
+                if ip == TAILCALL_SENTINEL:
+                    # TAILCALL was the last instruction (at code[len(code)-1])
+                    # The target word is stored in lits[len(code)-1]
+                    from rpyforth.objects import W_WordObject
+                    tailcall_idx = len(thread.code) - 1
+                    target = promote(thread.lits[tailcall_idx])
+                    if isinstance(target, W_WordObject):
+                        target_word = promote(target.word)
+                        nested_thread = promote(target_word.thread)
+                        if nested_thread is not None:
+                            # Just replace thread
+                            thread = nested_thread
+                            ip = 0
+                            jitdriver.can_enter_jit(
+                                ip=ip,
+                                thread=thread,
+                                self=self
+                            )
+                            continue
+                    if not self.is_call_stack_empty():
+                        # Fall back: just pop call stack
+                        thread, ip = self.pop_call()
+                    else:
+                        break
+                    continue
             else:
-                # Colon definition - push current state and enter nested thread
+                # Colon definition: push current state and enter nested thread
                 nested_thread = promote(w.thread)
                 self.push_call(thread, ip)
                 thread = nested_thread
