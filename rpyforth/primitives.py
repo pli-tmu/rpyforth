@@ -1295,6 +1295,21 @@ def prim_EXIT(inner, cur, ip):
     return EXIT_SENTINEL
 
 
+# TAILCALL ( -- ) internal primitive for tail-call optimization
+# This is used internally when a colon definition ends with a call to another word followed by EXIT.
+# Instead of pushing a return address and then immediately popping it on EXIT,
+# we directly replace the current thread with the target's thread.
+
+def prim_TAILCALL(inner, cur, ip):
+    """Execute a tail call - jump to target word without pushing return address.
+
+    The literal at ip-1 contains the W_WordObject of the target word.
+    This primitive signals the inner interpreter to perform a tail call.
+    """
+    from rpyforth.inner_interp import TAILCALL_SENTINEL
+    return TAILCALL_SENTINEL
+
+
 # (ABORT") ( flag c-addr u -- )
 def prim_ABORT_QUOTE_RUNTIME(inner, cur, ip):
     """Runtime for ABORT" - abort if flag is non-zero, printing message."""
@@ -2015,6 +2030,226 @@ def prim_FLITERAL(inner, cur, ip):
     return ip
 
 
+import math
+
+# FSQRT ( r1 -- r2 )
+def prim_FSQRT(inner, cur, ip):
+    f = inner.pop_ds_float()
+    inner.push_ds_float(math.sqrt(f))
+    return ip
+
+
+# FSIN ( r1 -- r2 )
+def prim_FSIN(inner, cur, ip):
+    f = inner.pop_ds_float()
+    inner.push_ds_float(math.sin(f))
+    return ip
+
+
+# FCOS ( r1 -- r2 )
+def prim_FCOS(inner, cur, ip):
+    f = inner.pop_ds_float()
+    inner.push_ds_float(math.cos(f))
+    return ip
+
+
+# FTAN ( r1 -- r2 )
+def prim_FTAN(inner, cur, ip):
+    f = inner.pop_ds_float()
+    inner.push_ds_float(math.tan(f))
+    return ip
+
+
+# FASIN ( r1 -- r2 )
+def prim_FASIN(inner, cur, ip):
+    f = inner.pop_ds_float()
+    inner.push_ds_float(math.asin(f))
+    return ip
+
+
+# FACOS ( r1 -- r2 )
+def prim_FACOS(inner, cur, ip):
+    f = inner.pop_ds_float()
+    inner.push_ds_float(math.acos(f))
+    return ip
+
+
+# FATAN ( r1 -- r2 )
+def prim_FATAN(inner, cur, ip):
+    f = inner.pop_ds_float()
+    inner.push_ds_float(math.atan(f))
+    return ip
+
+
+# FATAN2 ( r1 r2 -- r3 )
+def prim_FATAN2(inner, cur, ip):
+    r2 = inner.pop_ds_float()
+    r1 = inner.pop_ds_float()
+    inner.push_ds_float(math.atan2(r1, r2))
+    return ip
+
+
+# FSINH ( r1 -- r2 )
+def prim_FSINH(inner, cur, ip):
+    f = inner.pop_ds_float()
+    inner.push_ds_float(math.sinh(f))
+    return ip
+
+
+# FCOSH ( r1 -- r2 )
+def prim_FCOSH(inner, cur, ip):
+    f = inner.pop_ds_float()
+    inner.push_ds_float(math.cosh(f))
+    return ip
+
+
+# FTANH ( r1 -- r2 )
+def prim_FTANH(inner, cur, ip):
+    f = inner.pop_ds_float()
+    inner.push_ds_float(math.tanh(f))
+    return ip
+
+
+# FASINH ( r1 -- r2 )
+def prim_FASINH(inner, cur, ip):
+    f = inner.pop_ds_float()
+    inner.push_ds_float(math.asinh(f))
+    return ip
+
+
+# FACOSH ( r1 -- r2 )
+def prim_FACOSH(inner, cur, ip):
+    f = inner.pop_ds_float()
+    inner.push_ds_float(math.acosh(f))
+    return ip
+
+
+# FATANH ( r1 -- r2 )
+def prim_FATANH(inner, cur, ip):
+    f = inner.pop_ds_float()
+    inner.push_ds_float(math.atanh(f))
+    return ip
+
+
+# FEXP ( r1 -- r2 )
+def prim_FEXP(inner, cur, ip):
+    f = inner.pop_ds_float()
+    inner.push_ds_float(math.exp(f))
+    return ip
+
+
+# FEXPM1 ( r1 -- r2 )
+def prim_FEXPM1(inner, cur, ip):
+    f = inner.pop_ds_float()
+    inner.push_ds_float(math.expm1(f))
+    return ip
+
+
+# FLN ( r1 -- r2 )
+def prim_FLN(inner, cur, ip):
+    f = inner.pop_ds_float()
+    inner.push_ds_float(math.log(f))
+    return ip
+
+
+# FLNP1 ( r1 -- r2 )
+def prim_FLNP1(inner, cur, ip):
+    f = inner.pop_ds_float()
+    inner.push_ds_float(math.log1p(f))
+    return ip
+
+
+# FLOG ( r1 -- r2 )
+def prim_FLOG(inner, cur, ip):
+    f = inner.pop_ds_float()
+    inner.push_ds_float(math.log10(f))
+    return ip
+
+
+# FALOG ( r1 -- r2 )
+def prim_FALOG(inner, cur, ip):
+    f = inner.pop_ds_float()
+    inner.push_ds_float(math.pow(10.0, f))
+    return ip
+
+
+# F** ( r1 r2 -- r3 )
+def prim_FSTARSTAR(inner, cur, ip):
+    r2 = inner.pop_ds_float()
+    r1 = inner.pop_ds_float()
+    inner.push_ds_float(math.pow(r1, r2))
+    return ip
+
+
+# F2* ( r1 -- r2 )
+def prim_F2STAR(inner, cur, ip):
+    f = inner.pop_ds_float()
+    inner.push_ds_float(f * 2.0)
+    return ip
+
+
+# F2/ ( r1 -- r2 )
+def prim_F2SLASH(inner, cur, ip):
+    """Divide r1 by 2."""
+    f = inner.pop_ds_float()
+    inner.push_ds_float(f * 0.5)
+    return ip
+
+
+# 1/F ( r1 -- r2 )
+def prim_1SLASHF(inner, cur, ip):
+    f = inner.pop_ds_float()
+    inner.push_ds_float(1.0 / f)
+    return ip
+
+
+# FTRUNC ( r1 -- r2 )
+def prim_FTRUNC(inner, cur, ip):
+    f = inner.pop_ds_float()
+    inner.push_ds_float(float(int(f)))
+    return ip
+
+
+# PI constant
+PI_VALUE = 3.141592653589793
+
+# PI ( -- r )
+def prim_PI(inner, cur, ip):
+    inner.push_ds_float(PI_VALUE)
+    return ip
+
+
+# FSINCOS ( r1 -- r2 r3 )
+def prim_FSINCOS(inner, cur, ip):
+    f = inner.pop_ds_float()
+    inner.push_ds_float(math.sin(f))
+    inner.push_ds_float(math.cos(f))
+    return ip
+
+
+# F~ ( r1 r2 r3 -- flag )
+def prim_FPROXIMATE(inner, cur, ip):
+    r3 = inner.pop_ds_float()
+    r2 = inner.pop_ds_float()
+    r1 = inner.pop_ds_float()
+
+    if r3 > 0.0:
+        # Absolute tolerance
+        result = abs(r1 - r2) < r3
+    elif r3 == 0.0:
+        # Exact comparison
+        result = (r1 == r2)
+    else:
+        # Relative tolerance
+        result = abs(r1 - r2) < abs(r3) * (abs(r1) + abs(r2))
+
+    if result:
+        inner.push_ds_int(-1)
+    else:
+        inner.push_ds_int(0)
+    return ip
+
+
 # Time-related primitives
 
 # MS ( u -- )
@@ -2248,6 +2483,7 @@ def install_primitives(outer):
     # thread ops
     outer.define_prim("LIT", prim_LIT)
     outer.define_prim("EXIT", prim_EXIT)
+    outer.define_prim("TAILCALL", prim_TAILCALL)
     outer.define_prim("(ABORT\")", prim_ABORT_QUOTE_RUNTIME)
 
     # floating point
@@ -2282,6 +2518,36 @@ def install_primitives(outer):
     outer.define_prim("F>D", prim_F2D)
     outer.define_prim("SET-PRECISION", prim_SET_PRECISION)
     outer.define_prim("PRECISION", prim_PRECISION)
+
+    # floating point math library (Forth 2012 Floating-Point Extensions)
+    outer.define_prim("FSQRT", prim_FSQRT)
+    outer.define_prim("FSIN", prim_FSIN)
+    outer.define_prim("FCOS", prim_FCOS)
+    outer.define_prim("FTAN", prim_FTAN)
+    outer.define_prim("FASIN", prim_FASIN)
+    outer.define_prim("FACOS", prim_FACOS)
+    outer.define_prim("FATAN", prim_FATAN)
+    outer.define_prim("FATAN2", prim_FATAN2)
+    outer.define_prim("FSINH", prim_FSINH)
+    outer.define_prim("FCOSH", prim_FCOSH)
+    outer.define_prim("FTANH", prim_FTANH)
+    outer.define_prim("FASINH", prim_FASINH)
+    outer.define_prim("FACOSH", prim_FACOSH)
+    outer.define_prim("FATANH", prim_FATANH)
+    outer.define_prim("FEXP", prim_FEXP)
+    outer.define_prim("FEXPM1", prim_FEXPM1)
+    outer.define_prim("FLN", prim_FLN)
+    outer.define_prim("FLNP1", prim_FLNP1)
+    outer.define_prim("FLOG", prim_FLOG)
+    outer.define_prim("FALOG", prim_FALOG)
+    outer.define_prim("F**", prim_FSTARSTAR)
+    outer.define_prim("F2*", prim_F2STAR)
+    outer.define_prim("F2/", prim_F2SLASH)
+    outer.define_prim("1/F", prim_1SLASHF)
+    outer.define_prim("FTRUNC", prim_FTRUNC)
+    outer.define_prim("PI", prim_PI)
+    outer.define_prim("FSINCOS", prim_FSINCOS)
+    outer.define_prim("F~", prim_FPROXIMATE)
 
     # stack manipulation
     outer.define_prim("PICK", prim_PICK)
