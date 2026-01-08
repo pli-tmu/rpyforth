@@ -120,18 +120,17 @@ def prim_U_LESS(inner, cur, ip):
 # DUP ( x -- x x )
 def prim_DUP(inner, cur, ip):
     """GForth core 2012: duplicate x, leaving two copies on the stack."""
-    a = inner.pop_ds_int()
-    inner.push_ds_int(a)
+    # Optimized: peek instead of pop+push cycle
+    a = inner.peek_ds_int(0)
     inner.push_ds_int(a)
     return ip
 
 
 # 2DUP ( x1 x2 -- x1 x2 x1 x2 )
 def prim_2DUP(inner, cur, ip):
-    b = inner.pop_ds_int()
-    a = inner.pop_ds_int()
-    inner.push_ds_int(a)
-    inner.push_ds_int(b)
+    # Optimized: peek instead of pop+push cycle
+    b = inner.peek_ds_int(0)
+    a = inner.peek_ds_int(1)
     inner.push_ds_int(a)
     inner.push_ds_int(b)
     return ip
@@ -140,8 +139,8 @@ def prim_2DUP(inner, cur, ip):
 # ?DUP ( x -- 0 | x x )
 def prim_QUESTIONDUP(inner, cur, ip):
     """GForth core 2012: duplicate x if it is non-zero."""
-    a = inner.pop_ds_int()
-    inner.push_ds_int(a)
+    # Optimized: use peek instead of pop+push
+    a = inner.peek_ds_int(0)
     if a != 0:
         inner.push_ds_int(a)
     return ip
@@ -157,9 +156,10 @@ def prim_DROP(inner, cur, ip):
 # NIP ( x1 x2 -- x2 )
 def prim_NIP(inner, cur, ip):
     """GForth core 2012: discard the second stack item."""
-    x2 = inner.pop_ds_int()
-    inner.pop_ds_int()  # discard x1
-    inner.push_ds_int(x2)
+    # Optimized: copy top to second position, then drop top
+    x2 = inner.peek_ds_int(0)
+    inner.pop_ds_int()
+    inner.poke_ds_int(0, x2)
     return ip
 
 
@@ -173,31 +173,34 @@ def prim_2DROP(inner, cur, ip):
 # SWAP ( x1 x2 -- x2 x1 )
 def prim_SWAP(inner, cur, ip):
     """GForth core 2012: exchange the top two stack items."""
-    a, b = inner.top2_ds_int()
-    inner.push_ds_int(b)
-    inner.push_ds_int(a)
+    # Optimized: use peek/poke for in-place swap
+    a = inner.peek_ds_int(1)
+    b = inner.peek_ds_int(0)
+    inner.poke_ds_int(1, b)
+    inner.poke_ds_int(0, a)
     return ip
 
 
 # 2SWAP ( x1 x2 x3 x4 -- x3 x4 x1 x2 )
 def prim_2SWAP(inner, cur, ip):
     """GForth core 2012: exchange the top two cell pairs."""
-    c, d = inner.top2_ds_int()
-    a, b = inner.top2_ds_int()
-    inner.push_ds_int(c)
-    inner.push_ds_int(d)
-    inner.push_ds_int(a)
-    inner.push_ds_int(b)
+    # Optimized: use peek/poke for in-place swap
+    a = inner.peek_ds_int(3)
+    b = inner.peek_ds_int(2)
+    c = inner.peek_ds_int(1)
+    d = inner.peek_ds_int(0)
+    inner.poke_ds_int(3, c)
+    inner.poke_ds_int(2, d)
+    inner.poke_ds_int(1, a)
+    inner.poke_ds_int(0, b)
     return ip
 
 
 # OVER ( x1 x2 -- x1 x2 x1 )
 def prim_OVER(inner, cur, ip):
     """GForth core 2012: copy the second stack item to the top."""
-    b = inner.pop_ds_int()
-    a = inner.pop_ds_int()
-    inner.push_ds_int(a)
-    inner.push_ds_int(b)
+    # Optimized: peek instead of pop+push cycle
+    a = inner.peek_ds_int(1)
     inner.push_ds_int(a)
     return ip
 
@@ -205,14 +208,9 @@ def prim_OVER(inner, cur, ip):
 # 2OVER ( x1 x2 x3 x4 -- x1 x2 x3 x4 x1 x2 )
 def prim_2OVER(inner, cur, ip):
     """GForth core 2012: copy cell pair x1 x2 to the top of the stack."""
-    d = inner.pop_ds_int()
-    c = inner.pop_ds_int()
-    b = inner.pop_ds_int()
-    a = inner.pop_ds_int()
-    inner.push_ds_int(a)
-    inner.push_ds_int(b)
-    inner.push_ds_int(c)
-    inner.push_ds_int(d)
+    # Optimized: peek instead of pop+push cycle
+    a = inner.peek_ds_int(3)
+    b = inner.peek_ds_int(2)
     inner.push_ds_int(a)
     inner.push_ds_int(b)
     return ip
@@ -220,24 +218,26 @@ def prim_2OVER(inner, cur, ip):
 
 # ROT ( x1 x2 x3 -- x2 x3 x1 )
 def prim_ROT(inner, cur, ip):
-    c = inner.pop_ds_int()
-    b = inner.pop_ds_int()
-    a = inner.pop_ds_int()
-    inner.push_ds_int(b)
-    inner.push_ds_int(c)
-    inner.push_ds_int(a)
+    # Optimized: use peek/poke for in-place rotation
+    a = inner.peek_ds_int(2)
+    b = inner.peek_ds_int(1)
+    c = inner.peek_ds_int(0)
+    inner.poke_ds_int(2, b)
+    inner.poke_ds_int(1, c)
+    inner.poke_ds_int(0, a)
     return ip
 
 
 # -ROT ( x1 x2 x3 -- x3 x1 x2 )
 def prim_NROT(inner, cur, ip):
     """Inverse of ROT."""
-    c = inner.pop_ds_int()
-    b = inner.pop_ds_int()
-    a = inner.pop_ds_int()
-    inner.push_ds_int(c)
-    inner.push_ds_int(a)
-    inner.push_ds_int(b)
+    # Optimized: use peek/poke for in-place rotation
+    a = inner.peek_ds_int(2)
+    b = inner.peek_ds_int(1)
+    c = inner.peek_ds_int(0)
+    inner.poke_ds_int(2, c)
+    inner.poke_ds_int(1, a)
+    inner.poke_ds_int(0, b)
     return ip
 
 
@@ -847,7 +847,7 @@ def prim_0BRANCH(inner, cur, ip):
     if x == 0:
         w_target = promote(cur.lits[origin_ip])
         assert isinstance(w_target, W_IntObject)
-        target_ip = w_target.intval
+        target_ip = promote(w_target.intval)
         ip = target_ip
         _maybe_enter_jit(inner, target_ip, origin_ip, cur)
     return ip
@@ -859,7 +859,7 @@ def prim_BRANCH(inner, cur, ip):
     origin_ip = ip - 1
     target = promote(cur.lits[origin_ip])
     assert isinstance(target, W_IntObject)
-    target_ip = target.intval
+    target_ip = promote(target.intval)
     ip = target_ip
     _maybe_enter_jit(inner, target_ip, origin_ip, cur)
     return ip
@@ -891,7 +891,7 @@ def prim_LOOP_RUNTIME(inner, cur, ip):
         origin_ip = ip - 1
         target = promote(cur.lits[origin_ip])
         assert isinstance(target, W_IntObject)
-        target_ip = target.intval
+        target_ip = promote(target.intval)
         ip = target_ip
         _maybe_enter_jit(inner, target_ip, origin_ip, cur)
     else:
@@ -906,7 +906,8 @@ def prim_PLUSLOOP_RUNTIME(inner, cur, ip):
 
     # Use dedicated integer loop stack - no object allocation!
     counter_val = inner.peek_loop_counter(0)
-    limit_val = inner.peek_loop_limit(0)
+    # Promote limit for JIT specialization (constant in most loops)
+    limit_val = promote(inner.peek_loop_limit(0))
     new_counter_val = counter_val + inc_val
 
     # Check if loop should continue based on crossing the boundary
@@ -931,7 +932,7 @@ def prim_PLUSLOOP_RUNTIME(inner, cur, ip):
         origin_ip = ip - 1
         target = promote(cur.lits[origin_ip])
         assert isinstance(target, W_IntObject)
-        target_ip = target.intval
+        target_ip = promote(target.intval)
         ip = target_ip
         _maybe_enter_jit(inner, target_ip, origin_ip, cur)
     else:
@@ -1294,6 +1295,21 @@ def prim_EXIT(inner, cur, ip):
     return EXIT_SENTINEL
 
 
+# TAILCALL ( -- ) internal primitive for tail-call optimization
+# This is used internally when a colon definition ends with a call to another word followed by EXIT.
+# Instead of pushing a return address and then immediately popping it on EXIT,
+# we directly replace the current thread with the target's thread.
+
+def prim_TAILCALL(inner, cur, ip):
+    """Execute a tail call - jump to target word without pushing return address.
+
+    The literal at ip-1 contains the W_WordObject of the target word.
+    This primitive signals the inner interpreter to perform a tail call.
+    """
+    from rpyforth.inner_interp import TAILCALL_SENTINEL
+    return TAILCALL_SENTINEL
+
+
 # (ABORT") ( flag c-addr u -- )
 def prim_ABORT_QUOTE_RUNTIME(inner, cur, ip):
     """Runtime for ABORT" - abort if flag is non-zero, printing message."""
@@ -1446,26 +1462,9 @@ def prim_2RFETCH(inner, cur, ip):
 def prim_PICK(inner, cur, ip):
     """Copy the u-th stack item to the top (0 PICK is equivalent to DUP)."""
     u = inner.pop_ds_int()
-
-    # We need to access virtualizable stack without direct indexing
-    # Pop items off, find the one we want, and push them all back
-    if u == 0:
-        # 0 PICK is just DUP
-        item = inner.pop_ds_int()
-        inner.push_ds_int(item)
-        inner.push_ds_int(item)
-    else:
-        # Pop u_val+1 items to get to the target
-        temp = []
-        for i in range(u + 1):
-            temp.append(inner.pop_ds_int())
-        # The item we want is at the end
-        item = temp[u]
-        # Push everything back
-        for i in range(u, -1, -1):
-            inner.push_ds_int(temp[i])
-        # Push the picked item
-        inner.push_ds_int(item)
+    # Optimized: use peek_ds_int to directly access the item
+    item = inner.peek_ds_int(u)
+    inner.push_ds_int(item)
     return ip
 
 
@@ -1543,40 +1542,45 @@ def prim_TOBODY(inner, cur, ip):
 # System Operations
 
 # FILL ( c-addr u char -- )
+@unroll_safe
 def prim_FILL(inner, cur, ip):
     """GForth core 2012: fill u bytes of memory starting at c-addr with char."""
     char = inner.pop_ds_int()
     u = inner.pop_ds_int()
     addr = inner.pop_ds_int()
 
-    # Fill memory with char
+    # Optimized: use unboxed char_store (no W_IntObject allocation)
     for i in range(u):
-        inner.cell_store(addr+i, char)
+        inner.char_store(addr + i, char)
     return ip
 
 
 # MOVE ( addr1 addr2 u -- )
+@unroll_safe
 def prim_MOVE(inner, cur, ip):
     """GForth core 2012: copy u bytes from addr1 to addr2."""
     u = inner.pop_ds_int()
     addr2 = inner.pop_ds_int()
     addr1 = inner.pop_ds_int()
 
-    # Copy u bytes from addr1 to addr2
-    # Handle overlapping regions by using a temporary buffer
-    src = addr1
-    dst = addr2
-
-    # Read all values first (in case of overlap)
-    values = []
-    for i in range(u):
-        w_x = inner.cell_fetch(src+i)
-        assert isinstance(w_x, W_IntObject)
-        values.append(w_x.intval)
-
-    # Write to destination
-    for i in range(u):
-        inner.cell_store(dst+i, values[i])
+    # Check if we have cell data (W_Object in mem) or character data
+    # If first cell has an object, use cell memory; otherwise use char memory
+    if addr1 < len(inner.mem) and inner.mem[addr1] is not None:
+        # Cell memory path (for backward compatibility with cell operations)
+        values = []
+        for i in range(u):
+            w_x = inner.cell_fetch(addr1 + i)
+            assert isinstance(w_x, W_IntObject)
+            values.append(w_x.intval)
+        for i in range(u):
+            inner.cell_store(addr2 + i, values[i])
+    else:
+        # Character memory path (optimized for byte operations)
+        values = [0] * u
+        for i in range(u):
+            values[i] = inner.char_fetch(addr1 + i)
+        for i in range(u):
+            inner.char_store(addr2 + i, values[i])
     return ip
 
 
@@ -1616,8 +1620,8 @@ def prim_C_STORE(inner, cur, ip):
     """GForth core 2012: store char at c-addr."""
     addr = inner.pop_ds_int()
     char = inner.pop_ds_int()
-    # Store just the character (we'll use cell_store for simplicity)
-    inner.cell_store(addr, char)
+    # Optimized: use unboxed char_store (no W_IntObject allocation)
+    inner.char_store(addr, char)
     return ip
 
 
@@ -1625,9 +1629,9 @@ def prim_C_STORE(inner, cur, ip):
 def prim_C_FETCH(inner, cur, ip):
     """GForth core 2012: fetch the character stored at c-addr."""
     addr = inner.pop_ds_int()
-    char = inner.cell_fetch(addr)
-    assert isinstance(char, W_IntObject)
-    inner.push_ds_int(char.intval)
+    # Optimized: use unboxed char_fetch (no W_IntObject boxing/unboxing)
+    char = inner.char_fetch(addr)
+    inner.push_ds_int(char)
     return ip
 
 
@@ -2026,6 +2030,226 @@ def prim_FLITERAL(inner, cur, ip):
     return ip
 
 
+import math
+
+# FSQRT ( r1 -- r2 )
+def prim_FSQRT(inner, cur, ip):
+    f = inner.pop_ds_float()
+    inner.push_ds_float(math.sqrt(f))
+    return ip
+
+
+# FSIN ( r1 -- r2 )
+def prim_FSIN(inner, cur, ip):
+    f = inner.pop_ds_float()
+    inner.push_ds_float(math.sin(f))
+    return ip
+
+
+# FCOS ( r1 -- r2 )
+def prim_FCOS(inner, cur, ip):
+    f = inner.pop_ds_float()
+    inner.push_ds_float(math.cos(f))
+    return ip
+
+
+# FTAN ( r1 -- r2 )
+def prim_FTAN(inner, cur, ip):
+    f = inner.pop_ds_float()
+    inner.push_ds_float(math.tan(f))
+    return ip
+
+
+# FASIN ( r1 -- r2 )
+def prim_FASIN(inner, cur, ip):
+    f = inner.pop_ds_float()
+    inner.push_ds_float(math.asin(f))
+    return ip
+
+
+# FACOS ( r1 -- r2 )
+def prim_FACOS(inner, cur, ip):
+    f = inner.pop_ds_float()
+    inner.push_ds_float(math.acos(f))
+    return ip
+
+
+# FATAN ( r1 -- r2 )
+def prim_FATAN(inner, cur, ip):
+    f = inner.pop_ds_float()
+    inner.push_ds_float(math.atan(f))
+    return ip
+
+
+# FATAN2 ( r1 r2 -- r3 )
+def prim_FATAN2(inner, cur, ip):
+    r2 = inner.pop_ds_float()
+    r1 = inner.pop_ds_float()
+    inner.push_ds_float(math.atan2(r1, r2))
+    return ip
+
+
+# FSINH ( r1 -- r2 )
+def prim_FSINH(inner, cur, ip):
+    f = inner.pop_ds_float()
+    inner.push_ds_float(math.sinh(f))
+    return ip
+
+
+# FCOSH ( r1 -- r2 )
+def prim_FCOSH(inner, cur, ip):
+    f = inner.pop_ds_float()
+    inner.push_ds_float(math.cosh(f))
+    return ip
+
+
+# FTANH ( r1 -- r2 )
+def prim_FTANH(inner, cur, ip):
+    f = inner.pop_ds_float()
+    inner.push_ds_float(math.tanh(f))
+    return ip
+
+
+# FASINH ( r1 -- r2 )
+def prim_FASINH(inner, cur, ip):
+    f = inner.pop_ds_float()
+    inner.push_ds_float(math.asinh(f))
+    return ip
+
+
+# FACOSH ( r1 -- r2 )
+def prim_FACOSH(inner, cur, ip):
+    f = inner.pop_ds_float()
+    inner.push_ds_float(math.acosh(f))
+    return ip
+
+
+# FATANH ( r1 -- r2 )
+def prim_FATANH(inner, cur, ip):
+    f = inner.pop_ds_float()
+    inner.push_ds_float(math.atanh(f))
+    return ip
+
+
+# FEXP ( r1 -- r2 )
+def prim_FEXP(inner, cur, ip):
+    f = inner.pop_ds_float()
+    inner.push_ds_float(math.exp(f))
+    return ip
+
+
+# FEXPM1 ( r1 -- r2 )
+def prim_FEXPM1(inner, cur, ip):
+    f = inner.pop_ds_float()
+    inner.push_ds_float(math.expm1(f))
+    return ip
+
+
+# FLN ( r1 -- r2 )
+def prim_FLN(inner, cur, ip):
+    f = inner.pop_ds_float()
+    inner.push_ds_float(math.log(f))
+    return ip
+
+
+# FLNP1 ( r1 -- r2 )
+def prim_FLNP1(inner, cur, ip):
+    f = inner.pop_ds_float()
+    inner.push_ds_float(math.log1p(f))
+    return ip
+
+
+# FLOG ( r1 -- r2 )
+def prim_FLOG(inner, cur, ip):
+    f = inner.pop_ds_float()
+    inner.push_ds_float(math.log10(f))
+    return ip
+
+
+# FALOG ( r1 -- r2 )
+def prim_FALOG(inner, cur, ip):
+    f = inner.pop_ds_float()
+    inner.push_ds_float(math.pow(10.0, f))
+    return ip
+
+
+# F** ( r1 r2 -- r3 )
+def prim_FSTARSTAR(inner, cur, ip):
+    r2 = inner.pop_ds_float()
+    r1 = inner.pop_ds_float()
+    inner.push_ds_float(math.pow(r1, r2))
+    return ip
+
+
+# F2* ( r1 -- r2 )
+def prim_F2STAR(inner, cur, ip):
+    f = inner.pop_ds_float()
+    inner.push_ds_float(f * 2.0)
+    return ip
+
+
+# F2/ ( r1 -- r2 )
+def prim_F2SLASH(inner, cur, ip):
+    """Divide r1 by 2."""
+    f = inner.pop_ds_float()
+    inner.push_ds_float(f * 0.5)
+    return ip
+
+
+# 1/F ( r1 -- r2 )
+def prim_1SLASHF(inner, cur, ip):
+    f = inner.pop_ds_float()
+    inner.push_ds_float(1.0 / f)
+    return ip
+
+
+# FTRUNC ( r1 -- r2 )
+def prim_FTRUNC(inner, cur, ip):
+    f = inner.pop_ds_float()
+    inner.push_ds_float(float(int(f)))
+    return ip
+
+
+# PI constant
+PI_VALUE = 3.141592653589793
+
+# PI ( -- r )
+def prim_PI(inner, cur, ip):
+    inner.push_ds_float(PI_VALUE)
+    return ip
+
+
+# FSINCOS ( r1 -- r2 r3 )
+def prim_FSINCOS(inner, cur, ip):
+    f = inner.pop_ds_float()
+    inner.push_ds_float(math.sin(f))
+    inner.push_ds_float(math.cos(f))
+    return ip
+
+
+# F~ ( r1 r2 r3 -- flag )
+def prim_FPROXIMATE(inner, cur, ip):
+    r3 = inner.pop_ds_float()
+    r2 = inner.pop_ds_float()
+    r1 = inner.pop_ds_float()
+
+    if r3 > 0.0:
+        # Absolute tolerance
+        result = abs(r1 - r2) < r3
+    elif r3 == 0.0:
+        # Exact comparison
+        result = (r1 == r2)
+    else:
+        # Relative tolerance
+        result = abs(r1 - r2) < abs(r3) * (abs(r1) + abs(r2))
+
+    if result:
+        inner.push_ds_int(-1)
+    else:
+        inner.push_ds_int(0)
+    return ip
+
+
 # Time-related primitives
 
 # MS ( u -- )
@@ -2259,6 +2483,7 @@ def install_primitives(outer):
     # thread ops
     outer.define_prim("LIT", prim_LIT)
     outer.define_prim("EXIT", prim_EXIT)
+    outer.define_prim("TAILCALL", prim_TAILCALL)
     outer.define_prim("(ABORT\")", prim_ABORT_QUOTE_RUNTIME)
 
     # floating point
@@ -2293,6 +2518,36 @@ def install_primitives(outer):
     outer.define_prim("F>D", prim_F2D)
     outer.define_prim("SET-PRECISION", prim_SET_PRECISION)
     outer.define_prim("PRECISION", prim_PRECISION)
+
+    # floating point math library (Forth 2012 Floating-Point Extensions)
+    outer.define_prim("FSQRT", prim_FSQRT)
+    outer.define_prim("FSIN", prim_FSIN)
+    outer.define_prim("FCOS", prim_FCOS)
+    outer.define_prim("FTAN", prim_FTAN)
+    outer.define_prim("FASIN", prim_FASIN)
+    outer.define_prim("FACOS", prim_FACOS)
+    outer.define_prim("FATAN", prim_FATAN)
+    outer.define_prim("FATAN2", prim_FATAN2)
+    outer.define_prim("FSINH", prim_FSINH)
+    outer.define_prim("FCOSH", prim_FCOSH)
+    outer.define_prim("FTANH", prim_FTANH)
+    outer.define_prim("FASINH", prim_FASINH)
+    outer.define_prim("FACOSH", prim_FACOSH)
+    outer.define_prim("FATANH", prim_FATANH)
+    outer.define_prim("FEXP", prim_FEXP)
+    outer.define_prim("FEXPM1", prim_FEXPM1)
+    outer.define_prim("FLN", prim_FLN)
+    outer.define_prim("FLNP1", prim_FLNP1)
+    outer.define_prim("FLOG", prim_FLOG)
+    outer.define_prim("FALOG", prim_FALOG)
+    outer.define_prim("F**", prim_FSTARSTAR)
+    outer.define_prim("F2*", prim_F2STAR)
+    outer.define_prim("F2/", prim_F2SLASH)
+    outer.define_prim("1/F", prim_1SLASHF)
+    outer.define_prim("FTRUNC", prim_FTRUNC)
+    outer.define_prim("PI", prim_PI)
+    outer.define_prim("FSINCOS", prim_FSINCOS)
+    outer.define_prim("F~", prim_FPROXIMATE)
 
     # stack manipulation
     outer.define_prim("PICK", prim_PICK)
