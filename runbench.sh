@@ -1,8 +1,43 @@
 #!/bin/bash
 BENCHMARKS=(fibo.fs ack.fs nestedloop.fs sieve.fs heap.fs ary.fs)
+CURVE_BENCHMARKS=(fibo.fs ack.fs nestedloop.fs sieve.fs ary.fs)
 COMMANDS=(gforth ./rpyforth.sh)
 WARMUP_RUNS=5
-MEASURE_RUNS=10
+MEASURE_RUNS=100
+
+# Parse command line arguments
+MODE="standard"  # standard, curve, or all
+ENABLE_MEMORY=true
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --curve)
+            MODE="curve"
+            shift
+            ;;
+        --all)
+            MODE="all"
+            shift
+            ;;
+        --no-memory)
+            ENABLE_MEMORY=false
+            shift
+            ;;
+        -h|--help)
+            echo "Usage: $0 [OPTIONS]"
+            echo "Options:"
+            echo "  --curve      Run curve benchmarks only (for warmup analysis)"
+            echo "  --all        Run both standard and curve benchmarks"
+            echo "  --no-memory  Disable memory profiling"
+            echo "  -h, --help   Show this help"
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1"
+            exit 1
+            ;;
+    esac
+done
 
 trap 'echo -e "\n\n[Aborted by user] Exiting..."; exit 1' INT
 
@@ -13,28 +48,92 @@ mkdir -p "$LOG_DIR"
 
 echo "---------------------------------------------------"
 echo "Starting Benchmark Batch: $TIMESTAMP"
+echo "Mode: $MODE"
+echo "Memory profiling: $ENABLE_MEMORY"
 echo "Logs directory: $LOG_DIR"
 echo "---------------------------------------------------"
 
-for bm in "${BENCHMARKS[@]}"; do
-    for cmd in "${COMMANDS[@]}"; do
-        # Clean command name for filename (e.g., ./rpyforth.sh -> rpyforth)
-        cmd_name=$(basename "${cmd}" .sh)
+# Function to run a single benchmark with optional memory profiling
+run_benchmark() {
+    local cmd="$1"
+    local bench_file="$2"
+    local log_file="$3"
+    local mem_log_file="$4"
 
-        echo "[Target: ${cmd_name} | Bench: ${bm}]"
+    if [ "$ENABLE_MEMORY" = true ]; then
+        # Use /usr/bin/time -v to capture memory metrics
+        /usr/bin/time -v ${cmd} "${bench_file}" > "${log_file}" 2> "${mem_log_file}.tmp"
+        # Extract memory info and append to mem_log_file, keep stderr output
+        grep -E "(Maximum resident set size|Minor|Major|Voluntary|Involuntary|Page size|Elapsed)" "${mem_log_file}.tmp" > "${mem_log_file}" 2>/dev/null
+        rm -f "${mem_log_file}.tmp"
+    else
+        ${cmd} "${bench_file}" > "${log_file}" 2>&1
+    fi
+}
 
-        # 1. Warmup Phase (JIT Training)
-        echo "  - Warming up (${WARMUP_RUNS} runs)..."
-        for i in $(seq 1 $WARMUP_RUNS); do
-            ${cmd} "shootout/${bm}" > "${LOG_DIR}/${bm}_${cmd_name}_warmup_${i}.log" 2>&1
-        done
+# Standard benchmark mode
+run_standard_benchmarks() {
+    for bm in "${BENCHMARKS[@]}"; do
+        for cmd in "${COMMANDS[@]}"; do
+            cmd_name=$(basename "${cmd}" .sh)
 
-        # 2. Measurement Phase (Steady State)
-        echo "  - Measuring (${MEASURE_RUNS} runs)..."
-        for i in $(seq 1 $MEASURE_RUNS); do
-            ${cmd} "shootout/${bm}" > "${LOG_DIR}/${bm}_${cmd_name}_run_${i}.log" 2>&1
+            echo "[Target: ${cmd_name} | Bench: ${bm}]"
+
+            # 1. Warmup Phase (JIT Training)
+            echo "  - Warming up (${WARMUP_RUNS} runs)..."
+            for i in $(seq 1 $WARMUP_RUNS); do
+                run_benchmark "${cmd}" "shootout/${bm}" \
+                    "${LOG_DIR}/${bm}_${cmd_name}_warmup_${i}.log" \
+                    "${LOG_DIR}/${bm}_${cmd_name}_warmup_${i}.mem"
+            done
+
+            # 2. Measurement Phase (Steady State)
+            echo "  - Measuring (${MEASURE_RUNS} runs)..."
+            for i in $(seq 1 $MEASURE_RUNS); do
+                run_benchmark "${cmd}" "shootout/${bm}" \
+                    "${LOG_DIR}/${bm}_${cmd_name}_run_${i}.log" \
+                    "${LOG_DIR}/${bm}_${cmd_name}_run_${i}.mem"
+            done
         done
     done
-done
+}
+
+# Curve benchmark mode for warmup analysis
+run_curve_benchmarks() {
+    echo "Running curve benchmarks for warmup analysis..."
+    for bm in "${CURVE_BENCHMARKS[@]}"; do
+        for cmd in "${COMMANDS[@]}"; do
+            cmd_name=$(basename "${cmd}" .sh)
+            curve_file="shootout/curve/${bm}"
+
+            if [ ! -f "${curve_file}" ]; then
+                echo "  [Skip] Curve benchmark not found: ${curve_file}"
+                continue
+            fi
+
+            echo "[Curve: ${cmd_name} | Bench: ${bm}]"
+
+            # Run curve benchmark (single run, outputs per-iteration times)
+            run_benchmark "${cmd}" "${curve_file}" \
+                "${LOG_DIR}/${bm}_${cmd_name}_curve.log" \
+                "${LOG_DIR}/${bm}_${cmd_name}_curve.mem"
+        done
+    done
+}
+
+# Execute based on mode
+case $MODE in
+    standard)
+        run_standard_benchmarks
+        ;;
+    curve)
+        run_curve_benchmarks
+        ;;
+    all)
+        run_standard_benchmarks
+        echo ""
+        run_curve_benchmarks
+        ;;
+esac
 
 echo "Done. All logs saved to ${LOG_DIR}"
