@@ -24,7 +24,7 @@ import sys
 plt.style.use('ggplot')
 
 
-def calc_calc_geometric_mean(values):
+def calc_geometric_mean(values):
     """Calculate geometric mean of positive values."""
     values = [v for v in values if v is not None and v > 0]
     if not values:
