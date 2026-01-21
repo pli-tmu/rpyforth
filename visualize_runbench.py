@@ -39,7 +39,7 @@ MEM_PATTERN = re.compile(r"^(.*?)_(.*?)_(warmup|run|curve)_?(\d*)\.mem$")
 # Output files
 OUTPUT_DIR = "benchmark_results"
 OUTPUT_BOXPLOT = "speedup_boxplot.pdf"
-OUTPUT_PAPER_SPEEDUP = "speedup_paper.pdf"
+OUTPUT_PAPER_SPEEDUP = "speedup_compact.pdf"
 OUTPUT_CURVE = "warmup_curves.pdf"
 OUTPUT_MEMORY = "memory_comparison.pdf"
 OUTPUT_COMBINED = "benchmark_report.pdf"
@@ -238,6 +238,20 @@ def create_speedup_boxplot(df, output_path):
         x_labels.append(bm)
         x_pos += 0.5  # Gap between benchmark groups
 
+    # Add geomean as an additional group
+    geomean_start = x_pos
+    for cmd in commands:
+        cmd_speedups = df_runs[df_runs['command'] == cmd]['speedup'].dropna().values
+        if len(cmd_speedups) > 0:
+            gmean = calc_geometric_mean(cmd_speedups)
+            if gmean is not None:
+                boxplot_data.append([gmean])  # Single value for geomean
+                positions.append(x_pos)
+                colors.append(color_map.get(cmd, '#95a5a6'))
+                x_pos += 1
+    x_ticks.append((geomean_start + x_pos - 1) / 2)
+    x_labels.append('Geomean')
+
     # Create boxplots
     bp = ax.boxplot(boxplot_data, positions=positions, widths=0.6, patch_artist=True, showmeans=True)
 
@@ -253,20 +267,6 @@ def create_speedup_boxplot(df, output_path):
     ax.set_ylabel('Speedup Factor (higher is better)', fontsize=12)
     ax.set_title('Performance Comparison: rpyforth vs gforth\n(Speedup = gforth_time / measured_time)', fontsize=14)
     ax.grid(axis='y', linestyle='--', alpha=0.7)
-
-    # Calculate and display geometric mean for each command
-    geomean_text = []
-    for cmd in commands:
-        cmd_speedups = df_runs[df_runs['command'] == cmd]['speedup'].dropna().values
-        if len(cmd_speedups) > 0:
-            gmean = calc_geometric_mean(cmd_speedups)
-            if gmean is not None:
-                geomean_text.append(f"{cmd}: {gmean:.2f}x")
-
-    if geomean_text:
-        geomean_str = "Geomean: " + ", ".join(geomean_text)
-        ax.text(0.02, 0.98, geomean_str, transform=ax.transAxes, fontsize=10,
-                verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
 
     # Legend
     from matplotlib.patches import Patch
@@ -332,8 +332,8 @@ def create_speedup_barchart_for_paper(df, output_path):
     # Calculate geometric mean
     gmean_speedup = calc_geometric_mean(speedups.values)
 
-    # Create figure
-    fig, ax = plt.subplots(figsize=(10, 5))
+    # Create figure with more compact layout
+    fig, ax = plt.subplots(figsize=(8, 4))
 
     # Prepare data with geomean
     benchmarks = list(speedups.index) + ['Geomean']
@@ -350,24 +350,26 @@ def create_speedup_barchart_for_paper(df, output_path):
     # Add error bars for individual benchmarks only
     ax.errorbar(x[:-1], values[:-1], yerr=errors[:-1], fmt='none', color='black', capsize=3)
 
-    # Add value labels on top of bars
-    for i, (bar, val) in enumerate(zip(bars, values)):
+    # Add value labels on top of bars with more vertical offset to avoid overlap with error bars
+    for i, (bar, val, err) in enumerate(zip(bars, values, errors)):
         height = bar.get_height()
+        # Calculate offset: base offset + error bar height
+        offset = 3 + (err if i < len(speedups) else 0)
         ax.annotate(f'{val:.2f}x',
-                    xy=(bar.get_x() + bar.get_width() / 2, height),
-                    xytext=(0, 3),  # 3 points vertical offset
+                    xy=(bar.get_x() + bar.get_width() / 2, 0.1),
+                    xytext=(0, offset),
                     textcoords="offset points",
                     ha='center', va='bottom', fontsize=9)
 
-    # Add baseline line at 1.0
-    ax.axhline(y=1.0, color='black', linestyle='--', linewidth=1.5, label='gforth baseline')
+    # Add baseline line at 1.0 in gray
+    ax.axhline(y=1.0, color='gray', linestyle='--', linewidth=1.0, label='gforth baseline')
 
     # Styling
     ax.set_xticks(x)
-    ax.set_xticklabels(benchmarks, rotation=45, ha='right', fontsize=10)
-    ax.set_ylabel('Speedup (higher is better)', fontsize=11)
-    ax.set_xlabel('Benchmark', fontsize=11)
-    ax.set_title('rpyforth Speedup over gforth', fontsize=12)
+    ax.set_xticklabels(benchmarks, rotation=45, ha='right', fontsize=9)
+    ax.set_ylabel('Speedup (higher is better)', fontsize=10)
+    ax.set_xlabel('Benchmark', fontsize=10)
+    ax.set_title('RPyForth Speedup over GForth', fontsize=11)
     ax.grid(axis='y', linestyle='--', alpha=0.5)
 
     # Set y-axis to start from 0
