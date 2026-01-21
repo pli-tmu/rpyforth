@@ -18,9 +18,18 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
+from statistics import geometric_mean as gmean
 import sys
 
 plt.style.use('ggplot')
+
+
+def calc_calc_geometric_mean(values):
+    """Calculate geometric mean of positive values."""
+    values = [v for v in values if v is not None and v > 0]
+    if not values:
+        return None
+    return gmean(values)
 
 # File patterns
 FILENAME_PATTERN = re.compile(r"^(.*?)_(.*?)_(warmup|run)_(\d+)\.log$")
@@ -30,6 +39,7 @@ MEM_PATTERN = re.compile(r"^(.*?)_(.*?)_(warmup|run|curve)_?(\d*)\.mem$")
 # Output files
 OUTPUT_DIR = "benchmark_results"
 OUTPUT_BOXPLOT = "speedup_boxplot.pdf"
+OUTPUT_PAPER_SPEEDUP = "speedup_paper.pdf"
 OUTPUT_CURVE = "warmup_curves.pdf"
 OUTPUT_MEMORY = "memory_comparison.pdf"
 OUTPUT_COMBINED = "benchmark_report.pdf"
@@ -244,6 +254,20 @@ def create_speedup_boxplot(df, output_path):
     ax.set_title('Performance Comparison: rpyforth vs gforth\n(Speedup = gforth_time / measured_time)', fontsize=14)
     ax.grid(axis='y', linestyle='--', alpha=0.7)
 
+    # Calculate and display geometric mean for each command
+    geomean_text = []
+    for cmd in commands:
+        cmd_speedups = df_runs[df_runs['command'] == cmd]['speedup'].dropna().values
+        if len(cmd_speedups) > 0:
+            gmean = calc_geometric_mean(cmd_speedups)
+            if gmean is not None:
+                geomean_text.append(f"{cmd}: {gmean:.2f}x")
+
+    if geomean_text:
+        geomean_str = "Geomean: " + ", ".join(geomean_text)
+        ax.text(0.02, 0.98, geomean_str, transform=ax.transAxes, fontsize=10,
+                verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+
     # Legend
     from matplotlib.patches import Patch
     legend_elements = [
@@ -256,6 +280,103 @@ def create_speedup_boxplot(df, output_path):
     plt.savefig(output_path, dpi=150)
     plt.close()
     print(f"Speedup boxplot saved to {output_path}")
+
+
+def create_speedup_barchart_for_paper(df, output_path):
+    """Create a clean bar chart showing rpyforth speedup vs gforth for paper publication."""
+    # Filter to measurement runs only
+    df_runs = df[df['phase'] == 'run'].copy()
+
+    if df_runs.empty:
+        print("No run phase data found for paper barchart.")
+        return
+
+    baseline_cmd = "gforth"
+    target_cmd = "rpyforth"
+
+    # Calculate mean times for each benchmark and command
+    mean_times = df_runs.groupby(['benchmark', 'command'])['time'].mean().unstack()
+
+    if baseline_cmd not in mean_times.columns or target_cmd not in mean_times.columns:
+        print(f"Warning: Need both '{baseline_cmd}' and '{target_cmd}' data for paper chart.")
+        return
+
+    # Calculate speedup (gforth_time / rpyforth_time)
+    speedups = mean_times[baseline_cmd] / mean_times[target_cmd]
+    speedups = speedups.dropna().sort_values(ascending=False)
+
+    if speedups.empty:
+        print("No speedup data available for paper chart.")
+        return
+
+    # Calculate standard deviation for error bars
+    std_times = df_runs.groupby(['benchmark', 'command'])['time'].std().unstack()
+    speedup_errors = []
+    for bm in speedups.index:
+        # Error propagation for ratio: relative_error = sqrt((da/a)^2 + (db/b)^2)
+        gforth_mean = mean_times.loc[bm, baseline_cmd]
+        rpyforth_mean = mean_times.loc[bm, target_cmd]
+        gforth_std = std_times.loc[bm, baseline_cmd] if bm in std_times.index else 0
+        rpyforth_std = std_times.loc[bm, target_cmd] if bm in std_times.index else 0
+
+        if pd.isna(gforth_std):
+            gforth_std = 0
+        if pd.isna(rpyforth_std):
+            rpyforth_std = 0
+
+        rel_err_gforth = gforth_std / gforth_mean if gforth_mean > 0 else 0
+        rel_err_rpyforth = rpyforth_std / rpyforth_mean if rpyforth_mean > 0 else 0
+        rel_err_total = np.sqrt(rel_err_gforth**2 + rel_err_rpyforth**2)
+        speedup_errors.append(speedups[bm] * rel_err_total)
+
+    # Calculate geometric mean
+    gmean_speedup = calc_geometric_mean(speedups.values)
+
+    # Create figure
+    fig, ax = plt.subplots(figsize=(10, 5))
+
+    # Prepare data with geomean
+    benchmarks = list(speedups.index) + ['Geomean']
+    values = list(speedups.values) + [gmean_speedup]
+    errors = speedup_errors + [0]  # No error bar for geomean
+
+    x = np.arange(len(benchmarks))
+
+    # Colors: blue for individual benchmarks, red for geomean
+    colors = ['#3498db'] * len(speedups) + ['#e74c3c']
+
+    bars = ax.bar(x, values, color=colors, alpha=0.8, edgecolor='black', linewidth=0.5)
+
+    # Add error bars for individual benchmarks only
+    ax.errorbar(x[:-1], values[:-1], yerr=errors[:-1], fmt='none', color='black', capsize=3)
+
+    # Add value labels on top of bars
+    for i, (bar, val) in enumerate(zip(bars, values)):
+        height = bar.get_height()
+        ax.annotate(f'{val:.2f}x',
+                    xy=(bar.get_x() + bar.get_width() / 2, height),
+                    xytext=(0, 3),  # 3 points vertical offset
+                    textcoords="offset points",
+                    ha='center', va='bottom', fontsize=9)
+
+    # Add baseline line at 1.0
+    ax.axhline(y=1.0, color='black', linestyle='--', linewidth=1.5, label='gforth baseline')
+
+    # Styling
+    ax.set_xticks(x)
+    ax.set_xticklabels(benchmarks, rotation=45, ha='right', fontsize=10)
+    ax.set_ylabel('Speedup (higher is better)', fontsize=11)
+    ax.set_xlabel('Benchmark', fontsize=11)
+    ax.set_title('rpyforth Speedup over gforth', fontsize=12)
+    ax.grid(axis='y', linestyle='--', alpha=0.5)
+
+    # Set y-axis to start from 0
+    ax.set_ylim(bottom=0)
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    print(f"Paper speedup barchart saved to {output_path}")
 
 
 def create_warmup_curves(curve_data, output_path):
@@ -462,6 +583,20 @@ def create_combined_report(df, curve_data, mem_df, output_path):
                         ax.set_title('Performance Comparison: rpyforth vs gforth')
                         ax.grid(axis='y', linestyle='--', alpha=0.7)
 
+                        # Calculate and display geometric mean
+                        geomean_text = []
+                        for cmd in commands:
+                            cmd_speedups = df_runs[df_runs['command'] == cmd]['speedup'].dropna().values
+                            if len(cmd_speedups) > 0:
+                                gm = calc_geometric_mean(cmd_speedups)
+                                if gm is not None:
+                                    geomean_text.append(f"{cmd}: {gm:.2f}x")
+
+                        if geomean_text:
+                            geomean_str = "Geomean: " + ", ".join(geomean_text)
+                            ax.text(0.02, 0.98, geomean_str, transform=ax.transAxes, fontsize=10,
+                                    verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+
                         from matplotlib.patches import Patch
                         legend_elements = [
                             Patch(facecolor=color_map['gforth'], alpha=0.7, label='gforth'),
@@ -625,6 +760,7 @@ def main():
     # Generate individual visualizations
     if not df.empty:
         create_speedup_boxplot(df, os.path.join(args.output_dir, OUTPUT_BOXPLOT))
+        create_speedup_barchart_for_paper(df, os.path.join(args.output_dir, OUTPUT_PAPER_SPEEDUP))
         save_statistics(df, os.path.join(args.output_dir, OUTPUT_CSV))
 
     if curve_data:
