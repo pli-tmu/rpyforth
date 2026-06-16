@@ -19,6 +19,13 @@ build-interp: _pypy_binary/bin/python setup-pypy
 build-jit: _pypy_binary/bin/python setup-pypy
 	PYTHONPATH=. $(PYTHON2) $(RPYTHON) -Ojit $(RPYTHON_ARGS) rpyforth/$(TARGET).py
 
+.PHONY: build-jit-novirt
+build-jit-novirt: _pypy_binary/bin/python setup-pypy
+	RPYFORTH_NO_VIRTUALIZE=1 RPYFORTH_EXE_NAME=rpyforth-c-novirt PYTHONPATH=. $(PYTHON2) $(RPYTHON) -Ojit $(RPYTHON_ARGS) rpyforth/$(TARGET).py
+
+.PHONY: build-all
+build-all: build-jit build-jit-novirt
+
 .PHONY: test
 test: _pypy_binary/bin/python setup-pypy
 	PYTHONPATH=. ./_pypy_binary/bin/python2 ./pypy/pytest.py rpyforth/test -vv -s
