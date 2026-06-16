@@ -28,6 +28,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+from jitlog_analysis import (
+    aggregate_benchmark_jitlogs,
+    append_jitlog_visualization_pages,
+    format_jitlog_comparison,
+    is_curve_benchmark,
+    records_from_benchmark_results,
+)
+
 
 # Per-benchmark command-line arguments (filename relative to repo root).
 # Most shootout files hard-code their input size; only a few are wired to
@@ -91,40 +99,6 @@ class BenchmarkResult:
     iteration: int = 1
     run_count: int = 1
     elapsed_samples: List[int] = field(default_factory=list)
-
-
-@dataclass
-class JitlogMetrics:
-    """Selected metrics from a PYPYLOG jit-summary file."""
-
-    tracing_count: Optional[int] = None
-    tracing_time_sec: Optional[float] = None
-    backend_count: Optional[int] = None
-    backend_time_sec: Optional[float] = None
-    total_time_sec: Optional[float] = None
-    ops: Optional[int] = None
-    recorded_ops: Optional[int] = None
-    guards: Optional[int] = None
-    opt_ops: Optional[int] = None
-    opt_guards: Optional[int] = None
-    loops: Optional[int] = None
-    bridges: Optional[int] = None
-
-    def as_dict(self) -> Dict[str, Optional[float]]:
-        return {
-            "tracing_count": self.tracing_count,
-            "tracing_time_sec": self.tracing_time_sec,
-            "backend_count": self.backend_count,
-            "backend_time_sec": self.backend_time_sec,
-            "total_time_sec": self.total_time_sec,
-            "ops": self.ops,
-            "recorded_ops": self.recorded_ops,
-            "guards": self.guards,
-            "opt_ops": self.opt_ops,
-            "opt_guards": self.opt_guards,
-            "loops": self.loops,
-            "bridges": self.bridges,
-        }
 
 
 def discover_benchmarks(root: Path) -> List[Path]:
@@ -242,45 +216,6 @@ def parse_curve_output(result: BenchmarkResult) -> None:
     result.curve_times = times
     if times:
         result.elapsed_usec = sum(times)
-
-
-def parse_jit_summary(path: Path) -> Optional[JitlogMetrics]:
-    """Parse a PYPYLOG jit-summary file into structured metrics."""
-    if not path.exists():
-        return None
-    text = path.read_text(encoding="utf-8")
-    m = JitlogMetrics()
-
-    # Lines like "Tracing:      \t6\t0.001075"
-    tracing_match = re.search(r"Tracing:\s*(\d+)\s+(\d+\.\d+)", text)
-    if tracing_match:
-        m.tracing_count = int(tracing_match.group(1))
-        m.tracing_time_sec = float(tracing_match.group(2))
-
-    backend_match = re.search(r"Backend:\s*(\d+)\s+(\d+\.\d+)", text)
-    if backend_match:
-        m.backend_count = int(backend_match.group(1))
-        m.backend_time_sec = float(backend_match.group(2))
-
-    total_match = re.search(r"TOTAL:\s*(\d+\.\d+)", text)
-    if total_match:
-        m.total_time_sec = float(total_match.group(1))
-
-    # Single integer metrics.
-    for attr, label in [
-        ("ops", "ops:"),
-        ("recorded_ops", "recorded ops:"),
-        ("guards", "guards:"),
-        ("opt_ops", "opt ops:"),
-        ("opt_guards", "opt guards:"),
-        ("loops", "Total # of loops:"),
-        ("bridges", "Total # of bridges:"),
-    ]:
-        match = re.search(re.escape(label) + r"\s*(\d+)", text)
-        if match:
-            setattr(m, attr, int(match.group(1)))
-
-    return m
 
 
 def analyze_result(result: BenchmarkResult) -> None:
@@ -665,83 +600,15 @@ def format_comparison(results: List[BenchmarkResult], plan: RunPlan) -> str:
 
 def format_virtualization_analysis(results: List[BenchmarkResult], plan: RunPlan) -> str:
     """Build a virtualization-focused report comparing JIT metrics from jit-summaries."""
-    groups: Dict[str, Dict[str, BenchmarkResult]] = {}
-    for r in results:
-        groups.setdefault(r.name, {})[r.config] = r
-
-    a_label = plan.label_for("A")
-    b_label = plan.label_for("B")
-
-    lines: List[str] = []
-    lines.append("\n" + "=" * 110)
-    lines.append("Virtualization Analysis (JIT metrics from jit-summary)")
-    lines.append("=" * 110)
-
-    header = (
-        f"{'Benchmark':<25} "
-        f"{'Metric':<20} "
-        f"{a_label[:18]:>18} "
-        f"{b_label[:18]:>18} "
-        f"{'B/A':>10} "
-        f"{'Diff':>12}"
+    grouped = aggregate_benchmark_jitlogs(results)
+    if not grouped:
+        return ""
+    return "\n" + format_jitlog_comparison(
+        grouped,
+        plan.label_for("A"),
+        plan.label_for("B"),
+        title="Virtualization Analysis (JIT metrics from jit-summary)",
     )
-    lines.append(header)
-    lines.append("-" * 110)
-
-    metrics_to_compare = [
-        ("tracing_time_sec", "Tracing time (s)", lambda x: f"{x:.6f}"),
-        ("backend_time_sec", "Backend time (s)", lambda x: f"{x:.6f}"),
-        ("total_time_sec", "JIT total time (s)", lambda x: f"{x:.6f}"),
-        ("loops", "Loops", str),
-        ("bridges", "Bridges", str),
-        ("ops", "Ops", str),
-        ("recorded_ops", "Recorded ops", str),
-        ("guards", "Guards", str),
-        ("opt_ops", "Opt ops", str),
-        ("opt_guards", "Opt guards", str),
-    ]
-
-    for name in sorted(groups):
-        group = groups[name]
-        a = group.get("A")
-        b = group.get("B")
-        if a is None or b is None:
-            continue
-        a_metrics = parse_jit_summary(a.jitlog_path) if a.jitlog_path else None
-        b_metrics = parse_jit_summary(b.jitlog_path) if b.jitlog_path else None
-        if a_metrics is None and b_metrics is None:
-            continue
-
-        first = True
-        for attr, label, fmt in metrics_to_compare:
-            a_val = getattr(a_metrics, attr) if a_metrics else None
-            b_val = getattr(b_metrics, attr) if b_metrics else None
-            if a_val is None and b_val is None:
-                continue
-
-            a_str = fmt(a_val) if a_val is not None else "-"
-            b_str = fmt(b_val) if b_val is not None else "-"
-
-            if isinstance(a_val, (int, float)) and isinstance(b_val, (int, float)) and a_val != 0:
-                ratio = b_val / a_val
-                ratio_str = f"{ratio:.2f}x"
-                diff = b_val - a_val
-                diff_str = f"{diff:+.2f}" if isinstance(diff, float) else f"{diff:+d}"
-            else:
-                ratio_str = "-"
-                diff_str = "-"
-
-            bench_col = name if first else ""
-            lines.append(
-                f"{bench_col:<25} {label:<20} {a_str:>18} {b_str:>18} {ratio_str:>10} {diff_str:>12}"
-            )
-            first = False
-
-    lines.append("=" * 110)
-    lines.append(
-        "Interpretation: B/A > 1 means the non-virtualized build spent more time / produced more JIT artifacts."
-    )
-    return "\n".join(lines)
 
 
 def save_analysis_report(
@@ -763,7 +630,7 @@ def save_analysis_report(
 
 def is_stable_benchmark(name: str) -> bool:
     """Return True for single-run shootout benchmarks (not curve/ warmup runs)."""
-    return not name.startswith("curve/")
+    return not is_curve_benchmark(name)
 
 
 def build_stable_elapsed_samples(
@@ -1051,53 +918,16 @@ def generate_pdf_report(
 
         # --- Page: JIT metrics comparison ---
         if jitlog_mode == "jit-summary" and plan.compare and not plan.skip_jit_analysis:
-            metric_keys = [
-                ("tracing_time_sec", "Tracing time (s)"),
-                ("backend_time_sec", "Backend time (s)"),
-                ("total_time_sec", "JIT total time (s)"),
-                ("ops", "Ops"),
-                ("recorded_ops", "Recorded ops"),
-                ("guards", "Guards"),
-                ("opt_ops", "Opt ops"),
-                ("opt_guards", "Opt guards"),
-                ("loops", "Loops"),
-                ("bridges", "Bridges"),
-            ]
-            for attr, label in metric_keys:
-                bench_names: List[str] = []
-                a_vals: List[float] = []
-                b_vals: List[float] = []
-                for name in sorted({r.name for r in results}):
-                    group = {r.config: r for r in results if r.name == name}
-                    a = group.get("A")
-                    b = group.get("B")
-                    if a is None or b is None:
-                        continue
-                    a_m = parse_jit_summary(a.jitlog_path) if a.jitlog_path else None
-                    b_m = parse_jit_summary(b.jitlog_path) if b.jitlog_path else None
-                    a_val = getattr(a_m, attr) if a_m else None
-                    b_val = getattr(b_m, attr) if b_m else None
-                    if a_val is None or b_val is None:
-                        continue
-                    bench_names.append(name)
-                    a_vals.append(float(a_val))
-                    b_vals.append(float(b_val))
-                if not bench_names:
-                    continue
-                x = range(len(bench_names))
-                width = 0.35
-                fig, ax = plt.subplots(figsize=(10, max(6, len(bench_names) * 0.4)))
-                ax.barh([i - width / 2 for i in x], a_vals, width, label=label_a)
-                ax.barh([i + width / 2 for i in x], b_vals, width, label=label_b)
-                ax.set_yticks(list(x))
-                ax.set_yticklabels(bench_names)
-                ax.set_xlabel(label)
-                ax.set_title(f"Virtualization Analysis: {label}")
-                ax.legend()
-                ax.grid(axis="x", linestyle="--", alpha=0.5)
-                plt.tight_layout()
-                pdf.savefig(fig)
-                plt.close(fig)
+            grouped = aggregate_benchmark_jitlogs(results)
+            if grouped:
+                append_jitlog_visualization_pages(
+                    pdf,
+                    grouped,
+                    records_from_benchmark_results(results),
+                    label_a,
+                    label_b,
+                    chart_title_prefix="Virtualization Analysis",
+                )
 
 
 def make_env_with_jitlog(
