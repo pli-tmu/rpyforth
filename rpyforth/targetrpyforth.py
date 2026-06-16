@@ -1,3 +1,4 @@
+import os
 import sys
 
 from rpyforth.inner_interp import InnerInterpreter, Bye
@@ -25,9 +26,10 @@ def entry_point(argv):
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
     path = argv[1]
-    args = None
-    if len(argv) > 1:
+    args = []
+    if len(argv) > 2:
         args = argv[2:]
+    inner.argv = args
     f = open_file_as_stream(path)
     try:
         for line in f.readall().split('\n'):
@@ -38,7 +40,7 @@ def entry_point(argv):
     return 0
 
 def target(driver, args):
-    driver.exe_name = "rpyforth-%(backend)s"
+    driver.exe_name = os.environ.get("RPYFORTH_EXE_NAME", "rpyforth-%(backend)s")
     return entry_point, None
 
 if __name__ == '__main__':

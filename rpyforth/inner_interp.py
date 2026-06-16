@@ -13,12 +13,14 @@ from rpyforth.objects import (
 )
 
 
+import os
+
 from rpython.rlib.rstruct.ieee import float_pack, float_unpack
 from rpython.rlib.rarithmetic import r_ulonglong
 from rpython.rlib.jit import JitDriver, promote, elidable, unroll_safe, promote_string, hint
 from rpython.rlib.rfile import create_stdio
 
-STACK_SIZE = 4096 # Increased for deeper nesting
+STACK_SIZE = 16384 # Increased for deeper nesting (ack(3,10))
 BUF_SIZE = 1024
 HEAP_CELL_COUNT = 65536
 HEAP_SIZE_BYTES = HEAP_CELL_COUNT
@@ -39,18 +41,31 @@ class Bye(Exception):
 def get_printable_location(ip, thread):
     return "ip=%d %s %s" % (ip, thread.code[ip].to_string(), thread.lits[ip].to_string())
 
-jitdriver = JitDriver(
-    greens=['ip', 'thread'],
-    reds=['self'],
-    virtualizables=['self'],
-    get_printable_location=get_printable_location
-)
+if os.environ.get("RPYFORTH_NO_VIRTUALIZE"):
+    jitdriver = JitDriver(
+        greens=['ip', 'thread'],
+        reds=['self'],
+        get_printable_location=get_printable_location
+    )
+else:
+    jitdriver = JitDriver(
+        greens=['ip', 'thread'],
+        reds=['self'],
+        virtualizables=['self'],
+        get_printable_location=get_printable_location
+    )
 
 class InnerInterpreter(object):
     _immutable_fields_ = ["cell_size", "cell_size_bytes", "base"]
-    _virtualizable_ = ["ds_ints", "ds_floats", "ds_locals",
-                       "ds_ptr_ints", "ds_ptr_floats", "ds_ptr_locals",
-                       "rs", "rs_ptr", "cs_threads",  "cs_ips", "cs_ptr"]
+    # Virtualizable fields are normally used by the JIT to keep interpreter
+    # state in CPU registers. Setting RPYFORTH_NO_VIRTUALIZE=1 at translation
+    # time produces a binary where this optimization is disabled.
+    if os.environ.get("RPYFORTH_NO_VIRTUALIZE"):
+        _virtualizable_ = []
+    else:
+        _virtualizable_ = ["ds_ints", "ds_floats", "ds_locals",
+                           "ds_ptr_ints", "ds_ptr_floats", "ds_ptr_locals",
+                           "rs", "rs_ptr", "cs_threads",  "cs_ips", "cs_ptr"]
 
 
     def __init__(self):
@@ -88,6 +103,7 @@ class InnerInterpreter(object):
         self.base = 10                # DECIMAL
         self._pno_active = False      # inside <# ... #> or not
         self._pno_buf = []            # buffer for pno (pictured numeric output)
+        self.argv = []                # command-line arguments (set by target)
 
     def push_call(self, thread, ip):
         """Push return address onto virtualized call stack."""

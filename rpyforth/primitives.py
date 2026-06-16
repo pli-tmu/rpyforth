@@ -2268,6 +2268,32 @@ def prim_TIME_AND_DATE(inner, cur, ip):
     raise NotImplementedError
 
 
+# ARGC ( -- n )
+def prim_ARGC(inner, cur, ip):
+    """Push the number of command-line arguments (after the filename)."""
+    inner.push_ds_int(len(inner.argv))
+    return ip
+
+
+# ARGV ( n -- c-addr u )
+def prim_ARGV(inner, cur, ip):
+    """Push the nth command-line argument as a counted string (c-addr u)."""
+    n = inner.pop_ds_int()
+    if n >= 0 and n < len(inner.argv):
+        s = inner.argv[n]
+        length = len(s)
+        addr = inner.here
+        for i in range(length):
+            inner.cell_store(addr + i, ord(s[i]))
+        inner.here += length
+        inner.push_ds_int(addr)
+        inner.push_ds_int(length)
+    else:
+        inner.push_ds_int(0)
+        inner.push_ds_int(0)
+    return ip
+
+
 # UTIME ( -- d )
 def prim_UTIME(inner, cur, ip):
     from rpython.rlib.rtime import time
@@ -2585,6 +2611,10 @@ def install_primitives(outer):
 
     # system
     outer.define_prim("BYE", prim_BYE)
+
+    # command-line arguments
+    outer.define_prim("ARGC", prim_ARGC)
+    outer.define_prim("ARGV", prim_ARGV)
 
     # time
     outer.define_prim("MS", prim_MS)

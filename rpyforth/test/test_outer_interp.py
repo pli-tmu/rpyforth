@@ -1237,3 +1237,32 @@ def test_d_minus_with_utime():
     elapsed = low + (high << 64)
     # Elapsed time should be non-negative
     assert elapsed >= 0
+
+
+def test_argc():
+    """Test ARGC primitive returns number of command-line arguments."""
+    inner = InnerInterpreter()
+    inner.argv = ["10", "20"]
+    outer = OuterInterpreter(inner)
+    outer.interpret_line("ARGC")
+    assert inner.pop_ds_int() == 2
+
+
+def test_argv():
+    """Test ARGV primitive returns argument as a counted string."""
+    inner = InnerInterpreter()
+    inner.argv = ["10"]
+    outer = OuterInterpreter(inner)
+    # Parse the first argument as a number
+    outer.interpret_line("0 0 0 ARGV >NUMBER 2DROP DROP")
+    assert inner.pop_ds_int() == 10
+
+
+def test_argv_out_of_range():
+    """Test ARGV primitive returns 0 0 for out-of-range index."""
+    inner = InnerInterpreter()
+    inner.argv = ["10"]
+    outer = OuterInterpreter(inner)
+    outer.interpret_line("1 ARGV")
+    assert inner.pop_ds_int() == 0
+    assert inner.pop_ds_int() == 0

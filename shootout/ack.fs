@@ -2,7 +2,8 @@
 \ ackermann's function
 \ http://www.bagley.org/~doug/shootout/
 
-8 constant NUM
+: GET-NUM  ARGC 0 > IF [ 0 0 0 ARGV >NUMBER 2DROP DROP ] LITERAL ELSE 9 THEN ;
+GET-NUM CONSTANT NUM
 
 : ack  recursive
     dup 0=
@@ -19,7 +20,7 @@
 \ END ACK
 
 \ run ack(3, NUM) and print result from stack
-: main ." Ack: " NUM 3 ack 1 u.r CR ;
+: main ." Ack: " NUM 3 ack 4 u.r CR ;
 
 utime 2>R
 main
