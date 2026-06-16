@@ -2,8 +2,7 @@
 \ ackermann's function
 \ http://www.bagley.org/~doug/shootout/
 
-: GET-NUM  ARGC 0 > IF [ 0 0 0 ARGV >NUMBER 2DROP DROP ] LITERAL ELSE 9 THEN ;
-GET-NUM CONSTANT NUM
+8 constant NUM
 
 : ack  recursive
     dup 0=

@@ -1,18 +1,8 @@
-\ Ackermann function benchmark for JIT analysis (Corrected)
+\ Ackermann function benchmark for JIT analysis
 
 7 constant NUM
 30 constant ITERATIONS
 
-variable start-h variable start-l
-variable end-h   variable end-l
-
-: get-time ( -- d ) utime ;
-: diff-time ( d-start d-end -- d-diff ) 2swap d- ;
-
-\ ---------------------------------------------------------
-\ Target Workload: Ackermann
-\ Stack effect: ( n m -- res )  <-- 注意: m がスタックトップ
-\ ---------------------------------------------------------
 : ack ( n m -- res )
     recursive
     dup 0= if
@@ -25,22 +15,14 @@ variable end-h   variable end-l
         then
     then ;
 
-\ ---------------------------------------------------------
-\ Benchmark Driver
-\ ---------------------------------------------------------
 : run-benchmark
     ." Iteration,Time(usec)" cr
-
     ITERATIONS 0 do
-        get-time
-
+        utime 2>R
         NUM 3 ack drop
-
-        get-time
-        diff-time
+        utime 2R> d-
         i . ." ," d. cr
-    loop
-;
+    loop ;
 
 run-benchmark
 bye

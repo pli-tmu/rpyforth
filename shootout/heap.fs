@@ -120,8 +120,9 @@ fvariable rra        \ temporary float value
 
   NUM heap-sort                   \ sort a[1..NUM]
 
-  \ Print a[NUM]
-  heap-base @ NUM floats + f@ f. cr ;
+  \ Print a[NUM] as parts-per-million integer for cross-engine comparison
+  heap-base @ NUM floats + f@
+  1e6 f* f>d d. cr ;
 
 10 set-precision
 UTIME 2>R
