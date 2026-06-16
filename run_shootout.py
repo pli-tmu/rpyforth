@@ -3,19 +3,15 @@
 Run all RPyForth shootout benchmarks and analyze their output.
 
 Usage:
-    ./run_shootout.py [--binary ./rpyforth-c] [--output logs/]
+    ./run_shootout.py [--output logs/]
 
-The script discovers benchmarks in shootout/ and shootout/curve/,
-runs them, saves per-benchmark log files, and prints a summary.
+Comparison presets (--compare):
+    jit      ./rpyforth-c vs ./rpyforth-c --jit off
+    virt     ./rpyforth-c vs ./rpyforth-c-novirt
+    gforth   gforth vs ./rpyforth-c
 
-A/B comparison modes:
-    --ab                    compare ./rpyforth-c vs ./rpyforth-c --jit off
-    --ab-virtualization     compare ./rpyforth-c vs ./rpyforth-c-novirt
-
-Jitlog capture and analysis:
-    --jitlog                capture a PYPYLOG jit-summary for each run
-    --report <path>         write a combined text report
-    --analyze-only          re-analyze existing logs without re-running
+Override either side with --a-cmd / --b-cmd. Omit --compare for a single run.
+Use --iterations N to repeat each run and report median elapsed times.
 """
 
 import argparse
@@ -23,6 +19,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import statistics
 import subprocess
 import sys
@@ -35,12 +32,44 @@ from typing import Dict, List, Optional, Tuple
 # Per-benchmark command-line arguments (filename relative to repo root).
 # Most shootout files hard-code their input size; only a few are wired to
 # read an argument from the command line.
-DEFAULT_ARGS: Dict[str, List[str]] = {
-    "shootout/ack.fs": ["10"],
-}
+DEFAULT_ARGS: Dict[str, List[str]] = {}
 
 # How long we are willing to wait for a single benchmark run.
 DEFAULT_TIMEOUT = 300
+
+# Named A/B comparison presets: (a_cmd, b_cmd, speedup = a/b when True else b/a).
+COMPARE_PRESETS: Dict[str, Tuple[str, str, bool]] = {
+    "jit": ("./rpyforth-c", "./rpyforth-c --jit off", False),
+    "virt": ("./rpyforth-c", "./rpyforth-c-novirt", False),
+    "gforth": ("gforth", "./rpyforth-c", True),
+}
+
+COMPARE_TITLES: Dict[str, str] = {
+    "jit": "JIT Comparison",
+    "virt": "Virtualization Comparison",
+    "gforth": "Gforth Baseline Comparison",
+}
+
+
+@dataclass(frozen=True)
+class RunPlan:
+    """Resolved commands and reporting options for one invocation."""
+
+    preset: Optional[str]
+    configs: Tuple[Tuple[str, List[str], str], ...]  # (id, cmd, label)
+    speedup_a_over_b: bool
+    skip_jit_analysis: bool
+    skip_jitlog_for: frozenset[str]
+
+    @property
+    def compare(self) -> bool:
+        return len(self.configs) > 1
+
+    def label_for(self, config_id: str) -> str:
+        for cfg_id, _, label in self.configs:
+            if cfg_id == config_id:
+                return label
+        return config_id
 
 
 @dataclass
@@ -59,6 +88,9 @@ class BenchmarkResult:
     curve_times: List[int] = field(default_factory=list)
     error_message: str = ""
     jitlog_path: Optional[Path] = None
+    iteration: int = 1
+    run_count: int = 1
+    elapsed_samples: List[int] = field(default_factory=list)
 
 
 @dataclass
@@ -273,15 +305,110 @@ def analyze_result(result: BenchmarkResult) -> None:
         result.error_message = "detected failure marker in output"
 
 
-def save_log(result: BenchmarkResult, log_dir: Path, jitlog_path: Optional[Path] = None) -> Path:
+def log_path_for(
+    result: BenchmarkResult, log_dir: Path, iteration: int, total_iterations: int
+) -> Path:
+    """Return the log file path for a benchmark run."""
+    safe_name = result.name.replace("/", "_").replace("\\", "_")
+    if total_iterations > 1:
+        return log_dir / f"{safe_name}_{result.config}_i{iteration:03d}.log"
+    return log_dir / f"{safe_name}_{result.config}.log"
+
+
+def discover_log_files(
+    output_dir: Path, compare: bool, only: Optional[str], iterations: int
+) -> List[Path]:
+    """Find saved log files for analyze-only mode."""
+    if compare:
+        numbered = sorted(output_dir.glob("*_A_i*.log")) + sorted(output_dir.glob("*_B_i*.log"))
+        unnumbered = sorted(output_dir.glob("*_A.log")) + sorted(output_dir.glob("*_B.log"))
+        if iterations > 1 or (numbered and not unnumbered):
+            log_files = numbered
+        else:
+            log_files = unnumbered or numbered
+    elif iterations > 1:
+        log_files = sorted(output_dir.glob("*_A_i*.log"))
+    else:
+        numbered = sorted(output_dir.glob("*_A_i*.log"))
+        unnumbered = sorted(
+            p
+            for p in output_dir.glob("*.log")
+            if not p.name.endswith(("_A.log", "_B.log"))
+            and "_i" not in p.stem
+        )
+        log_files = numbered if numbered and not unnumbered else unnumbered or numbered
+
+    if only:
+        log_files = [p for p in log_files if only in p.name]
+    return sorted(set(log_files))
+
+
+def aggregate_iterations(results: List[BenchmarkResult]) -> List[BenchmarkResult]:
+    """Collapse repeated runs into one result per benchmark/config (median elapsed)."""
+    groups: Dict[Tuple[str, str], List[BenchmarkResult]] = {}
+    for result in results:
+        groups.setdefault((result.name, result.config), []).append(result)
+
+    aggregated: List[BenchmarkResult] = []
+    for (name, config) in sorted(groups):
+        runs = sorted(groups[(name, config)], key=lambda r: r.iteration)
+        if len(runs) == 1:
+            run = runs[0]
+            if run.elapsed_usec is not None:
+                run.elapsed_samples = [run.elapsed_usec]
+            aggregated.append(run)
+            continue
+
+        ok_runs = [r for r in runs if r.status in ("ok", "warning")]
+        failed_count = len(runs) - len(ok_runs)
+        elapsed_samples = [r.elapsed_usec for r in ok_runs if r.elapsed_usec is not None]
+        last_ok = ok_runs[-1] if ok_runs else runs[-1]
+
+        merged = BenchmarkResult(
+            name=name,
+            path=runs[0].path,
+            args=runs[0].args,
+            config=config,
+            status=last_ok.status,
+            returncode=last_ok.returncode,
+            stdout=last_ok.stdout,
+            stderr=last_ok.stderr,
+            wall_seconds=statistics.mean(r.wall_seconds for r in runs),
+            result_value=last_ok.result_value,
+            elapsed_usec=int(statistics.median(elapsed_samples)) if elapsed_samples else None,
+            curve_times=last_ok.curve_times,
+            error_message=last_ok.error_message,
+            jitlog_path=last_ok.jitlog_path,
+            iteration=0,
+            run_count=len(runs),
+            elapsed_samples=elapsed_samples,
+        )
+        if failed_count:
+            merged.status = "warning" if ok_runs else "error"
+            detail = f"{failed_count}/{len(runs)} runs failed"
+            merged.error_message = (
+                f"{merged.error_message}; {detail}" if merged.error_message else detail
+            )
+        aggregated.append(merged)
+    return aggregated
+
+
+def save_log(
+    result: BenchmarkResult,
+    log_dir: Path,
+    jitlog_path: Optional[Path] = None,
+    *,
+    iteration: int = 1,
+    total_iterations: int = 1,
+) -> Path:
     """Write the raw log for a benchmark run to disk."""
     result.jitlog_path = jitlog_path
     log_dir.mkdir(parents=True, exist_ok=True)
-    safe_name = result.name.replace("/", "_").replace("\\", "_")
-    log_path = log_dir / f"{safe_name}_{result.config}.log"
+    log_path = log_path_for(result, log_dir, iteration, total_iterations)
     with log_path.open("w", encoding="utf-8") as f:
         f.write(f"# benchmark: {result.name}\n")
         f.write(f"# config: {result.config}\n")
+        f.write(f"# iteration: {iteration}\n")
         f.write(f"# command args: {' '.join(result.args)}\n")
         f.write(f"# status: {result.status}\n")
         f.write(f"# return code: {result.returncode}\n")
@@ -343,6 +470,7 @@ def load_log(log_path: Path) -> Optional[BenchmarkResult]:
         stderr="\n".join(stderr_lines),
         wall_seconds=float(headers.get("wall seconds", "0")),
         error_message=headers.get("error", ""),
+        iteration=int(headers.get("iteration", "1")),
     )
     jitlog = headers.get("jitlog")
     if jitlog:
@@ -372,6 +500,8 @@ def format_summary(results: List[BenchmarkResult]) -> str:
             elapsed = f"{r.elapsed_usec}us" if r.elapsed_usec is not None else "-"
             value = r.result_value if r.result_value is not None else "-"
             metric = f"{value} ({elapsed})"
+            if r.run_count > 1:
+                metric = f"{metric}, median of {r.run_count}"
 
         lines.append(
             f"{r.name:<25} {r.config:<8} {r.status:<10} {metric:<30} {r.wall_seconds:>12.3f}"
@@ -386,19 +516,96 @@ def format_summary(results: List[BenchmarkResult]) -> str:
     return "\n".join(lines)
 
 
-def format_ab_comparison(results: List[BenchmarkResult], config_names: Dict[str, str]) -> str:
-    """Build an A/B comparison table from paired results."""
-    # Group by benchmark name.
+def parse_cmd(text: str) -> List[str]:
+    """Split a shell-style command string into a list."""
+    return shlex.split(text)
+
+
+def short_label(cmd: List[str]) -> str:
+    """Return a compact display label for a command prefix."""
+    name = Path(cmd[0]).name
+    if len(cmd) == 1:
+        return name
+    return f"{name} {' '.join(cmd[1:])}"
+
+
+def resolve_command(cmd: List[str], repo_root: Path) -> Optional[Path]:
+    """Return the executable path if a command prefix is runnable."""
+    if not cmd:
+        return None
+    exe = Path(cmd[0])
+    if exe.is_absolute() and exe.exists():
+        return exe
+    local = repo_root / exe
+    if local.exists():
+        return local
+    found = shutil.which(cmd[0])
+    if found:
+        return Path(found)
+    return None
+
+
+def build_run_plan(args: argparse.Namespace) -> RunPlan:
+    """Resolve preset, commands, and reporting behavior from CLI args."""
+    preset = args.compare
+    if preset and preset not in COMPARE_PRESETS:
+        raise SystemExit(f"Unknown compare preset: {preset}")
+
+    if preset:
+        default_a, default_b, speedup_a_over_b = COMPARE_PRESETS[preset]
+        a_text = args.a_cmd or default_a
+        b_text = args.b_cmd or default_b
+        skip_jit_analysis = preset == "gforth"
+        skip_jitlog_for = frozenset({"A"}) if preset == "gforth" else frozenset()
+    elif args.b_cmd:
+        a_text = args.a_cmd or "./rpyforth-c"
+        b_text = args.b_cmd
+        speedup_a_over_b = False
+        skip_jit_analysis = parse_cmd(a_text)[0] == "gforth"
+        skip_jitlog_for = frozenset({"A"}) if skip_jit_analysis else frozenset()
+        preset = None
+    else:
+        a_cmd = parse_cmd(args.a_cmd or "./rpyforth-c")
+        return RunPlan(
+            preset=None,
+            configs=(("A", a_cmd, short_label(a_cmd)),),
+            speedup_a_over_b=False,
+            skip_jit_analysis=True,
+            skip_jitlog_for=frozenset(),
+        )
+
+    a_cmd = parse_cmd(a_text)
+    b_cmd = parse_cmd(b_text)
+    return RunPlan(
+        preset=preset,
+        configs=(
+            ("A", a_cmd, short_label(a_cmd)),
+            ("B", b_cmd, short_label(b_cmd)),
+        ),
+        speedup_a_over_b=speedup_a_over_b,
+        skip_jit_analysis=skip_jit_analysis,
+        skip_jitlog_for=skip_jitlog_for,
+    )
+
+
+def format_comparison(results: List[BenchmarkResult], plan: RunPlan) -> str:
+    """Build a comparison table from paired A/B results."""
     groups: Dict[str, Dict[str, BenchmarkResult]] = {}
     for r in results:
         groups.setdefault(r.name, {})[r.config] = r
 
+    a_label = plan.label_for("A")
+    b_label = plan.label_for("B")
+
     lines: List[str] = []
     lines.append("=" * 100)
+    if plan.preset:
+        lines.append(COMPARE_TITLES[plan.preset])
+        lines.append("=" * 100)
     header = (
         f"{'Benchmark':<25} "
-        f"{config_names['A'] + ' elapsed':>16} "
-        f"{config_names['B'] + ' elapsed':>16} "
+        f"{a_label + ' elapsed':>16} "
+        f"{b_label + ' elapsed':>16} "
         f"{'Speedup':>10} "
         f"{'Match':>8}"
     )
@@ -429,11 +636,10 @@ def format_ab_comparison(results: List[BenchmarkResult], config_names: Dict[str,
         a_elapsed = a.elapsed_usec if a.elapsed_usec is not None else 0
         b_elapsed = b.elapsed_usec if b.elapsed_usec is not None else 0
 
-        if a_elapsed > 0:
-            speedup = b_elapsed / a_elapsed
-            speedup_str = f"{speedup:.2f}x"
+        if plan.speedup_a_over_b:
+            speedup_str = f"{a_elapsed / b_elapsed:.2f}x" if b_elapsed > 0 else "n/a"
         else:
-            speedup_str = "n/a"
+            speedup_str = f"{b_elapsed / a_elapsed:.2f}x" if a_elapsed > 0 else "n/a"
 
         match = a.result_value == b.result_value
         if not match:
@@ -446,20 +652,25 @@ def format_ab_comparison(results: List[BenchmarkResult], config_names: Dict[str,
 
     lines.append("=" * 100)
     lines.append(
-        f"A/B summary: {len(groups)} pairs, {mismatches} result mismatches, {errors} errors"
+        f"Comparison summary: {len(groups)} pairs, {mismatches} result mismatches, {errors} errors"
     )
-    if mismatches:
+    if plan.speedup_a_over_b:
+        lines.append(
+            f"Interpretation: speedup = {a_label} / {b_label}; >1 means {b_label} is faster."
+        )
+    elif mismatches:
         lines.append("Warning: result values differ between configurations!")
     return "\n".join(lines)
 
 
-def format_virtualization_analysis(
-    results: List[BenchmarkResult], config_names: Dict[str, str]
-) -> str:
+def format_virtualization_analysis(results: List[BenchmarkResult], plan: RunPlan) -> str:
     """Build a virtualization-focused report comparing JIT metrics from jit-summaries."""
     groups: Dict[str, Dict[str, BenchmarkResult]] = {}
     for r in results:
         groups.setdefault(r.name, {})[r.config] = r
+
+    a_label = plan.label_for("A")
+    b_label = plan.label_for("B")
 
     lines: List[str] = []
     lines.append("\n" + "=" * 110)
@@ -469,8 +680,8 @@ def format_virtualization_analysis(
     header = (
         f"{'Benchmark':<25} "
         f"{'Metric':<20} "
-        f"{config_names['A'][:18]:>18} "
-        f"{config_names['B'][:18]:>18} "
+        f"{a_label[:18]:>18} "
+        f"{b_label[:18]:>18} "
         f"{'B/A':>10} "
         f"{'Diff':>12}"
     )
@@ -536,24 +747,357 @@ def format_virtualization_analysis(
 def save_analysis_report(
     report_path: Path,
     results: List[BenchmarkResult],
-    config_names: Dict[str, str],
+    plan: RunPlan,
     jitlog_mode: str,
 ) -> None:
     """Write a full text analysis report to disk."""
     report_path.parent.mkdir(parents=True, exist_ok=True)
-    sections: List[str] = []
-    sections.append(format_summary(results))
-    sections.append("")
-    sections.append(format_ab_comparison(results, config_names))
-    if jitlog_mode == "jit-summary":
-        sections.append(format_virtualization_analysis(results, config_names))
+    sections: List[str] = [format_summary(results), ""]
+    if plan.compare:
+        sections.append(format_comparison(results, plan))
+    if jitlog_mode == "jit-summary" and not plan.skip_jit_analysis:
+        sections.append(format_virtualization_analysis(results, plan))
 
     report_path.write_text("\n".join(sections), encoding="utf-8")
 
 
-def parse_cmd(text: str) -> List[str]:
-    """Split a shell-style command string into a list."""
-    return shlex.split(text)
+def is_stable_benchmark(name: str) -> bool:
+    """Return True for single-run shootout benchmarks (not curve/ warmup runs)."""
+    return not name.startswith("curve/")
+
+
+def build_stable_elapsed_samples(
+    results: List[BenchmarkResult],
+) -> Dict[str, Dict[str, List[int]]]:
+    """Return stable benchmark elapsed times grouped by name and config."""
+    samples: Dict[str, Dict[str, List[int]]] = {}
+    for result in results:
+        if not is_stable_benchmark(result.name):
+            continue
+        if result.elapsed_samples:
+            elapsed = result.elapsed_samples
+        elif result.elapsed_usec is not None:
+            elapsed = [result.elapsed_usec]
+        else:
+            continue
+        samples.setdefault(result.name, {})[result.config] = elapsed
+    return samples
+
+
+def has_iteration_variance(results: List[BenchmarkResult]) -> bool:
+    """Return True when at least one stable benchmark has multiple timed runs."""
+    for by_config in build_stable_elapsed_samples(results).values():
+        for elapsed in by_config.values():
+            if len(elapsed) > 1:
+                return True
+    return False
+
+
+def build_paired_stable_data(
+    results: List[BenchmarkResult],
+    plan: RunPlan,
+) -> Tuple[List[str], List[int], List[int], List[float], List[float], List[float]]:
+    """Return paired elapsed times, speedups, and per-config stddevs."""
+    samples_by_name = build_stable_elapsed_samples(results)
+
+    names: List[str] = []
+    a_values: List[int] = []
+    b_values: List[int] = []
+    speedups: List[float] = []
+    a_stdevs: List[float] = []
+    b_stdevs: List[float] = []
+    for name in sorted(samples_by_name):
+        by_config = samples_by_name[name]
+        a_samples = by_config.get("A")
+        b_samples = by_config.get("B") if plan.compare else None
+        if a_samples is None:
+            continue
+        if plan.compare and b_samples is None:
+            continue
+
+        a_elapsed = int(statistics.median(a_samples))
+        if plan.compare:
+            assert b_samples is not None
+            b_elapsed = int(statistics.median(b_samples))
+            if plan.speedup_a_over_b:
+                if b_elapsed == 0:
+                    continue
+                speedup = a_elapsed / b_elapsed
+            else:
+                if a_elapsed == 0:
+                    continue
+                speedup = b_elapsed / a_elapsed
+        else:
+            b_elapsed = 0
+            speedup = 0.0
+
+        names.append(name)
+        a_values.append(a_elapsed)
+        b_values.append(b_elapsed)
+        speedups.append(speedup)
+        a_stdevs.append(statistics.stdev(a_samples) if len(a_samples) > 1 else 0.0)
+        b_stdevs.append(
+            statistics.stdev(b_samples) if b_samples and len(b_samples) > 1 else 0.0
+        )
+    return names, a_values, b_values, speedups, a_stdevs, b_stdevs
+
+
+def generate_pdf_report(
+    pdf_path: Path,
+    results: List[BenchmarkResult],
+    plan: RunPlan,
+    jitlog_mode: str,
+) -> None:
+    """Generate a multi-page PDF report with benchmark graphs.
+
+    Requires matplotlib to be installed.
+    """
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")  # non-interactive backend
+        from matplotlib import pyplot as plt
+        from matplotlib.backends.backend_pdf import PdfPages
+    except ImportError as exc:
+        raise RuntimeError(
+            "PDF report generation requires matplotlib. Install it with: pip install matplotlib"
+        ) from exc
+
+    pdf_path.parent.mkdir(parents=True, exist_ok=True)
+
+    label_a = plan.label_for("A")
+    label_b = plan.label_for("B")
+    if plan.preset == "gforth":
+        elapsed_title = f"Stable Performance: {label_b} vs {label_a} (baseline)"
+        speedup_title = f"Stable Performance: Speedup vs {label_a} Baseline"
+        speedup_xlabel = f"Speedup ({label_a} / {label_b}); >1 means {label_b} is faster"
+    elif plan.compare:
+        elapsed_title = "Stable Performance: Elapsed Time Comparison"
+        speedup_title = "Stable Performance: Speedup Ratio"
+        speedup_xlabel = f"Speedup ({label_b} / {label_a}); >1 means {label_a} is faster"
+    else:
+        elapsed_title = speedup_title = speedup_xlabel = ""
+
+    curve_colors = {"A": "#3498db", "B": "#e74c3c"} if plan.preset == "gforth" else {
+        "A": "#1f77b4",
+        "B": "#ff7f0e",
+    }
+
+    with PdfPages(str(pdf_path)) as pdf:
+        show_variance = has_iteration_variance(results)
+
+        if plan.compare:
+            names, a_values, b_values, speedups, a_stdevs, b_stdevs = build_paired_stable_data(
+                results, plan
+            )
+            if names:
+                x = range(len(names))
+                width = 0.35
+                fig, ax = plt.subplots(figsize=(10, max(6, len(names) * 0.4)))
+                ax.barh(
+                    [i - width / 2 for i in x],
+                    a_values,
+                    width,
+                    label=label_a,
+                    xerr=a_stdevs if show_variance else None,
+                    capsize=3 if show_variance else 0,
+                )
+                ax.barh(
+                    [i + width / 2 for i in x],
+                    b_values,
+                    width,
+                    label=label_b,
+                    xerr=b_stdevs if show_variance else None,
+                    capsize=3 if show_variance else 0,
+                )
+                ax.set_yticks(list(x))
+                ax.set_yticklabels(names)
+                ax.set_xlabel("Elapsed time (microseconds)")
+                title = elapsed_title
+                if show_variance:
+                    title += " (median +/- stdev)"
+                ax.set_title(title)
+                ax.legend()
+                ax.grid(axis="x", linestyle="--", alpha=0.5)
+                plt.tight_layout()
+                pdf.savefig(fig)
+                plt.close(fig)
+
+            if names:
+                fig, ax = plt.subplots(figsize=(10, max(6, len(names) * 0.4)))
+                colors = ["green" if s > 1 else "red" for s in speedups]
+                ax.barh(names, speedups, color=colors, alpha=0.7)
+                ax.axvline(1.0, color="black", linestyle="--", linewidth=1)
+                ax.set_xlabel(speedup_xlabel)
+                ax.set_title(speedup_title)
+                ax.grid(axis="x", linestyle="--", alpha=0.5)
+                plt.tight_layout()
+                pdf.savefig(fig)
+                plt.close(fig)
+
+        if show_variance:
+            from matplotlib.patches import Patch
+
+            samples_by_name = build_stable_elapsed_samples(results)
+            benchmarks = [
+                name
+                for name in sorted(samples_by_name)
+                if any(len(samples) > 1 for samples in samples_by_name[name].values())
+            ]
+            config_ids = [config_id for config_id, _, _ in plan.configs]
+            bar_colors = curve_colors
+
+            fig, ax = plt.subplots(figsize=(max(10, len(benchmarks) * 1.8), 6))
+            positions: List[float] = []
+            boxplot_data: List[List[int]] = []
+            colors: List[str] = []
+            x_ticks: List[float] = []
+            x_labels: List[str] = []
+            x_pos = 0.0
+
+            for benchmark in benchmarks:
+                group_start = x_pos
+                for config_id in config_ids:
+                    elapsed = samples_by_name.get(benchmark, {}).get(config_id, [])
+                    if len(elapsed) < 2:
+                        continue
+                    boxplot_data.append(elapsed)
+                    positions.append(x_pos)
+                    colors.append(bar_colors.get(config_id, "#95a5a6"))
+                    x_pos += 1.0
+                if x_pos > group_start:
+                    x_ticks.append((group_start + x_pos - 1.0) / 2.0)
+                    x_labels.append(benchmark.replace("shootout/", ""))
+                    x_pos += 0.5
+
+            if boxplot_data:
+                bp = ax.boxplot(
+                    boxplot_data,
+                    positions=positions,
+                    widths=0.6,
+                    patch_artist=True,
+                    showmeans=True,
+                )
+                for patch, color in zip(bp["boxes"], colors):
+                    patch.set_facecolor(color)
+                    patch.set_alpha(0.7)
+
+                ax.set_xticks(x_ticks)
+                ax.set_xticklabels(x_labels, rotation=45, ha="right")
+                ax.set_ylabel("Elapsed time (microseconds)")
+                ax.set_title("Run-to-run Variance Across Iterations")
+                ax.grid(axis="y", linestyle="--", alpha=0.5)
+
+                legend_elements = [
+                    Patch(
+                        facecolor=bar_colors.get(config_id, "#95a5a6"),
+                        alpha=0.7,
+                        label=plan.label_for(config_id),
+                    )
+                    for config_id in config_ids
+                ]
+                ax.legend(handles=legend_elements)
+                plt.tight_layout()
+                pdf.savefig(fig)
+                plt.close(fig)
+
+        # --- Page: Combined curve iteration time plots (all programs) ---
+        curve_data: Dict[str, Dict[str, List[int]]] = {}
+        for r in results:
+            if not r.name.startswith("curve/") or not r.curve_times:
+                continue
+            curve_data.setdefault(r.name, {})[r.config] = r.curve_times
+
+        if curve_data:
+            programs = sorted(curve_data.keys())
+            n_programs = len(programs)
+            cols = min(3, n_programs)
+            rows = (n_programs + cols - 1) // cols
+            fig, axes = plt.subplots(
+                rows, cols, figsize=(5 * cols, 4 * rows), squeeze=False
+            )
+            color_map = curve_colors
+
+            for idx, program in enumerate(programs):
+                ax = axes.flatten()[idx]
+                for config in sorted(curve_data[program]):
+                    times = curve_data[program][config]
+                    iters = list(range(len(times)))
+                    legend_label = plan.label_for(config)
+                    ax.plot(
+                        iters,
+                        times,
+                        marker="o",
+                        linestyle="-",
+                        linewidth=1,
+                        markersize=3,
+                        label=legend_label,
+                        color=color_map.get(config),
+                    )
+                short_name = program.replace("curve/", "")
+                ax.set_title(short_name)
+                ax.set_xlabel("Iteration")
+                ax.set_ylabel("Time (microseconds)")
+                ax.legend(fontsize=8)
+                ax.grid(True, linestyle="--", alpha=0.5)
+
+            for idx in range(n_programs, rows * cols):
+                axes.flatten()[idx].set_visible(False)
+
+            fig.suptitle("Per-iteration Timings (all programs)", fontsize=14)
+            plt.tight_layout()
+            pdf.savefig(fig)
+            plt.close(fig)
+
+        # --- Page: JIT metrics comparison ---
+        if jitlog_mode == "jit-summary" and plan.compare and not plan.skip_jit_analysis:
+            metric_keys = [
+                ("tracing_time_sec", "Tracing time (s)"),
+                ("backend_time_sec", "Backend time (s)"),
+                ("total_time_sec", "JIT total time (s)"),
+                ("ops", "Ops"),
+                ("recorded_ops", "Recorded ops"),
+                ("guards", "Guards"),
+                ("opt_ops", "Opt ops"),
+                ("opt_guards", "Opt guards"),
+                ("loops", "Loops"),
+                ("bridges", "Bridges"),
+            ]
+            for attr, label in metric_keys:
+                bench_names: List[str] = []
+                a_vals: List[float] = []
+                b_vals: List[float] = []
+                for name in sorted({r.name for r in results}):
+                    group = {r.config: r for r in results if r.name == name}
+                    a = group.get("A")
+                    b = group.get("B")
+                    if a is None or b is None:
+                        continue
+                    a_m = parse_jit_summary(a.jitlog_path) if a.jitlog_path else None
+                    b_m = parse_jit_summary(b.jitlog_path) if b.jitlog_path else None
+                    a_val = getattr(a_m, attr) if a_m else None
+                    b_val = getattr(b_m, attr) if b_m else None
+                    if a_val is None or b_val is None:
+                        continue
+                    bench_names.append(name)
+                    a_vals.append(float(a_val))
+                    b_vals.append(float(b_val))
+                if not bench_names:
+                    continue
+                x = range(len(bench_names))
+                width = 0.35
+                fig, ax = plt.subplots(figsize=(10, max(6, len(bench_names) * 0.4)))
+                ax.barh([i - width / 2 for i in x], a_vals, width, label=label_a)
+                ax.barh([i + width / 2 for i in x], b_vals, width, label=label_b)
+                ax.set_yticks(list(x))
+                ax.set_yticklabels(bench_names)
+                ax.set_xlabel(label)
+                ax.set_title(f"Virtualization Analysis: {label}")
+                ax.legend()
+                ax.grid(axis="x", linestyle="--", alpha=0.5)
+                plt.tight_layout()
+                pdf.savefig(fig)
+                plt.close(fig)
 
 
 def make_env_with_jitlog(
@@ -562,6 +1106,8 @@ def make_env_with_jitlog(
     benchmark_name: str,
     config: str,
     mode: str = "jit-summary",
+    iteration: int = 1,
+    total_iterations: int = 1,
 ) -> Tuple[Dict[str, str], Path]:
     """Return environment dict and path for a PYPYLOG capture.
 
@@ -569,21 +1115,46 @@ def make_env_with_jitlog(
     """
     jitlog_dir.mkdir(parents=True, exist_ok=True)
     safe_name = benchmark_name.replace("/", "_").replace("\\", "_")
-    jitlog_path = jitlog_dir / f"{safe_name}_{config}.jitlog"
+    if total_iterations > 1:
+        jitlog_path = jitlog_dir / f"{safe_name}_{config}_i{iteration:03d}.jitlog"
+    else:
+        jitlog_path = jitlog_dir / f"{safe_name}_{config}.jitlog"
     env = dict(base_env)
     env["PYPYLOG"] = f"{mode}:{jitlog_path}"
     return env, jitlog_path
 
 
+class RunProgress:
+    """Simple stderr progress reporter for benchmark runs."""
+
+    def __init__(self, total: int, *, enabled: bool = True) -> None:
+        self.total = total
+        self.enabled = enabled and total > 0 and sys.stderr.isatty()
+        self.current = 0
+        self._width = 36
+
+    def update(self, label: str) -> None:
+        self.current += 1
+        if not self.enabled:
+            print(f"[{self.current}/{self.total}] {label}", file=sys.stderr)
+            return
+        ratio = self.current / self.total
+        filled = int(self._width * ratio)
+        bar = "#" * filled + "-" * (self._width - filled)
+        sys.stderr.write(
+            f"\r[{bar}] {self.current}/{self.total} {label[:50]:<50}"
+        )
+        sys.stderr.flush()
+
+    def finish(self) -> None:
+        if self.enabled and self.total > 0:
+            sys.stderr.write("\n")
+            sys.stderr.flush()
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         description="Run RPyForth shootout benchmarks and analyze their output."
-    )
-    parser.add_argument(
-        "--binary",
-        type=Path,
-        default=Path("rpyforth-c"),
-        help="Path to the rpyforth compiled binary (default: ./rpyforth-c)",
     )
     parser.add_argument(
         "--output",
@@ -604,32 +1175,35 @@ def main(argv: Optional[List[str]] = None) -> int:
         help=f"Timeout in seconds for each benchmark run (default: {DEFAULT_TIMEOUT})",
     )
     parser.add_argument(
+        "--iterations",
+        type=int,
+        default=1,
+        metavar="N",
+        help="Run each benchmark/configuration N times; reports use median elapsed time (default: 1)",
+    )
+    parser.add_argument(
         "--only",
         metavar="PATTERN",
         default=None,
         help="Only run benchmarks whose path contains this substring",
     )
     parser.add_argument(
-        "--ab",
-        action="store_true",
-        help="Run an A/B comparison: config A vs config B",
-    )
-    parser.add_argument(
-        "--ab-virtualization",
-        action="store_true",
-        help="Compare with vs without interpreter virtualization (A: ./rpyforth-c, B: ./rpyforth-c-novirt)",
+        "--compare",
+        choices=sorted(COMPARE_PRESETS),
+        default=None,
+        help="Compare two configurations using a preset (jit, virt, gforth)",
     )
     parser.add_argument(
         "--a-cmd",
         type=str,
         default=None,
-        help="Shell command for configuration A (default: ./rpyforth-c)",
+        help="Shell command for configuration A (default: ./rpyforth-c, or preset default)",
     )
     parser.add_argument(
         "--b-cmd",
         type=str,
         default=None,
-        help='Shell command for configuration B (default depends on --ab mode)',
+        help="Shell command for configuration B (enables comparison when set without --compare)",
     )
     parser.add_argument(
         "--jitlog",
@@ -655,46 +1229,29 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="Write a combined text report (summary + A/B + virtualization analysis) to this file",
     )
     parser.add_argument(
+        "--pdf",
+        type=Path,
+        default=None,
+        help="Generate a multi-page PDF graph report and save it to this file",
+    )
+    parser.add_argument(
         "--analyze-only",
         action="store_true",
         help="Skip running benchmarks; analyze existing logs in --output and jitlogs in --jitlog-dir",
     )
     args = parser.parse_args(argv)
+    if args.iterations < 1:
+        print("Error: --iterations must be at least 1", file=sys.stderr)
+        return 1
 
     repo_root = Path(__file__).resolve().parent
-
-    # Resolve A/B commands (used for report labels).
-    ab_mode = (
-        args.ab
-        or args.ab_virtualization
-        or args.a_cmd is not None
-        or args.b_cmd is not None
-    )
-    if args.ab_virtualization:
-        a_cmd_text = args.a_cmd or "./rpyforth-c"
-        b_cmd_text = args.b_cmd or "./rpyforth-c-novirt"
-    else:
-        a_cmd_text = args.a_cmd or "./rpyforth-c"
-        b_cmd_text = args.b_cmd or "./rpyforth-c --jit off"
-
-    a_cmd = parse_cmd(a_cmd_text)
-    b_cmd = parse_cmd(b_cmd_text)
-
-    configs: List[Tuple[str, List[str]]] = [("A", a_cmd)]
-    if ab_mode:
-        configs.append(("B", b_cmd))
+    plan = build_run_plan(args)
 
     output_dir = args.output if args.output.is_absolute() else repo_root / args.output
     jitlog_dir = args.jitlog_dir if args.jitlog_dir.is_absolute() else repo_root / args.jitlog_dir
 
     if args.analyze_only:
-        # Load previously saved logs and reconstruct results.
-        if ab_mode:
-            log_files = sorted(output_dir.glob("*_A.log")) + sorted(output_dir.glob("*_B.log"))
-        else:
-            log_files = sorted(p for p in output_dir.glob("*.log") if not p.name.endswith(("_A.log", "_B.log")))
-        if args.only:
-            log_files = [p for p in log_files if args.only in p.name]
+        log_files = discover_log_files(output_dir, plan.compare, args.only, args.iterations)
         if not log_files:
             print("No log files found to analyze.", file=sys.stderr)
             return 1
@@ -704,13 +1261,12 @@ def main(argv: Optional[List[str]] = None) -> int:
             if result is not None:
                 results.append(result)
     else:
-        # Validate binaries exist.
-        for config_name, cmd in configs:
-            binary_path = Path(cmd[0])
-            if not binary_path.is_absolute():
-                binary_path = repo_root / binary_path
-            if not binary_path.exists():
-                print(f"Error: binary for config {config_name} not found: {binary_path}", file=sys.stderr)
+        for config_id, cmd, _label in plan.configs:
+            if resolve_command(cmd, repo_root) is None:
+                print(
+                    f"Error: command for config {config_id} not found: {' '.join(cmd)}",
+                    file=sys.stderr,
+                )
                 return 1
 
         benchmarks = discover_benchmarks(repo_root)
@@ -723,43 +1279,87 @@ def main(argv: Optional[List[str]] = None) -> int:
 
         base_env = os.environ.copy()
         results = []
-        for benchmark in benchmarks:
-            rel = str(benchmark.relative_to(repo_root))
-            bench_args = DEFAULT_ARGS.get(rel, [])
+        total_runs = len(benchmarks) * len(plan.configs) * args.iterations
+        progress = RunProgress(total_runs)
+        try:
+            for benchmark in benchmarks:
+                rel = str(benchmark.relative_to(repo_root))
+                bench_args = DEFAULT_ARGS.get(rel, [])
 
-            for config_name, cmd_prefix in configs:
-                env = base_env
-                jitlog_path: Optional[Path] = None
-                if args.jitlog:
-                    env, jitlog_path = make_env_with_jitlog(
-                        base_env, jitlog_dir, rel, config_name, args.jitlog_mode
-                    )
+                for config_id, cmd_prefix, _label in plan.configs:
+                    for iteration in range(1, args.iterations + 1):
+                        env = base_env
+                        jitlog_path: Optional[Path] = None
+                        if args.jitlog and config_id not in plan.skip_jitlog_for:
+                            env, jitlog_path = make_env_with_jitlog(
+                                base_env,
+                                jitlog_dir,
+                                rel,
+                                config_id,
+                                args.jitlog_mode,
+                                iteration=iteration,
+                                total_iterations=args.iterations,
+                            )
 
-                result = run_benchmark(cmd_prefix, benchmark, bench_args, args.timeout, config_name, env=env)
-                analyze_result(result)
-                save_log(result, output_dir, jitlog_path=jitlog_path)
-                results.append(result)
+                        result = run_benchmark(
+                            cmd_prefix, benchmark, bench_args, args.timeout, config_id, env=env
+                        )
+                        result.iteration = iteration
+                        analyze_result(result)
+                        save_log(
+                            result,
+                            output_dir,
+                            jitlog_path=jitlog_path,
+                            iteration=iteration,
+                            total_iterations=args.iterations,
+                        )
+                        results.append(result)
+
+                        label = f"{rel} ({config_id}"
+                        if args.iterations > 1:
+                            label += f", iter {iteration}"
+                        label += ")"
+                        progress.update(label)
+        finally:
+            progress.finish()
+
+    results = aggregate_iterations(results)
 
     print(format_summary(results))
 
-    config_names = {"A": a_cmd_text, "B": b_cmd_text}
-    if ab_mode:
+    if plan.compare:
         print()
-        print(format_ab_comparison(results, config_names))
+        print(format_comparison(results, plan))
 
-    if args.jitlog_mode == "jit-summary" and any(r.jitlog_path for r in results):
-        print(format_virtualization_analysis(results, config_names))
+    if (
+        args.jitlog_mode == "jit-summary"
+        and not plan.skip_jit_analysis
+        and any(r.jitlog_path for r in results)
+    ):
+        print(format_virtualization_analysis(results, plan))
 
     if args.report:
         report_path = args.report if args.report.is_absolute() else repo_root / args.report
-        save_analysis_report(report_path, results, config_names, args.jitlog_mode)
+        save_analysis_report(report_path, results, plan, args.jitlog_mode)
         print(f"\nAnalysis report written to {report_path}")
+
+    if args.pdf:
+        pdf_path = args.pdf if args.pdf.is_absolute() else repo_root / args.pdf
+        try:
+            generate_pdf_report(pdf_path, results, plan, args.jitlog_mode)
+            print(f"PDF graph report written to {pdf_path}")
+        except RuntimeError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
 
     if args.json:
         summary = {
-            "a_cmd": a_cmd_text,
-            "b_cmd": b_cmd_text if ab_mode else None,
-            "ab_mode": ab_mode,
+            "compare": plan.preset,
+            "iterations": args.iterations,
+            "configs": [
+                {"id": config_id, "cmd": cmd, "label": label}
+                for config_id, cmd, label in plan.configs
+            ],
             "jitlog": args.jitlog,
             "jitlog_mode": args.jitlog_mode,
             "benchmarks": [
@@ -774,6 +1374,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                     "curve_times": r.curve_times,
                     "error_message": r.error_message,
                     "jitlog_path": str(r.jitlog_path) if r.jitlog_path else None,
+                    "run_count": r.run_count,
+                    "elapsed_samples": r.elapsed_samples,
                 }
                 for r in results
             ],
