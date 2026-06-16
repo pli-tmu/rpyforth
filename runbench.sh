@@ -1,6 +1,6 @@
 #!/bin/bash
 BENCHMARKS=(fibo.fs ack.fs nestedloop.fs sieve.fs heap.fs ary.fs)
-CURVE_BENCHMARKS=(fibo.fs ack.fs nestedloop.fs sieve.fs ary.fs)
+CURVE_BENCHMARKS=(fibo.fs ack.fs nestedloop.fs sieve.fs heap.fs ary.fs)
 COMMANDS=(gforth ./rpyforth.sh)
 WARMUP_RUNS=5
 MEASURE_RUNS=100
