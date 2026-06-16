@@ -2,3 +2,8 @@
 
 pypy/
 _pypy_binary/
+logs/
+
+# Compiled RPyForth binaries
+rpyforth-c
+rpyforth-c-*
