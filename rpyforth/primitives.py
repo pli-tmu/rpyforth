@@ -790,9 +790,7 @@ def prim_2STORE(inner, cur, ip):
 def prim_FETCH(inner, cur, ip):
     """GForth core 2012: fetch the cell contents at addr."""
     addr = inner.pop_ds_int()
-    w_x = inner.cell_fetch(addr)
-    assert isinstance(w_x, W_IntObject)
-    inner.push_ds_int(w_x.intval)
+    inner.push_ds_int(inner.cell_fetch_int(addr))
     return ip
 
 
@@ -1491,9 +1489,7 @@ def prim_FSTORE(inner, cur, ip):
 def prim_FFETCH(inner, cur, ip):
     """Fetch float from address."""
     addr = inner.pop_ds_int()
-    w_float = inner.float_fetch(addr)
-    assert isinstance(w_float, W_FloatObject)
-    inner.push_ds_float(w_float.floatval)
+    inner.push_ds_float(inner.cell_float_fetch(addr))
     return ip
 
 
@@ -1563,17 +1559,10 @@ def prim_MOVE(inner, cur, ip):
     addr2 = inner.pop_ds_int()
     addr1 = inner.pop_ds_int()
 
-    # Check if we have cell data (W_Object in mem) or character data
-    # If first cell has an object, use cell memory; otherwise use char memory
-    if addr1 < len(inner.mem) and inner.mem[addr1] is not None:
-        # Cell memory path (for backward compatibility with cell operations)
-        values = []
+    # Use cell memory when the source was written via ! ; otherwise char bytes
+    if addr1 < len(inner.cell_mem) and inner.cell_valid[addr1]:
         for i in range(u):
-            w_x = inner.cell_fetch(addr1 + i)
-            assert isinstance(w_x, W_IntObject)
-            values.append(w_x.intval)
-        for i in range(u):
-            inner.cell_store(addr2 + i, values[i])
+            inner.cell_store(addr2 + i, inner.cell_fetch_int(addr1 + i))
     else:
         # Character memory path (optimized for byte operations)
         values = [0] * u
@@ -1591,10 +1580,7 @@ def prim_PLUSSTORE(inner, cur, ip):
     """GForth core 2012: add n to the value stored at a-addr."""
     addr = inner.pop_ds_int()
     n = inner.pop_ds_int()
-    # Fetch current value, add n, store back
-    current = inner.cell_fetch(addr)
-    assert isinstance(current, W_IntObject)
-    new_val = current.intval + n
+    new_val = inner.cell_fetch_int(addr) + n
     inner.cell_store(addr, new_val)
     return ip
 
@@ -1603,15 +1589,9 @@ def prim_PLUSSTORE(inner, cur, ip):
 def prim_2FETCH(inner, cur, ip):
     """GForth core 2012: fetch the cell pair stored at a-addr."""
     addr = inner.pop_ds_int()
-    # Actual storage from cell_2store: x1 at addr, x2 at addr+cell
-    x1 = inner.cell_fetch(addr)
     addr2 = addr + inner.cell_size_bytes
-    x2 = inner.cell_fetch(addr2)
-    # Push x1 first, then x2 to get stack ( x1 x2 )
-    assert isinstance(x1, W_IntObject)
-    assert isinstance(x2, W_IntObject)
-    inner.push_ds_int(x1.intval)
-    inner.push_ds_int(x2.intval)
+    inner.push_ds_int(inner.cell_fetch_int(addr))
+    inner.push_ds_int(inner.cell_fetch_int(addr2))
     return ip
 
 
@@ -1882,7 +1862,7 @@ def prim_ALLOCATE(inner, cur, ip):
     addr = inner.here
     inner.here = addr + size
     # Initialize memory (ensure we have space in mem array)
-    if inner.here < len(inner.mem):
+    if inner.here < len(inner.cell_mem):
         inner.push_ds_int(addr)
         inner.push_ds_int(0)  # success
     else:

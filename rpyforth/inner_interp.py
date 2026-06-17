@@ -10,6 +10,7 @@ from rpyforth.objects import (
     W_FloatObject,
     CELL_SIZE_BYTES,
     CELL_SIZE,
+    make_int,
 )
 
 
@@ -90,9 +91,13 @@ class InnerInterpreter(object):
         self.cs_ips = [0] * STACK_SIZE       # return IPs
         self.cs_ptr = 0
 
-        self.mem = [None] * HEAP_SIZE_BYTES
+        # Unboxed heap: cell (@/!) and float (f@/f!) without GC allocation
+        self.cell_mem = [0] * HEAP_SIZE_BYTES
+        self.cell_valid = [0] * HEAP_SIZE_BYTES
+        self.cell_float_mem = [0.0] * HEAP_SIZE_BYTES
+        self.cell_float_valid = [0] * HEAP_SIZE_BYTES
         # Unboxed byte array for character operations (C!, C@)
-        self.char_mem = [0] * HEAP_SIZE_BYTES
+        self.cell_char_mem = [0] * HEAP_SIZE_BYTES
         self.cell_size = CELL_SIZE
         self.cell_size_bytes = CELL_SIZE_BYTES
 
@@ -275,63 +280,65 @@ class InnerInterpreter(object):
         return addr
 
     def _ensure_addr(self, addr, span):
-        assert 0 <= addr < len(self.mem)
-        assert addr + span <= len(self.mem)
+        assert 0 <= addr < len(self.cell_mem)
+        assert addr + span <= len(self.cell_mem)
 
     def cell_store(self, addr, intval):
-        """! ( x addr -- ) - Store value at cell address."""
+        """! ( x addr -- ) - Store value at cell address (unboxed)."""
         assert isinstance(addr, int)
         assert 0 <= addr < HEAP_CELL_COUNT
-        value_obj = W_IntObject(intval)
-        self.mem[addr] = value_obj
+        self.cell_mem[addr] = intval
+        self.cell_valid[addr] = 1
+
+    def cell_fetch_int(self, addr):
+        """Fetch raw integer from cell address (0 if never stored)."""
+        assert 0 <= addr < HEAP_CELL_COUNT
+        return self.cell_mem[addr]
 
     def cell_fetch(self, addr):
-        """@ ( addr -- x ) - Fetch value from cell address."""
+        """@ ( addr -- x ) - Fetch value as W_IntObject for outer interpreter."""
         assert 0 <= addr < HEAP_CELL_COUNT
-        result = self.mem[addr]
-        if result is None:
-            return ZERO
-        return result
+        if self.cell_valid[addr]:
+            return make_int(self.cell_mem[addr])
+        return ZERO
 
     def cell_2store(self, addr, x1_int, x2_int):
         """2! ( x1 x2 addr -- ) - Store cell pair."""
         assert 0 <= addr < HEAP_CELL_COUNT - self.cell_size_bytes
-        self.mem[addr] = W_IntObject(x1_int)
-        self.mem[addr + self.cell_size_bytes] = W_IntObject(x2_int)
+        self.cell_store(addr, x1_int)
+        self.cell_store(addr + self.cell_size_bytes, x2_int)
 
     def cell_2fetch(self, addr):
         """2@ ( addr -- x1 x2 ) - Fetch cell pair."""
         assert 0 <= addr < HEAP_CELL_COUNT - self.cell_size_bytes
-        x1 = self.mem[addr]
-        x2 = self.mem[addr + self.cell_size_bytes]
-        if x1 is None:
-            x1 = ZERO
-        if x2 is None:
-            x2 = ZERO
+        x1 = make_int(self.cell_fetch_int(addr))
+        x2 = make_int(self.cell_fetch_int(addr + self.cell_size_bytes))
         return x1, x2
 
     def char_store(self, addr, intval):
         """C! ( char c-addr -- ) - Store character (unboxed, no allocation)."""
         assert 0 <= addr < HEAP_CELL_COUNT
-        self.char_mem[addr] = intval & 0xFF
+        self.cell_char_mem[addr] = intval & 0xFF
 
     def char_fetch(self, addr):
         """C@ ( c-addr -- char ) - Fetch character (unboxed, no allocation)."""
         assert 0 <= addr < HEAP_CELL_COUNT
-        return self.char_mem[addr]
+        return self.cell_char_mem[addr]
 
     def float_store(self, addr, value):
-        """F! ( addr -- ) ( F: f -- ) - Store float."""
+        """F! ( addr -- ) ( F: f -- ) - Store float (unboxed)."""
         assert 0 <= addr < HEAP_CELL_COUNT
-        self.mem[addr] = W_FloatObject(value)
+        self.cell_float_mem[addr] = value
+        self.cell_float_valid[addr] = 1
+
+    def cell_float_fetch(self, addr):
+        """Fetch raw float from address (0.0 if never stored)."""
+        assert 0 <= addr < HEAP_CELL_COUNT
+        return self.cell_float_mem[addr]
 
     def float_fetch(self, addr):
-        """F@ ( addr -- ) ( F: -- f ) - Fetch float."""
-        assert 0 <= addr < HEAP_CELL_COUNT
-        result = self.mem[addr]
-        if result is None:
-            return W_FloatObject(0.0)
-        return result
+        """F@ ( addr -- ) ( F: -- f ) - Fetch float as W_FloatObject."""
+        return W_FloatObject(self.cell_float_fetch(addr))
 
     def execute_thread(self, thread, ip=0):
         while True:
