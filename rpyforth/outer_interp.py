@@ -721,6 +721,7 @@ class OuterInterpreter(object):
         chars_processed = 0
         for j in range(length):
             ch_obj = self.inner.cell_fetch(addr + j)
+            assert isinstance(ch_obj, W_IntObject)
             ch = chr(ch_obj.intval)
 
             # Convert character to digit value

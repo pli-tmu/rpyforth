@@ -41,7 +41,7 @@ class CodeThread(object):
 
 
 class W_Object(object):
-    _immutable_fields_ = ['intval', 'floatval', 'strval', 'ptrval'] # OK??
+    _attrs_ = []
 
     def __init__(self):
         pass
