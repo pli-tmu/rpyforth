@@ -3,7 +3,7 @@
 Run all RPyForth shootout benchmarks and analyze their output.
 
 Usage:
-    ./run_shootout.py [--output logs/]
+    ./benchmark/run_shootout.py [--output logs/]
 
 Comparison presets (--compare):
     jit      ./rpyforth-c vs ./rpyforth-c --jit off
@@ -115,6 +115,7 @@ def run_benchmark(
     args: List[str],
     timeout: int,
     config: str,
+    repo_root: Path,
     env: Optional[Dict[str, str]] = None,
 ) -> BenchmarkResult:
     """Execute one benchmark and capture its output."""
@@ -135,6 +136,7 @@ def run_benchmark(
             text=True,
             timeout=timeout,
             env=env,
+            cwd=repo_root,
         )
     except subprocess.TimeoutExpired as exc:
         result.status = "timeout"
@@ -1074,7 +1076,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         print("Error: --iterations must be at least 1", file=sys.stderr)
         return 1
 
-    repo_root = Path(__file__).resolve().parent
+    repo_root = Path(__file__).resolve().parent.parent
     plan = build_run_plan(args)
 
     output_dir = args.output if args.output.is_absolute() else repo_root / args.output
@@ -1132,7 +1134,13 @@ def main(argv: Optional[List[str]] = None) -> int:
                             )
 
                         result = run_benchmark(
-                            cmd_prefix, benchmark, bench_args, args.timeout, config_id, env=env
+                            cmd_prefix,
+                            benchmark,
+                            bench_args,
+                            args.timeout,
+                            config_id,
+                            repo_root,
+                            env=env,
                         )
                         result.iteration = iteration
                         analyze_result(result)

@@ -2307,7 +2307,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    repo_root = Path(__file__).resolve().parent
+    repo_root = Path(__file__).resolve().parent.parent
     roots = list(args.paths)
     if not roots:
         default_dir = repo_root / "logs" / "jitlog"
@@ -2388,7 +2388,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         sections.append("")
         sections.append(
             "Virtualizable field ops: no jit-log-opt traces found.\n"
-            "Re-run with: python3 run_shootout.py --compare virt --jitlog --jitlog-mode jit-log-opt"
+            "Re-run with: python3 benchmark/run_shootout.py --compare virt --jitlog --jitlog-mode jit-log-opt"
         )
 
     report = "\n".join(sections)

@@ -63,7 +63,7 @@ It complements `FORTH2012_COVERAGE.md` (Core wordset),
 2. **Lazy heap** stays separate from the JIT hot interpreter state (see
    `rpyforth/heap.py`) so non-memory benchmarks (e.g. nestedloop) pay no cost.
 3. **Add words in layers**: file I/O → exceptions → dictionary → structures.
-4. **Verify with `run_shootout.py --compare gforth`** after each tier; add
+4. **Verify with `benchmark/run_shootout.py --compare gforth`** after each tier; add
    `curve/` variants when a benchmark is stable.
 5. **Do not block on OO / threads / parser generator** for “full support” of
    the *algorithmic* shootout set; provide simplified ports or mark as
@@ -105,7 +105,7 @@ comparison unchanged or improved.
 
 **Suggested port order:** hello → sumcol → strcat → reversefile → wc
 
-**Exit criteria:** Five new programs in `shootout/`; `run_shootout.py` green
+**Exit criteria:** Five new programs in `shootout/`; `benchmark/run_shootout.py` green
 vs gforth on result values.
 
 ---
@@ -185,8 +185,8 @@ Document as **Tier C — not required for numeric shootout parity**.
 |------|---------|
 | `shootout/<name>.fs` for each program | Source of truth |
 | `shootout/curve/<name>.fs` | JIT warmup analysis (optional) |
-| `run_shootout.py` entry | CI + gforth comparison |
-| `runbench.sh` `BENCHMARKS` array | Extended list |
+| `benchmark/run_shootout.py` entry | CI + gforth comparison |
+| `benchmark/runbench.sh` `BENCHMARKS` array | Extended list |
 | `check_coverage.py` | Word + benchmark readiness tracking |
 | Golden output in logs | Result mismatch detection |
 
@@ -202,7 +202,7 @@ Document as **Tier C — not required for numeric shootout parity**.
 | M4 | 19 / 23 (+ matrix) |
 | M5 | Document Tier C exclusions; 19 algorithmic ports complete |
 
-Performance is tracked separately via `run_shootout.py --compare gforth`; correctness
+Performance is tracked separately via `benchmark/run_shootout.py --compare gforth`; correctness
 first, then optimization.
 
 ---
@@ -210,6 +210,6 @@ first, then optimization.
 ## References
 
 - Original Gforth sources: [gforth_allsrc.html](http://dada.perl.it/shootout/gforth_allsrc.html)
-- In-repo runner: `run_shootout.py`, `runbench.sh`
+- In-repo runner: `benchmark/run_shootout.py`, `benchmark/runbench.sh`
 - Coverage tool: `check_coverage.py` → `SHOOTOUT_COVERAGE.md`
 - Memory model: `rpyforth/heap.py`, `docs/ARY_HEAP_COMPARISON.md` (if present)

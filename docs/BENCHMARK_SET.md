@@ -166,7 +166,7 @@ Mandatory 8 本と重複させる。目的は Gforth に勝つことではなく
 ack, fibo, nestedloop, sieve, ary, heap, recurse, call-heavy（または cd16sim）
 ```
 
-`run_shootout.py --compare gforth` で計測。
+`benchmark/run_shootout.py --compare gforth` で計測。
 
 ---
 
@@ -264,11 +264,11 @@ appbench に加え Ertl が併用。shootout と重複するものあり。
 
 | メトリクス | 用途 | 集計方法 |
 |------------|------|----------|
-| elapsed time (median) | 全体性能 | `run_shootout.py --iterations N` |
+| elapsed time (median) | 全体性能 | `benchmark/run_shootout.py --iterations N` |
 | geomean / カテゴリ別 geomean | 論文表 | R/F/M/C ごとに別集計 |
 | warmup-inclusive time | tracing JIT の現実コスト | 初回実行含む |
 | peak time | 最適化後の純効果 | warmup 後 |
-| `ds_ptr_*` getfield/setfield | SP が trace に残る証拠 | `jitlog_analysis.py` |
+| `ds_ptr_*` getfield/setfield | SP が trace に残る証拠 | `benchmark/jitlog_analysis.py` |
 | `getarrayitem_gc` / `setarrayitem_gc` | stack array access | jitlog |
 | guard / bridge 数 | trace fragmentation 副作用 | jitlog |
 | allocation / GC time | fragment 確保コスト | call-heavy, cd16sim |
@@ -328,9 +328,9 @@ appbench に加え Ertl が併用。shootout と重複するものあり。
 
 | ファイル | 役割 |
 |---------|------|
-| `run_shootout.py` | ベンチ一括実行、`--compare gforth/jit/virt`、jitlog 集計 |
+| `benchmark/run_shootout.py` | ベンチ一括実行、`--compare gforth/jit/virt`、jitlog 集計 |
 | `check_coverage.py` | Core / shootout / **appbench** 対応状況 → `FORTH2012_COVERAGE.md`, `SHOOTOUT_COVERAGE.md`, `APPBENCH_COVERAGE.md` |
-| `jitlog_analysis.py` | trace op 分解・可視化 |
+| `benchmark/jitlog_analysis.py` | trace op 分解・可視化 |
 | `shootout/*.fs` | ベンチ本体 |
 | `shootout/curve/*.fs` | スケーリング用（論文外） |
 
@@ -338,10 +338,10 @@ appbench に加え Ertl が併用。shootout と重複するものあり。
 
 ```bash
 # 全 shootout 実行
-./run_shootout.py
+./benchmark/run_shootout.py
 
 # Gforth 比較（8 本 manual でも可）
-./run_shootout.py --compare gforth --iterations 5
+./benchmark/run_shootout.py --compare gforth --iterations 5
 
 # カバレッジレポート更新
 python check_coverage.py
@@ -391,7 +391,7 @@ python check_coverage.py
 - [ ] F/M で退化なし確認
 - [ ] C でコスト分析済み
 - [ ] Gforth 8 本比較
-- [ ] `run_shootout.py` + 再現手順（artifact）
+- [ ] `benchmark/run_shootout.py` + 再現手順（artifact）
 
 ---
 
