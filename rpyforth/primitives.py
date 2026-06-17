@@ -19,7 +19,7 @@ from rpyforth.objects import (
     SMALL_INT_MIN,
     SMALL_INT_MAX,
 )
-from rpyforth.inner_interp import jitdriver
+from rpyforth.inner_interp import jitdriver, HEAP_SIZE_BYTES
 from rpyforth.util import digit_to_char
 
 
@@ -1560,7 +1560,8 @@ def prim_MOVE(inner, cur, ip):
     addr1 = inner.pop_ds_int()
 
     # Use cell memory when the source was written via ! ; otherwise char bytes
-    if addr1 < len(inner.cell_mem) and inner.cell_valid[addr1]:
+    heap = inner.heap
+    if heap is not None and heap.cell_tagged(addr1):
         for i in range(u):
             inner.cell_store(addr2 + i, inner.cell_fetch_int(addr1 + i))
     else:
@@ -1862,7 +1863,7 @@ def prim_ALLOCATE(inner, cur, ip):
     addr = inner.here
     inner.here = addr + size
     # Initialize memory (ensure we have space in mem array)
-    if inner.here < len(inner.cell_mem):
+    if inner.here < HEAP_SIZE_BYTES:
         inner.push_ds_int(addr)
         inner.push_ds_int(0)  # success
     else:
