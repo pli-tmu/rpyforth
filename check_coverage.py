@@ -5,12 +5,14 @@ Coverage checker for rpyforth.
 Analyzes the implementation against:
   - Forth 2012 Core wordset
   - Classic Doug Bagley / Win32 Shootout benchmark requirements
+  - Forth appbench application benchmark requirements
 
 Prints full coverage reports to stdout and writes:
   - FORTH2012_COVERAGE.md
   - SHOOTOUT_COVERAGE.md
+  - APPBENCH_COVERAGE.md
 
-See docs/SHOOTOUT_FULL_SUPPORT_PLAN.md for the full support roadmap.
+See docs/SHOOTOUT_FULL_SUPPORT_PLAN.md and docs/BENCHMARK_SET.md for roadmaps.
 """
 
 from __future__ import print_function
@@ -160,11 +162,99 @@ SHOOTOUT_BENCHMARKS = [
      "required": {"REQUIRE", "GRAY", "READ-FILE", "STDIN", "ARG"}},
 ]
 
+# Forth appbench suite (Ertl, complang.tuwien.ac.at/forth/appbench)
+# Word requirements are porting prerequisites, not a static parse of sources.
+APPBENCH_EXTENSION_WORDS = {
+    "File inclusion": {"INCLUDE", "INCLUDED"},
+    "Dynamic definitions": {"VALUE", "TO"},
+    "Deferred execution": {"DEFER", "IS", "DEFER!"},
+    "Anonymous definitions": {":NONAME"},
+    "File I/O": {
+        "OPEN-FILE", "READ-LINE", "CLOSE-FILE", "R/O", "THROW",
+    },
+    "Conditional compilation": {"[IF]", "[ELSE]", "[THEN]"},
+    "Search order": {"ONLY", "FORTH", "ALSO", "DEFINITIONS", "PREVIOUS"},
+    "Exceptions": {"CATCH", "THROW"},
+    "String / PAD": {"PAD", "COMPARE", "/STRING", "CMOVE"},
+    "Control flow extensions": {"?DO", "ERASE", "WITHIN"},
+    "Core extensions": {
+        "U>", "U.R", "TUCK", "NIP", "TRUE", "FALSE", "2>R", "2R>",
+    },
+    "Tools": {"[DEFINED]", "[UNDEFINED]"},
+    "Structures": {"STRUCT", "END-STRUCT", "FIELD", "CELL%", "%ALLOT"},
+    "Timing": {"TIME&DATE", "CPUTIME"},
+    "Gforth GC (benchgc only)": {
+        "GARBAGE-COLLECTOR", "SET-CURRENT-LIMIT", "GRAIN", "BORDER",
+    },
+}
+
+APPBENCH_BENCHMARKS = [
+    {"id": "infra", "title": "Common infrastructure",
+     "path": "(all appbench programs)",
+     "phase": 0, "status": "missing", "paper": True,
+     "required": {
+         "INCLUDE", "INCLUDED", "VALUE", "TO", "DEFER", "IS", "DEFER!",
+         ":NONAME", "OPEN-FILE", "READ-LINE", "CLOSE-FILE", "R/O",
+     }},
+    {"id": "cd16sim", "title": "16-bit CPU emulator (Brad Eckert)",
+     "path": "appbench/cd16sim/bench.f",
+     "phase": 1, "status": "missing", "paper": True,
+     "required": {
+         "INCLUDE", "VALUE", "TO", "DEFER", "IS", "DEFER!", ":NONAME",
+         "OPEN-FILE", "READ-LINE", "CLOSE-FILE", "R/O",
+         "ONLY", "FORTH", "ALSO", "DEFINITIONS",
+         "TIME&DATE", "EVALUATE", "DOES>", "MOVE", "ABORT\"",
+     }},
+    {"id": "brainless", "title": "Chess (David Kuehling)",
+     "path": "appbench/brainless/benchmark.fs",
+     "phase": 2, "status": "missing", "paper": False,
+     "required": {
+         "INCLUDED", "VALUE", "TO", "[IF]", "[ELSE]", "[THEN]",
+         "CPUTIME", "PAD", "2>R", "2R>", "NIP",
+     }},
+    {"id": "fcp", "title": "Chess (Ian Osgood)",
+     "path": "appbench/fcp/fcp-1.31-64.f",
+     "phase": 2, "status": "missing", "paper": False,
+     "required": {
+         "INCLUDE", "VALUE", "TO", "DEFER", "IS", "CATCH", "THROW", "?DO",
+         "ERASE", "WITHIN", "U>", "[IF]", "[ELSE]", "[THEN]",
+         "[DEFINED]", "[UNDEFINED]",
+     }},
+    {"id": "lexex", "title": "Scanner generator (Gerry Jackson)",
+     "path": "appbench/lexex/run.fth",
+     "phase": 2, "status": "missing", "paper": False,
+     "required": {
+         "INCLUDE", "VALUE", "OPEN-FILE", "READ-LINE", "CLOSE-FILE", "R/O",
+         "THROW", "COMPARE", "[IF]", "[ELSE]", "[THEN]", "PAD", "/STRING",
+     }},
+    {"id": "benchgc", "title": "Garbage collector (Anton Ertl)",
+     "path": "appbench/benchgc/bench-gc5.fs",
+     "phase": 3, "status": "out_of_scope", "paper": False,
+     "required": {
+         "INCLUDE", "STRUCT", "END-STRUCT", "FIELD", "CELL%", "%ALLOT",
+         "ALSO", "PREVIOUS", "GARBAGE-COLLECTOR", "SET-CURRENT-LIMIT",
+     }},
+    {"id": "brew", "title": "Evolutionary playground (Robert Epprecht)",
+     "path": "appbench/brew/",
+     "phase": 6, "status": "out_of_scope", "paper": False,
+     "required": {"INCLUDE", "REQUIRE"}},
+    {"id": "cross", "title": "Forth cross compiler (Gforth-only)",
+     "path": "appbench/cross/",
+     "phase": 6, "status": "out_of_scope", "paper": False,
+     "required": {"INCLUDE", "REQUIRE"}},
+    {"id": "vmgen", "title": "Interpreter generator (Gforth-only)",
+     "path": "appbench/vmgen/",
+     "phase": 6, "status": "out_of_scope", "paper": False,
+     "required": {"INCLUDE", "REQUIRE"}},
+]
+
 
 BAR_WIDTH = 20
 CORE_LABEL_WIDTH = 24
 SHOOTOUT_LABEL_WIDTH = 22
 SHOOTOUT_EXT_LABEL_WIDTH = 26
+APPBENCH_LABEL_WIDTH = 24
+APPBENCH_EXT_LABEL_WIDTH = 28
 
 
 def coverage_bar(pct, width=BAR_WIDTH):
@@ -234,6 +324,9 @@ def collect_implemented_words(script_dir):
         | {":", ";"}
     ):
         implemented.add(word.upper())
+    # Words implemented under parenthesized runtime names.
+    if any(w.startswith("(ABORT") for w in implemented):
+        implemented.add('ABORT"')
     return implemented
 
 
@@ -314,6 +407,13 @@ def all_shootout_extension_words():
     return words
 
 
+def all_appbench_extension_words():
+    words = set()
+    for group in APPBENCH_EXTENSION_WORDS.values():
+        words |= group
+    return words
+
+
 def benchmark_readiness(benchmark, implemented):
     required = set(w.upper() for w in benchmark["required"])
     if not required:
@@ -382,6 +482,92 @@ def generate_shootout_report(implemented, repo_root):
     return "\n".join(lines)
 
 
+def generate_appbench_report(implemented):
+    extension_words = all_appbench_extension_words()
+    ext_impl = extension_words & implemented
+    runnable = [
+        b for b in APPBENCH_BENCHMARKS
+        if b["status"] not in ("out_of_scope",) and benchmark_readiness(b, implemented)[0] >= 100.0
+    ]
+    paper_targets = [b for b in APPBENCH_BENCHMARKS if b.get("paper")]
+    paper_ready = [
+        b for b in paper_targets
+        if b["status"] not in ("out_of_scope",)
+        and benchmark_readiness(b, implemented)[0] >= 100.0
+    ]
+    in_scope = [b for b in APPBENCH_BENCHMARKS if b["status"] != "out_of_scope"]
+    tier_gforth = [b for b in APPBENCH_BENCHMARKS if b["status"] == "out_of_scope"]
+
+    lines = [
+        "Forth appbench Coverage  plan: docs/BENCHMARK_SET.md",
+        "%d/%d runnable  %d paper-ready  %d gforth-only  ext %d/%d"
+        % (
+            len(runnable), len(in_scope), len(paper_ready),
+            len(tier_gforth), len(ext_impl), len(extension_words),
+        ),
+        bar_line("Runnable programs", len(runnable), len(in_scope)),
+        bar_line("Paper targets ready", len(paper_ready), len(paper_targets)),
+        bar_line("Extension words", len(ext_impl), len(extension_words)),
+        "Infrastructure & benchmarks",
+    ]
+    status_abbr = {
+        "supported": "ok",
+        "missing": "todo",
+        "out_of_scope": "tier",
+    }
+    for bench in sorted(APPBENCH_BENCHMARKS, key=lambda b: (b["phase"], b["id"])):
+        pct, miss = benchmark_readiness(bench, implemented)
+        paper_mark = "*" if bench.get("paper") else " "
+        label = "%s%s P%d %s" % (
+            status_abbr.get(bench["status"], bench["status"][:4]),
+            paper_mark,
+            bench["phase"],
+            bench["id"],
+        )
+        lines.append(bar_line_pct(
+            label, pct,
+            label_width=APPBENCH_LABEL_WIDTH,
+            suffix=missing_suffix(miss),
+        ))
+
+    lines.append("Extension words")
+    for category, words in sorted(APPBENCH_EXTENSION_WORDS.items()):
+        impl = sorted(words & implemented)
+        miss = sorted(words - implemented)
+        lines.append(bar_line(
+            category, len(impl), len(words),
+            label_width=APPBENCH_EXT_LABEL_WIDTH,
+            suffix=missing_suffix(miss),
+        ))
+
+    lines.append("Implementation phases")
+    phase_notes = {
+        0: "INCLUDE/INCLUDED + VALUE/TO + DEFER/IS + File I/O",
+        1: "cd16sim (ECOOP large bench)",
+        2: "brainless, fcp, lexex",
+        3: "benchgc (Gforth GC vocabulary; low priority)",
+        6: "brew, cross, vmgen (Gforth-only; out of scope)",
+    }
+    for phase in sorted(phase_notes):
+        phase_benches = [b for b in APPBENCH_BENCHMARKS if b["phase"] == phase]
+        in_phase = [b for b in phase_benches if b["status"] != "out_of_scope"]
+        if not in_phase:
+            lines.append("  Phase %-2d                 tier  - %s"
+                         % (phase, phase_notes[phase]))
+            continue
+        ready = sum(
+            1 for b in in_phase
+            if benchmark_readiness(b, implemented)[0] >= 100.0
+        )
+        lines.append(bar_line(
+            "Phase %d" % phase, ready, len(in_phase),
+            label_width=APPBENCH_LABEL_WIDTH,
+            suffix="- %s" % phase_notes[phase],
+        ))
+
+    return "\n".join(lines)
+
+
 def main():
     script_dir = os.path.dirname(os.path.abspath(__file__))
     implemented = collect_implemented_words(script_dir)
@@ -394,18 +580,26 @@ def main():
 
     core_report = generate_core_report(core_impl, core_missing, categories)
     shootout_report = generate_shootout_report(implemented, script_dir)
+    appbench_report = generate_appbench_report(implemented)
 
     core_report_path = os.path.join(script_dir, "FORTH2012_COVERAGE.md")
     shootout_report_path = os.path.join(script_dir, "SHOOTOUT_COVERAGE.md")
+    appbench_report_path = os.path.join(script_dir, "APPBENCH_COVERAGE.md")
     with open(core_report_path, "w") as f:
         f.write(core_report)
     with open(shootout_report_path, "w") as f:
         f.write(shootout_report)
-    print("Wrote %s and %s" % (core_report_path, shootout_report_path))
+    with open(appbench_report_path, "w") as f:
+        f.write(appbench_report)
+    print("Wrote %s, %s, and %s" % (
+        core_report_path, shootout_report_path, appbench_report_path,
+    ))
     print()
     print(core_report)
     print()
     print(shootout_report)
+    print()
+    print(appbench_report)
 
 
 if __name__ == "__main__":
