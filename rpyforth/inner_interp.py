@@ -21,6 +21,15 @@ from rpython.rlib.rfile import create_stdio
 
 from rpyforth.heap import HEAP_CELL_COUNT, HEAP_SIZE_BYTES, Heap
 
+DONT_USE_VIRTUALIZATION = bool(os.environ.get("RPYFORTH_NO_VIRTUALIZE"))
+
+USE_STACK_FRAGMENT = bool(os.environ.get("RPYFORTH_STACK_FRAGMENT"))
+
+from rpyforth.metastack import DSIntFragment
+
+TOP_CACHE_SIZE = 4
+CALL_WINDOW = 8
+
 STACK_SIZE = 16384 # Increased for deeper nesting (ack(3,10))
 BUF_SIZE = 1024
 
@@ -40,7 +49,7 @@ class Bye(Exception):
 def get_printable_location(ip, thread):
     return "ip=%d %s %s" % (ip, thread.code[ip].to_string(), thread.lits[ip].to_string())
 
-if os.environ.get("RPYFORTH_NO_VIRTUALIZE"):
+if DONT_USE_VIRTUALIZATION:
     jitdriver = JitDriver(
         greens=['ip', 'thread'],
         reds=['self'],
@@ -56,11 +65,11 @@ else:
 
 class InnerInterpreter(object):
     _immutable_fields_ = ["cell_size", "cell_size_bytes", "base"]
-    # Virtualizable fields are normally used by the JIT to keep interpreter
-    # state in CPU registers. Setting RPYFORTH_NO_VIRTUALIZE=1 at translation
-    # time produces a binary where this optimization is disabled.
-    if os.environ.get("RPYFORTH_NO_VIRTUALIZE"):
+
+    if DONT_USE_VIRTUALIZATION:
         _virtualizable_ = []
+    elif USE_STACK_FRAGMENT:
+        _virtualizable_ = ['top0', 'top1', 'top2', 'top3', 'top_count']
     else:
         _virtualizable_ = ["ds_ints", "ds_floats", "ds_locals",
                            "ds_ptr_ints", "ds_ptr_floats", "ds_ptr_locals",
@@ -101,6 +110,15 @@ class InnerInterpreter(object):
         self._pno_active = False      # inside <# ... #> or not
         self._pno_buf = []            # buffer for pno (pictured numeric output)
         self.argv = []                # command-line arguments (set by target)
+
+        self.top0 = 0
+        self.top1 = 0
+        self.top2 = 0
+        self.top3 = 0
+        self.top_count = 0
+
+        self.ds_int_current = DSIntFragment(None)
+
 
     def push_call(self, thread, ip):
         """Push return address onto virtualized call stack."""
@@ -170,6 +188,27 @@ class InnerInterpreter(object):
         return w_x
 
     def push_ds_int(self, intval):
+        if USE_STACK_FRAGMENT:
+            self.push_ds_int_frag(intval)
+        else:
+            self.push_ds_int_fixed(intval)
+
+    def push_ds_int_frag(self, intval):
+        tc = self.top_count
+        if tc < TOP_CACHE_SIZE:
+            self.top3 = self.top2
+            self.top2 = self.top1
+            self.top0 = intval
+            self.top_count = tc + 1
+        else:
+            # spill
+            self.ds_int_current.push(self.top3)
+            self.top3 = self.top2
+            self.top2 = self.top1
+            self.top1 = self.top0
+            self.top0 = intval
+
+    def push_ds_int_fixed(self, intval):
         ds_ptr = self.ds_ptr_ints
         self.ds_ints[ds_ptr] = intval
         #self.ds_tags[ds_ptr] = 0
@@ -182,6 +221,34 @@ class InnerInterpreter(object):
         self.ds_ptr_floats = ds_ptr + 1
 
     def pop_ds_int(self):
+        if USE_STACK_FRAGMENT:
+            return self.pop_ds_int_frag()
+        else:
+            return self.pop_ds_int_fixed()
+
+    def pop_ds_int_frag(self):
+        tc = self.top_count
+        if tc < TOP_CACHE_SIZE:
+            top2 = self.top2; top1 = self.top1; top0 = self.top0
+            self.top3 = 0 # initialize
+            self.top2 = self.top3
+            self.top1 = top2
+            self.top0 = top1
+            self.top_count = tc - 1
+            return top0
+        else:
+            # spill
+            old_top3 = self.top3; old_top2 = self.top2
+            old_top1 = self.top1; old_top0 = self.top0
+
+            old_ds_top = self.ds_int_current.pop()
+            self.top3 = old_ds_top
+            self.top2 = old_top3
+            self.top1 = old_top2
+            self.top0 = old_top1
+            return old_top0
+
+    def pop_ds_int_fixed(self):
         ds_ptr = self.ds_ptr_ints - 1
         assert ds_ptr >= 0
         #assert self.ds_tags[ds_ptr] == 0, "Expected int on stack"
