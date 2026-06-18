@@ -42,13 +42,13 @@ class DSIntFragment(DSFragment):
 
     def push(self, v):
         sp = self.sp + 1
-        assert -1 < sp < FRAGMENT_SIZE
+        assert 0 <= sp < FRAGMENT_SIZE
         self.cells[sp] = v
         self.sp = sp
 
     def pop(self):
         sp = self.sp
-        assert -1 < sp < FRAGMENT_SIZE
+        assert 0 <= sp < FRAGMENT_SIZE
         v = self.cells[sp]
         self.sp = sp - 1
         return v
@@ -88,13 +88,13 @@ class DSObjFragment(DSFragment):
 
     def push(self, v):
         sp = self.sp + 1
-        assert -1 < sp < FRAGMENT_SIZE
+        assert 0 <= sp < FRAGMENT_SIZE
         self.cells[sp] = v
         self.sp = sp
 
     def pop(self):
         sp = self.sp
-        assert -1 < sp < FRAGMENT_SIZE
+        assert 0 <= sp < FRAGMENT_SIZE
         v = self.cells[sp]
         self.sp = sp - 1
         return v
