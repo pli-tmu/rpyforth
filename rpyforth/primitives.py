@@ -1,5 +1,5 @@
 from rpython.rlib.rfile import create_stdio
-from rpython.rlib.jit import promote, unroll_safe, dont_look_inside
+from rpython.rlib.jit import promote, unroll_safe, dont_look_inside, hint
 from rpython.rlib.rfloat import formatd
 
 from rpyforth.objects import (
@@ -19,7 +19,7 @@ from rpyforth.objects import (
     SMALL_INT_MIN,
     SMALL_INT_MAX,
 )
-from rpyforth.inner_interp import jitdriver, HEAP_SIZE_BYTES
+from rpyforth.inner_interp import jitdriver, HEAP_SIZE_BYTES, USE_STACK_FRAGMENT
 from rpyforth.util import digit_to_char
 
 
@@ -28,11 +28,19 @@ from rpyforth.util import digit_to_char
 def _maybe_enter_jit(inner, target_ip, origin_ip, thread):
     """Signal the interpreter back-edge to the JIT when jumping backward."""
     if target_ip < origin_ip:
-        jitdriver.can_enter_jit(
-            ip=target_ip,
-            thread=thread,
-            self=inner,
-        )
+        if USE_STACK_FRAGMENT:
+            jitdriver.can_enter_jit(
+                ip=target_ip,
+                thread=thread,
+                self=inner,
+                ds_int_meta=hint(inner.ds_int_meta, access_directly=True)
+            )
+        else:
+            jitdriver.can_enter_jit(
+                ip=target_ip,
+                thread=thread,
+                self=inner
+            )
 
 
 # 0= ( x -- flag )
@@ -266,7 +274,7 @@ def prim_MIN(inner, cur, ip):
 # DEPTH ( -- +n )
 def prim_DEPTH(inner, cur, ip):
     """GForth core 2012: +n is the number of single-cell values contained in the data stack."""
-    inner.push_ds_int(inner.ds_ptr_ints)
+    inner.push_ds_int(inner.ds_int_size())
     return ip
 
 
@@ -1326,7 +1334,7 @@ def prim_ABORT_QUOTE_RUNTIME(inner, cur, ip):
         stdout.write(msg)
         stdout.write("\n")
         # Clear stacks
-        inner.ds_ptr_ints = 0
+        inner.clear_ds_int()
         inner.ds_ptr_floats = 0
         inner.ds_ptr_locals = 0
         inner.rs_ptr = 0
@@ -2330,7 +2338,7 @@ def prim_CPUTIME(inner, cur, ip):
 def prim_LITERAL(inner, cur, ip):
     """Compile a literal. At run-time, push the value onto the stack."""
     # Pop value from stack
-    if inner.ds_ptr_ints > 0:
+    if inner.ds_int_size() > 0:
         intval = inner.pop_ds_int()
         outer = inner.outer
         if outer is not None:

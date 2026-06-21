@@ -373,7 +373,7 @@ class OuterInterpreter(object):
             return -1
         name, i = self._read_tok(toks, i)
         # Check which stack has data and pop from it
-        if self.inner.ds_ptr_ints > 0:
+        if self.inner.ds_int_size() > 0:
             # Unboxed integer
             intval = self.inner.pop_ds_int()
             val = W_IntObject(intval)
@@ -838,7 +838,7 @@ class OuterInterpreter(object):
 
         if flag != 0:
             print "ABORT:", abort_msg
-            self.inner.ds_ptr_ints = 0
+            self.inner.clear_ds_int()
             self.inner.ds_ptr_floats = 0
             self.inner.ds_ptr_locals = 0
             self.inner.rs_ptr = 0
