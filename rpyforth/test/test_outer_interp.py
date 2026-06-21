@@ -366,7 +366,7 @@ def test_nested_do_loops():
 def test_leave_in_loop():
     inner = run(": EARLY 10 0 DO I DUP 5 = IF LEAVE THEN LOOP ; EARLY")
     results = []
-    while inner.ds_ptr_ints > 0:
+    while inner.ds_int_size() > 0:
         results.append(inner.pop_ds_int())
     assert results == [5, 4, 3, 2, 1, 0]
 
@@ -891,7 +891,7 @@ def test_abort_quote_false():
     # False flag should not abort
     outer.interpret_line('0 ABORT" This should not print"')
     # Stack should still have values
-    assert inner.ds_ptr_ints == 3
+    assert inner.ds_int_size() == 3
 
 def test_abort_quote_true():
     """Test ABORT\" with true condition - should abort"""
@@ -902,7 +902,7 @@ def test_abort_quote_true():
     # True flag should abort and clear stack
     outer.interpret_line('-1 ABORT" Error occurred"')
     # Stack should be cleared
-    assert inner.ds_ptr_ints == 0
+    assert inner.ds_int_size() == 0
 
 
 # ============================================
