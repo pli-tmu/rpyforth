@@ -33,7 +33,7 @@ def _maybe_enter_jit(inner, target_ip, origin_ip, thread):
                 ip=target_ip,
                 thread=thread,
                 self=inner,
-                ds_int_meta=hint(inner.ds_int_meta, access_directly=True)
+                ds_int_frag=hint(inner.ds_int_meta.head(), access_directly=True)
             )
         else:
             jitdriver.can_enter_jit(

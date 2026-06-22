@@ -28,7 +28,6 @@ USE_STACK_FRAGMENT = bool(os.environ.get("RPYFORTH_STACK_FRAGMENT"))
 
 from rpyforth.metastack import DSIntMetaStack
 
-TOP_CACHE_SIZE = 4
 CALL_WINDOW = 8
 
 STACK_SIZE = 16384 # Increased for deeper nesting (ack(3,10))
@@ -53,8 +52,8 @@ def get_printable_location(ip, thread):
 if USE_STACK_FRAGMENT:
     jitdriver = JitDriver(
         greens=['ip', 'thread'],
-        reds=['self', 'ds_int_meta'],
-        virtualizables=['ds_int_meta'],
+        reds=['self', 'ds_int_frag'],
+        virtualizables=['ds_int_frag'],     # the head fragment, not the metastack
         get_printable_location=get_printable_location
     )
 elif USE_VIRTUALIZATION:
@@ -191,12 +190,7 @@ class InnerInterpreter(object):
 
     def push_ds_int(self, intval):
         if USE_STACK_FRAGMENT:
-            m = self.ds_int_meta
-            md = hint(m, access_directly=True)
-            if md.cache_count() < TOP_CACHE_SIZE:
-                md.push_cache(intval)
-            else:
-                m.spill(md.push_cache_full(intval))
+            self.ds_int_meta.push(intval)
         else:
             self.push_ds_int_fixed(intval)
 
@@ -214,11 +208,7 @@ class InnerInterpreter(object):
 
     def pop_ds_int(self):
         if USE_STACK_FRAGMENT:
-            m = self.ds_int_meta
-            md = hint(m, access_directly=True)
-            if m.has_frag():
-                return md.pop_cache_refill(m.refill())
-            return md.pop_cache()
+            return self.ds_int_meta.pop()
         else:
             return self.pop_ds_int_fixed()
 
@@ -240,10 +230,7 @@ class InnerInterpreter(object):
 
     def peek_ds_int(self, depth=0):
         if USE_STACK_FRAGMENT:
-            m = self.ds_int_meta
-            if depth < TOP_CACHE_SIZE:
-                return hint(m, access_directly=True).peek_top(depth)
-            return m.peek_deep(depth)
+            return self.ds_int_meta.peek(depth)
         return self.peek_ds_int_fixed(depth)
 
     def peek_ds_int_fixed(self, depth=0):
@@ -267,11 +254,7 @@ class InnerInterpreter(object):
     def poke_ds_int(self, depth, intval):
         """Set raw integer at depth (unboxed)."""
         if USE_STACK_FRAGMENT:
-            m = self.ds_int_meta
-            if depth < TOP_CACHE_SIZE:
-                hint(m, access_directly=True).poke_top(depth, intval)
-            else:
-                m.poke_deep(depth, intval)
+            self.ds_int_meta.poke(depth, intval)
         else:
             self.poke_ds_int_fixed(depth, intval)
 
@@ -416,12 +399,16 @@ class InnerInterpreter(object):
         return heap.float_fetch(addr)
 
     def execute_thread(self, thread, ip=0):
-        meta = self.ds_int_meta
         if USE_STACK_FRAGMENT:
-            meta = hint(meta, access_directly=True, fresh_virtualizable=True)
+            # The active fragment is the virtualizable. Its identity never changes,
+            # so bind it ONCE to a stable local and reuse it for every merge point
+            # and can_enter_jit (the JIT requires an unmodified virtualizable local).
+            ds_int_frag = hint(self.ds_int_meta.head(), access_directly=True,
+                               fresh_virtualizable=True)
         while True:
             if USE_STACK_FRAGMENT:
-                jitdriver.jit_merge_point(ip=ip, thread=thread, self=self, ds_int_meta=meta)
+                jitdriver.jit_merge_point(ip=ip, thread=thread, self=self,
+                                          ds_int_frag=ds_int_frag)
             else:
                 jitdriver.jit_merge_point(ip=ip, thread=thread, self=self)
             if ip >= len(thread.code):
@@ -467,7 +454,9 @@ class InnerInterpreter(object):
                             thread = nested_thread
                             ip = 0
                             if USE_STACK_FRAGMENT:
-                                jitdriver.can_enter_jit(ip=ip, thread=thread, self=self, ds_int_meta=meta)
+                                jitdriver.can_enter_jit(
+                                    ip=ip, thread=thread, self=self,
+                                    ds_int_frag=ds_int_frag)
                             else:
                                 jitdriver.can_enter_jit(ip=ip, thread=thread, self=self)
                             continue
@@ -484,7 +473,9 @@ class InnerInterpreter(object):
                 thread = nested_thread
                 ip = 0
                 if USE_STACK_FRAGMENT:
-                    jitdriver.can_enter_jit(ip=ip, thread=thread, self=self, ds_int_meta=meta)
+                    jitdriver.can_enter_jit(
+                        ip=ip, thread=thread, self=self,
+                        ds_int_frag=ds_int_frag)
                 else:
                     jitdriver.can_enter_jit(ip=ip, thread=thread, self=self)
 

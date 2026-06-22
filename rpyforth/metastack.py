@@ -1,15 +1,13 @@
 import os
 
+from rpython.rlib.jit import hint
+
 STACK_SIZE = 256
 
 FRAGMENT_SIZE = 256
 
 TOP_CACHE_SIZE = 4
 
-# Stack-fragment mode keeps the hot data stack in a 4-deep scalar top cache and
-# spills the overflow into a chained list of fixed-size fragments. The top cache
-# of the *integer* data stack is the jitdriver's virtualizable, so those scalar
-# fields must be register-resident; everything else stays in the heap.
 USE_STACK_FRAGMENT = bool(os.environ.get("RPYFORTH_STACK_FRAGMENT"))
 
 
@@ -22,390 +20,158 @@ class DSFragment(object):
 
 
 class DSIntMetaStack(DSMetaStack):
-    _virtualizable_ = ["top0", "top1", "top2", "top3", "top_count"]
+    # The single `active` fragment is the JIT's virtualizable and its identity
+    # NEVER changes (the JIT requires a stable virtualizable). The fragment holds
+    # the 3 scalar tops; everything deeper lives in the plain `overflow` list
+    # (overflow[0] at the bottom of the stack). So bottom->top is overflow + tops.
+    def __init__(self):
+        self.active = DSIntFragment()
+        self.overflow = []
+
+    # --- hot path: the stable active fragment (loop-free) ---
+
+    def head(self):
+        return self.active
+
+    # --- cold path: the plain overflow list (no virtualizable access) ---
+
+    def spill_top(self, v):
+        self.overflow.append(v)
+
+    def has_overflow(self):
+        return len(self.overflow) > 0
+
+    def pop_overflow(self):
+        n = len(self.overflow)
+        assert n > 0    # data stack underflow
+        return self.overflow.pop()
+
+    def peek_overflow(self, odepth):
+        # odepth = depth - 3. Reads the plain overflow list only.
+        idx = len(self.overflow) - 1 - odepth
+        assert idx >= 0    # data stack underflow
+        return self.overflow[idx]
+
+    def poke_overflow(self, odepth, v):
+        idx = len(self.overflow) - 1 - odepth
+        assert idx >= 0    # data stack underflow
+        self.overflow[idx] = v
+
+    # --- data-stack operations (used by the interpreter and the unit tests) ---
+    # Each hot path goes through an access_directly view of the stable active
+    # fragment so the 3 scalar tops stay in registers under the JIT. The hint is a
+    # no-op untranslated, so these double as the plain implementation for tests.
+
+    def push(self, v):
+        a = hint(self.active, access_directly=True)
+        if a.top_count < 3:
+            a.push_top(v)                          # hot: constant scalar slot
+        else:
+            self.spill_top(a.push_top_full(v))     # deeper: plain overflow list
+
+    def pop(self):
+        a = hint(self.active, access_directly=True)
+        if a.top_count == 3 and self.has_overflow():
+            return a.pop_top_refill(self.pop_overflow())  # deeper: refill from overflow
+        return a.pop_top()                         # hot: constant scalar slot
+
+    def peek(self, depth):
+        a = hint(self.active, access_directly=True)
+        if depth < 3:
+            return a.peek_top(depth)               # hot: constant scalar slot
+        return self.peek_overflow(depth - 3)       # deeper: read from overflow
+
+    def poke(self, depth, v):
+        a = hint(self.active, access_directly=True)
+        if depth < 3:
+            a.poke_top(depth, v)                   # hot: constant scalar slot
+        else:
+            self.poke_overflow(depth - 3, v)       # deeper: write to overflow
+
+    def size(self):
+        return len(self.overflow) + self.active.top_count
+
+    def clear(self):
+        a = self.active
+        a.top0 = 0
+        a.top1 = 0
+        a.top2 = 0
+        a.top_count = 0
+        self.overflow = []
+
+
+class DSFloatMetaStack(DSMetaStack):
+    pass
+
+
+class DSObjMetaStack(DSMetaStack):
+    pass
+
+
+class DSIntFragment(DSFragment):
+    _virtualizable_ = ["top0", "top1", "top2", "top_count"]
 
     def __init__(self):
-        self.current = DSIntFragment(None)
         self.top0 = 0
         self.top1 = 0
         self.top2 = 0
-        self.top3 = 0
         self.top_count = 0
 
-    def push_cache(self, intval):
-        self.top3 = self.top2
+    def tops_full(self):
+        return self.top_count == 3
+
+    def push_top(self, v):
+        # Precondition: top_count < 3.
         self.top2 = self.top1
         self.top1 = self.top0
-        self.top0 = intval
+        self.top0 = v
         self.top_count = self.top_count + 1
 
-    def push_cache_full(self, intval):
-        spilled = self.top3
-        self.top3 = self.top2
+    def push_top_full(self, v):
+        # Precondition: top_count == 3. Returns the spilled bottom top.
+        spilled = self.top2
         self.top2 = self.top1
         self.top1 = self.top0
-        self.top0 = intval
+        self.top0 = v
         return spilled
 
-    def pop_cache(self):
-        result = self.top0
+    def pop_top(self):
+        # Precondition: nothing below to refill the third top with.
+        v = self.top0
         self.top0 = self.top1
         self.top1 = self.top2
-        self.top2 = self.top3
-        self.top3 = 0
+        self.top2 = 0
         self.top_count = self.top_count - 1
-        return result
+        return v
 
-    def pop_cache_refill(self, refill):
-        result = self.top0
+    def pop_top_refill(self, refill):
+        # Precondition: top_count == 3; `refill` comes from the overflow list.
+        v = self.top0
         self.top0 = self.top1
         self.top1 = self.top2
-        self.top2 = self.top3
-        self.top3 = refill
-        return result
+        self.top2 = refill
+        return v
 
     def peek_top(self, depth):
-        assert depth < self.top_count
         if depth == 0:
             return self.top0
         elif depth == 1:
             return self.top1
-        elif depth == 2:
+        else:
             return self.top2
-        else:
-            return self.top3
 
-    def poke_top(self, depth, intval):
-        assert depth < self.top_count
+    def poke_top(self, depth, v):
         if depth == 0:
-            self.top0 = intval
+            self.top0 = v
         elif depth == 1:
-            self.top1 = intval
-        elif depth == 2:
-            self.top2 = intval
+            self.top1 = v
         else:
-            self.top3 = intval
-
-    def cache_count(self):
-        return self.top_count
-
-    def clear_cache(self):
-        self.top0 = 0
-        self.top1 = 0
-        self.top2 = 0
-        self.top3 = 0
-        self.top_count = 0
-
-    def has_frag(self):
-        return self.current.sp > 0
-
-    def spill(self, intval):
-        cur = self.current
-        if cur.sp + 1 >= FRAGMENT_SIZE:
-            cur = DSIntFragment(cur)
-            self.current = cur
-        cur.push(intval)
-
-    def refill(self):
-        cur = self.current
-        v = cur.pop()
-        if cur.sp == 0 and cur.parent is not None:
-            self.current = cur.parent
-        return v
-
-    def peek_deep(self, depth):
-        frag_pos = depth - TOP_CACHE_SIZE
-        cur = self.current
-        while cur is not None:
-            if frag_pos < cur.sp:
-                return cur.cells[cur.sp - frag_pos]
-            frag_pos -= cur.sp
-            cur = cur.parent
-        assert False  # data stack underflow
-        return 0  # unreachable; satisfies RPython return-type inference
-
-    def poke_deep(self, depth, intval):
-        frag_pos = depth - TOP_CACHE_SIZE
-        cur = self.current
-        while cur is not None:
-            if frag_pos < cur.sp:
-                cur.cells[cur.sp - frag_pos] = intval
-                return
-            frag_pos -= cur.sp
-            cur = cur.parent
-        assert False  # data stack underflow
-
-    def push(self, intval):
-        if self.top_count < TOP_CACHE_SIZE:
-            self.push_cache(intval)
-        else:
-            self.spill(self.push_cache_full(intval))
-
-    def pop(self):
-        if self.has_frag():
-            return self.pop_cache_refill(self.refill())
-        return self.pop_cache()
-
-    def peek(self, depth):
-        if depth < TOP_CACHE_SIZE:
-            return self.peek_top(depth)
-        return self.peek_deep(depth)
-
-    def poke(self, depth, intval):
-        if depth < TOP_CACHE_SIZE:
-            self.poke_top(depth, intval)
-        else:
-            self.poke_deep(depth, intval)
-
-    def size(self):
-        n = self.top_count
-        cur = self.current
-        while cur is not None:
-            n += cur.sp
-            cur = cur.parent
-        return n
-
-    def clear(self):
-        self.clear_cache()
-        cur = self.current
-        while cur.parent is not None:
-            cur = cur.parent
-        cur.sp = 0
-        self.current = cur
-
-
-class DSFloatMetaStack(DSMetaStack):
-    def __init__(self):
-        self.current = DSFloatFragment(None)
-        self.top0 = 0.0
-        self.top1 = 0.0
-        self.top2 = 0.0
-        self.top3 = 0.0
-        self.top_count = 0
-
-    def push(self, val):
-        tc = self.top_count
-        if tc == TOP_CACHE_SIZE:
-            cur = self.current
-            if cur.sp + 1 >= FRAGMENT_SIZE:
-                cur = DSFloatFragment(cur)
-                self.current = cur
-            cur.push(self.top3)
-        else:
-            self.top_count = tc + 1
-        self.top3 = self.top2
-        self.top2 = self.top1
-        self.top1 = self.top0
-        self.top0 = val
-
-    def pop(self):
-        result = self.top0
-        cur = self.current
-        if cur.sp > 0:
-            self.top0 = self.top1
-            self.top1 = self.top2
-            self.top2 = self.top3
-            self.top3 = cur.pop()
-            if cur.sp == 0 and cur.parent is not None:
-                self.current = cur.parent
-        else:
-            self.top0 = self.top1
-            self.top1 = self.top2
-            self.top2 = self.top3
-            self.top3 = 0.0
-            self.top_count = self.top_count - 1
-        return result
-
-    def peek(self, depth):
-        if depth < TOP_CACHE_SIZE:
-            assert depth < self.top_count
-            if depth == 0:
-                return self.top0
-            elif depth == 1:
-                return self.top1
-            elif depth == 2:
-                return self.top2
-            else:
-                return self.top3
-        frag_pos = depth - TOP_CACHE_SIZE
-        cur = self.current
-        while cur is not None:
-            if frag_pos < cur.sp:
-                return cur.cells[cur.sp - frag_pos]
-            frag_pos -= cur.sp
-            cur = cur.parent
-        assert False
-        return 0.0  # unreachable; satisfies RPython return-type inference
-
-    def size(self):
-        n = self.top_count
-        cur = self.current
-        while cur is not None:
-            n += cur.sp
-            cur = cur.parent
-        return n
-
-    def clear(self):
-        self.top0 = 0.0
-        self.top1 = 0.0
-        self.top2 = 0.0
-        self.top3 = 0.0
-        self.top_count = 0
-        cur = self.current
-        while cur.parent is not None:
-            cur = cur.parent
-        cur.sp = 0
-        self.current = cur
-
-
-class DSObjMetaStack(DSMetaStack):
-    # Plain heap object holding boxed W_Object references.
-    def __init__(self):
-        self.current = DSObjFragment(None)
-        self.top0 = None
-        self.top1 = None
-        self.top2 = None
-        self.top3 = None
-        self.top_count = 0
-
-    def push(self, val):
-        tc = self.top_count
-        if tc == TOP_CACHE_SIZE:
-            # Cache full: spill the bottom slot into the fragment chain.
-            cur = self.current
-            if cur.sp + 1 >= FRAGMENT_SIZE:
-                cur = DSObjFragment(cur)
-                self.current = cur
-            cur.push(self.top3)
-        else:
-            self.top_count = tc + 1
-        self.top3 = self.top2
-        self.top2 = self.top1
-        self.top1 = self.top0
-        self.top0 = val
-
-    def pop(self):
-        result = self.top0
-        cur = self.current
-        if cur.sp > 0:
-            self.top0 = self.top1
-            self.top1 = self.top2
-            self.top2 = self.top3
-            self.top3 = cur.pop()
-            if cur.sp == 0 and cur.parent is not None:
-                self.current = cur.parent
-        else:
-            self.top0 = self.top1
-            self.top1 = self.top2
-            self.top2 = self.top3
-            self.top3 = None
-            self.top_count = self.top_count - 1
-        return result
-
-    def peek(self, depth):
-        if depth < TOP_CACHE_SIZE:
-            assert depth < self.top_count
-            if depth == 0:
-                return self.top0
-            elif depth == 1:
-                return self.top1
-            elif depth == 2:
-                return self.top2
-            else:
-                return self.top3
-        frag_pos = depth - TOP_CACHE_SIZE
-        cur = self.current
-        while cur is not None:
-            if frag_pos < cur.sp:
-                return cur.cells[cur.sp - frag_pos]
-            frag_pos -= cur.sp
-            cur = cur.parent
-        assert False
-        return None  # unreachable; satisfies RPython return-type inference
-
-    def size(self):
-        n = self.top_count
-        cur = self.current
-        while cur is not None:
-            n += cur.sp
-            cur = cur.parent
-        return n
-
-    def clear(self):
-        self.top0 = None
-        self.top1 = None
-        self.top2 = None
-        self.top3 = None
-        self.top_count = 0
-        cur = self.current
-        while cur.parent is not None:
-            cur = cur.parent
-        cur.sp = 0
-        self.current = cur
-
-
-class DSIntFragment(DSFragment):
-    _immutable_fields_ = ["parent", "cells"]
-    _virtualizable_ = ["cells[*]", "sp"]
-
-    def __init__(self, parent):
-        self.parent = parent
-        self.cells = [0] * FRAGMENT_SIZE
-        self.sp = 0
-
-    def push(self, v):
-        sp = self.sp + 1
-        assert 0 <= sp < FRAGMENT_SIZE
-        self.cells[sp] = v
-        self.sp = sp
-
-    def pop(self):
-        sp = self.sp
-        assert 0 <= sp < FRAGMENT_SIZE
-        v = self.cells[sp]
-        self.sp = sp - 1
-        return v
+            self.top2 = v
 
 
 class DSFloatFragment(DSFragment):
-    _immutable_fields_ = ["parent", "cells"]
-
-    def __init__(self, parent):
-        self.parent = parent
-        self.cells = [0.0] * FRAGMENT_SIZE
-        self.sp = 0
-
-    def push(self, v):
-        sp = self.sp + 1
-        assert 0 <= sp < FRAGMENT_SIZE
-        self.cells[sp] = v
-        self.sp = sp
-
-    def pop(self):
-        sp = self.sp
-        assert 0 <= sp < FRAGMENT_SIZE
-        v = self.cells[sp]
-        self.sp = sp - 1
-        return v
+    pass
 
 
 class DSObjFragment(DSFragment):
-    _immutable_fields_ = ["parent", "cells"]
-
-    def __init__(self, parent):
-        self.parent = parent
-        self.cells = [None] * FRAGMENT_SIZE
-        self.sp = 0
-
-    def push(self, v):
-        sp = self.sp + 1
-        assert 0 <= sp < FRAGMENT_SIZE
-        self.cells[sp] = v
-        self.sp = sp
-
-    def pop(self):
-        sp = self.sp
-        assert 0 <= sp < FRAGMENT_SIZE
-        v = self.cells[sp]
-        self.sp = sp - 1
-        return v
+    pass
