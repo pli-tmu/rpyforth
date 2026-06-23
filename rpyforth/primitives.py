@@ -29,11 +29,12 @@ def _maybe_enter_jit(inner, target_ip, origin_ip, thread):
     """Signal the interpreter back-edge to the JIT when jumping backward."""
     if target_ip < origin_ip:
         if USE_STACK_FRAGMENT:
+            ds_int_frag = hint(inner.ds_int_frag, access_directly=True)
             jitdriver.can_enter_jit(
                 ip=target_ip,
                 thread=thread,
                 self=inner,
-                ds_int_frag=hint(inner.ds_int_meta.head(), access_directly=True)
+                ds_int_frag=ds_int_frag,
             )
         else:
             jitdriver.can_enter_jit(

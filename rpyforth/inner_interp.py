@@ -26,7 +26,7 @@ USE_VIRTUALIZATION = bool(os.environ.get("RPYFORTH_VIRTUALIZE"))
 
 USE_STACK_FRAGMENT = bool(os.environ.get("RPYFORTH_STACK_FRAGMENT"))
 
-from rpyforth.metastack import DSIntMetaStack
+from rpyforth.metastack import DSIntFragment
 
 CALL_WINDOW = 8
 
@@ -53,7 +53,7 @@ if USE_STACK_FRAGMENT:
     jitdriver = JitDriver(
         greens=['ip', 'thread'],
         reds=['self', 'ds_int_frag'],
-        virtualizables=['ds_int_frag'],     # the head fragment, not the metastack
+        virtualizables=['ds_int_frag'],
         get_printable_location=get_printable_location
     )
 elif USE_VIRTUALIZATION:
@@ -72,14 +72,14 @@ else:
 
 
 class InnerInterpreter(object):
-    _immutable_fields_ = ["cell_size", "cell_size_bytes", "base", "ds_int_meta"]
+    _immutable_fields_ = ["cell_size", "cell_size_bytes", "base", "ds_int_frag"]
 
     if USE_VIRTUALIZATION:
         _virtualizable_ = ["ds_ints", "ds_floats", "ds_locals",
                            "ds_ptr_ints", "ds_ptr_floats", "ds_ptr_locals",
                            "rs", "rs_ptr", "cs_threads",
                            "cs_ips", "cs_ptr",
-                           "cell_size", "cell_size_bytes", "base", "ds_int_meta"]
+                           "cell_size", "cell_size_bytes", "base", "ds_int_frag"]
     else:
         _virtualizable_ = []
 
@@ -119,7 +119,7 @@ class InnerInterpreter(object):
         self._pno_buf = []            # buffer for pno (pictured numeric output)
         self.argv = []                # command-line arguments (set by target)
 
-        self.ds_int_meta = DSIntMetaStack()
+        self.ds_int_frag = DSIntFragment()
 
     def push_call(self, thread, ip):
         """Push return address onto virtualized call stack."""
@@ -190,7 +190,7 @@ class InnerInterpreter(object):
 
     def push_ds_int(self, intval):
         if USE_STACK_FRAGMENT:
-            self.ds_int_meta.push(intval)
+            hint(self.ds_int_frag, access_directly=True).push(intval)
         else:
             self.push_ds_int_fixed(intval)
 
@@ -208,7 +208,7 @@ class InnerInterpreter(object):
 
     def pop_ds_int(self):
         if USE_STACK_FRAGMENT:
-            return self.ds_int_meta.pop()
+            return hint(self.ds_int_frag, access_directly=True).pop()
         else:
             return self.pop_ds_int_fixed()
 
@@ -230,7 +230,7 @@ class InnerInterpreter(object):
 
     def peek_ds_int(self, depth=0):
         if USE_STACK_FRAGMENT:
-            return self.ds_int_meta.peek(depth)
+            return hint(self.ds_int_frag, access_directly=True).peek(depth)
         return self.peek_ds_int_fixed(depth)
 
     def peek_ds_int_fixed(self, depth=0):
@@ -254,7 +254,7 @@ class InnerInterpreter(object):
     def poke_ds_int(self, depth, intval):
         """Set raw integer at depth (unboxed)."""
         if USE_STACK_FRAGMENT:
-            self.ds_int_meta.poke(depth, intval)
+            hint(self.ds_int_frag, access_directly=True).poke(depth, intval)
         else:
             self.poke_ds_int_fixed(depth, intval)
 
@@ -266,13 +266,13 @@ class InnerInterpreter(object):
     def ds_int_size(self):
         """Number of integers currently on the data stack (mode-aware)."""
         if USE_STACK_FRAGMENT:
-            return self.ds_int_meta.size()
+            return self.ds_int_frag.size()
         return self.ds_ptr_ints
 
     def clear_ds_int(self):
         """Empty the integer data stack (mode-aware)."""
         if USE_STACK_FRAGMENT:
-            self.ds_int_meta.clear()
+            self.ds_int_frag.clear()
         else:
             self.ds_ptr_ints = 0
 
@@ -400,10 +400,8 @@ class InnerInterpreter(object):
 
     def execute_thread(self, thread, ip=0):
         if USE_STACK_FRAGMENT:
-            # The active fragment is the virtualizable. Its identity never changes,
-            # so bind it ONCE to a stable local and reuse it for every merge point
-            # and can_enter_jit (the JIT requires an unmodified virtualizable local).
-            ds_int_frag = hint(self.ds_int_meta.head(), access_directly=True,
+            # bind it ONCE to a stable local and reuse it for every jit_merge_point can_enter_jit
+            ds_int_frag = hint(self.ds_int_frag, access_directly=True,
                                fresh_virtualizable=True)
         while True:
             if USE_STACK_FRAGMENT:
