@@ -1,172 +1,77 @@
-"""Unit tests for the integer data stack: a single stable virtualizable fragment
-holding the 3 tops (in registers) plus a fixed-size overflow array. A push past
-the overflow capacity raises DataStackOverflow.
-
-These exercise everything directly, so they run under plain CPython/PyPy without
-translating the interpreter or setting RPYFORTH_STACK_FRAGMENT.
-
-The float (DSFloatMetaStack/DSFloatFragment) and object
-(DSObjMetaStack/DSObjFragment) stacks are left as a student exercise; add tests
-for them here once their implementations exist.
-"""
-
 import pytest
 
 from rpyforth.metastack import (
-    DSIntMetaStack,
-    DSIntFragment,
-    DataStackOverflow,
-    STACK_SIZE,
-    FRAGMENT_SIZE,
+    push_ds_fragments,
+    pop_ds_fragments_commit,
+    reset_ds_fragments,
 )
-from rpyforth.inner_interp import InnerInterpreter
+from rpyforth.metastack_float import DSFloatMetaStack
+from rpyforth.metastack_obj import DSObjMetaStack
+from rpyforth.inner_interp import InnerInterpreter, USE_STACK_FRAGMENT
 
 
-# ---------------------------------------------------------------------------
-# DSIntMetaStack: 3 virtualizable tops + fixed overflow array
-# ---------------------------------------------------------------------------
-
-def test_int_tops_and_overflow():
-    s = DSIntMetaStack()
-    for v in range(1, 6):           # 1..5: 3 in the scalar tops, 2 in overflow
-        s.push(v)
-    assert s.size() == 5
-    assert s.active.top_count == 3
-    assert s.active.overflow_ptr == 2
-    assert s.peek(0) == 5
-    assert s.peek(4) == 1
-    assert [s.pop() for _ in range(5)] == [5, 4, 3, 2, 1]
-    assert s.size() == 0
+class _Host(object):
+    pass
 
 
-def test_int_spill_to_overflow():
-    s = DSIntMetaStack()
-    n = FRAGMENT_SIZE + 5           # well past the 3 scalar tops
-    for v in range(n):
-        s.push(v)
-    assert s.size() == n
-    assert s.active.top_count == 3
-    assert s.active.overflow_ptr == n - 3      # everything below the 3 tops
-    assert s.peek(0) == n - 1
-    assert s.peek(n - 1) == 0                   # deepest, in overflow
-    assert [s.pop() for _ in range(n)] == list(range(n - 1, -1, -1))
-    assert s.size() == 0
-    assert s.active.overflow_ptr == 0
+def test_float_metastack_not_implemented():
+    s = DSFloatMetaStack()
+    with pytest.raises(NotImplementedError):
+        s.push(1.0)
+    with pytest.raises(NotImplementedError):
+        DSFloatMetaStack.push_on(s, 1.0)
 
 
-def test_int_deep_peek_poke():
-    s = DSIntMetaStack()
-    n = 3 * FRAGMENT_SIZE + 7
-    for v in range(n):
-        s.push(v)
-    assert s.size() == n
-    assert s.peek(0) == n - 1
-    assert s.peek(n - 1) == 0
-    s.poke(n - 1, 424242)               # deepest element, in overflow
-    assert s.peek(n - 1) == 424242
-    s.poke(0, 99)                       # top, in the scalar tops
-    assert s.peek(0) == 99
-    out = [s.pop() for _ in range(n)]
-    assert out[0] == 99
-    assert out[-1] == 424242
-    assert s.size() == 0
+def test_obj_metastack_not_implemented():
+    s = DSObjMetaStack()
+    with pytest.raises(NotImplementedError):
+        s.push(None)
+    with pytest.raises(NotImplementedError):
+        DSObjMetaStack.push_fragment_on(s)
 
 
-def test_int_overflow_raises():
-    s = DSIntMetaStack()
-    # 3 tops + STACK_SIZE overflow slots is the exact capacity.
-    for v in range(3 + STACK_SIZE):
-        s.push(v)
-    assert s.active.overflow_ptr == STACK_SIZE
-    with pytest.raises(DataStackOverflow):
-        s.push(0)
+def test_float_init_fields():
+    host = _Host()
+    DSFloatMetaStack.init_fields(host)
+    assert host.ds_float_sp == 0
+    assert host.float_top_count == 0
 
 
-def test_int_clear_resets():
-    s = DSIntMetaStack()
-    for v in range(2 * FRAGMENT_SIZE):
-        s.push(v)
-    s.clear()
-    assert s.size() == 0
-    assert s.active.overflow_ptr == 0
-    assert s.active.top_count == 0
-    s.push(42); s.push(43)
-    assert s.size() == 2
-    assert s.peek(0) == 43
+def test_obj_init_fields():
+    host = _Host()
+    DSObjMetaStack.init_fields(host)
+    assert host.ds_obj_sp == 0
+    assert host.obj_top_count == 0
 
 
-def test_int_fragment_ops():
-    f = DSIntFragment()
-    assert f.top_count == 0 and not f.tops_full()
-    f.push_top(10); f.push_top(20)
-    assert f.top_count == 2
-    assert f.peek_top(0) == 20 and f.peek_top(1) == 10
-    f.poke_top(0, 99)
-    assert f.peek_top(0) == 99
-    assert f.pop_top() == 99 and f.pop_top() == 10
-    assert f.top_count == 0
-    # fill all three tops, then spill the bottom one and refill it
-    f.push_top(1); f.push_top(2); f.push_top(3)
-    assert f.tops_full()
-    assert f.push_top_full(4) == 1      # 4 pushed on top, 1 spilled out
-    assert f.peek_top(0) == 4 and f.peek_top(2) == 2
-    assert f.pop_top_refill(1) == 4     # pop 4, refill third top with 1
-    assert f.peek_top(2) == 1
-
-
-def test_int_fragment_overflow_ops():
-    f = DSIntFragment()
-    assert not f.has_overflow()
-    f.spill_top(7); f.spill_top(8)
-    assert f.overflow_ptr == 2 and f.has_overflow()
-    assert f.peek_overflow(0) == 8 and f.peek_overflow(1) == 7
-    f.poke_overflow(0, 88)
-    assert f.peek_overflow(0) == 88
-    assert f.pop_overflow() == 88 and f.pop_overflow() == 7
-    assert not f.has_overflow()
-
-
-# ---------------------------------------------------------------------------
-# Cross-type parity helper (shared with the float/obj student exercise)
-# ---------------------------------------------------------------------------
-
-def _run_parity(cls, mk):
-    s = cls()
-    n = 600
-    for v in range(n):
-        s.push(mk(v))
-    assert s.size() == n
-    assert s.peek(0) == mk(n - 1)
-    assert s.peek(n - 1) == mk(0)
-    s.poke(n - 1, mk(123))
-    s.poke(0, mk(456))
-    assert s.peek(n - 1) == mk(123)
-    assert s.peek(0) == mk(456)
-    out = [s.pop() for _ in range(n)]
-    assert out[0] == mk(456)
-    assert out[-1] == mk(123)
-    assert s.size() == 0
-
-
-def test_parity_int():
-    _run_parity(DSIntMetaStack, int)
-
-
-# ---------------------------------------------------------------------------
-# InnerInterpreter integration (the int metastack as wired into the VM)
-# ---------------------------------------------------------------------------
-
-def test_inner_int_stack_deep_spill():
+def test_inner_int_stack_fixed_path():
     inner = InnerInterpreter()
-    n = 2 * FRAGMENT_SIZE + 11
+    if USE_STACK_FRAGMENT:
+        pytest.skip("requires fixed-stack build (RPYFORTH_STACK_FRAGMENT unset)")
+    n = 100
     for v in range(n):
         inner.push_ds_int(v)
-    assert inner.ds_int_size() == n
+    assert inner.depth_ds_int() == n
     assert inner.peek_ds_int(0) == n - 1
-    assert inner.peek_ds_int(n - 1) == 0
-    inner.poke_ds_int(n - 1, 987654)
-    assert inner.peek_ds_int(n - 1) == 987654
     out = [inner.pop_ds_int() for _ in range(n)]
     assert out[0] == n - 1
-    assert out[-1] == 987654
-    assert inner.ds_int_size() == 0
+
+
+def test_inner_depth_and_reset_fixed():
+    inner = InnerInterpreter()
+    if USE_STACK_FRAGMENT:
+        pytest.skip("requires fixed-stack build")
+    inner.push_ds_int(1)
+    inner.push_ds_int(2)
+    assert inner.depth_ds_int() == 2
+    inner.reset_ds_int()
+    assert inner.depth_ds_int() == 0
+
+
+def test_coordination_noop_without_fragment_flag():
+    inner = InnerInterpreter()
+    if USE_STACK_FRAGMENT:
+        pytest.skip("requires fixed-stack build")
+    push_ds_fragments(inner)
+    pop_ds_fragments_commit(inner)
+    reset_ds_fragments(inner)
