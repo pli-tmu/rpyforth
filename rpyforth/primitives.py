@@ -28,20 +28,11 @@ from rpyforth.util import digit_to_char
 def _maybe_enter_jit(inner, target_ip, origin_ip, thread):
     """Signal the interpreter back-edge to the JIT when jumping backward."""
     if target_ip < origin_ip:
-        if USE_STACK_FRAGMENT:
-            ds_int_frag = hint(inner.ds_int_frag, access_directly=True)
-            jitdriver.can_enter_jit(
-                ip=target_ip,
-                thread=thread,
-                self=inner,
-                ds_int_frag=ds_int_frag,
-            )
-        else:
-            jitdriver.can_enter_jit(
-                ip=target_ip,
-                thread=thread,
-                self=inner
-            )
+        jitdriver.can_enter_jit(
+            ip=target_ip,
+            thread=thread,
+            self=inner,
+        )
 
 
 # 0= ( x -- flag )
@@ -1335,7 +1326,7 @@ def prim_ABORT_QUOTE_RUNTIME(inner, cur, ip):
         stdout.write(msg)
         stdout.write("\n")
         # Clear stacks
-        inner.clear_ds_int()
+        inner.reset_ds_int()
         inner.ds_ptr_floats = 0
         inner.ds_ptr_locals = 0
         inner.rs_ptr = 0

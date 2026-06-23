@@ -26,11 +26,21 @@ USE_VIRTUALIZATION = bool(os.environ.get("RPYFORTH_VIRTUALIZE"))
 
 USE_STACK_FRAGMENT = bool(os.environ.get("RPYFORTH_STACK_FRAGMENT"))
 
-from rpyforth.metastack import DSIntFragment
+from rpyforth.metastack import (
+    STACK_FRAGMENT_VIRTUALIZABLES,
+    push_ds_fragments,
+    pop_ds_fragments_commit,
+    reset_ds_fragments,
+)
 
-CALL_WINDOW = 8
+if USE_STACK_FRAGMENT:
+    from rpyforth.metastack_int import DSIntMetaStack
+    InterpBase = DSIntMetaStack
+else:
+    class InterpBase(object):
+        pass
 
-STACK_SIZE = 16384 # Increased for deeper nesting (ack(3,10))
+STACK_SIZE = 16384  # Increased for deeper nesting (ack(3,10))
 BUF_SIZE = 1024
 
 # Sentinel value for EXIT - indicates return from current definition
@@ -52,34 +62,40 @@ def get_printable_location(ip, thread):
 if USE_STACK_FRAGMENT:
     jitdriver = JitDriver(
         greens=['ip', 'thread'],
-        reds=['self', 'ds_int_frag'],
-        virtualizables=['ds_int_frag'],
-        get_printable_location=get_printable_location
+        reds=['self'],
+        virtualizables=['self'],
+        get_printable_location=get_printable_location,
     )
 elif USE_VIRTUALIZATION:
     jitdriver = JitDriver(
         greens=['ip', 'thread'],
         reds=['self'],
         virtualizables=['self'],
-        get_printable_location=get_printable_location
+        get_printable_location=get_printable_location,
     )
 else:
     jitdriver = JitDriver(
         greens=['ip', 'thread'],
         reds=['self'],
-        get_printable_location=get_printable_location
+        get_printable_location=get_printable_location,
     )
 
 
-class InnerInterpreter(object):
-    _immutable_fields_ = ["cell_size", "cell_size_bytes", "base", "ds_int_frag"]
+class InnerInterpreter(InterpBase, object):
+    # The metastack arena is allocated once and never reassigned, so its
+    # reference is immutable even though its elements are mutated in place; this
+    # lets the JIT hoist the array-pointer load to the loop header instead of
+    # reloading it on every spill/refill.
+    _immutable_fields_ = ["cell_size", "cell_size_bytes", "base", "spill"]
 
     if USE_VIRTUALIZATION:
         _virtualizable_ = ["ds_ints", "ds_floats", "ds_locals",
                            "ds_ptr_ints", "ds_ptr_floats", "ds_ptr_locals",
                            "rs", "rs_ptr", "cs_threads",
                            "cs_ips", "cs_ptr",
-                           "cell_size", "cell_size_bytes", "base", "ds_int_frag"]
+                           "cell_size", "cell_size_bytes", "base"]
+    elif USE_STACK_FRAGMENT:
+        _virtualizable_ = STACK_FRAGMENT_VIRTUALIZABLES
     else:
         _virtualizable_ = []
 
@@ -89,7 +105,7 @@ class InnerInterpreter(object):
         self.outer = None
 
         # Pre-allocate larger stacks to reduce growth overhead
-        self.ds_ints = [0] * STACK_SIZE # unboxed integer data stack
+        self.ds_ints = [0] * STACK_SIZE  # unboxed integer data stack (fixed path)
         self.ds_ptr_ints = 0
 
         self.ds_floats = [0.0] * STACK_SIZE
@@ -102,8 +118,8 @@ class InnerInterpreter(object):
         self.rs_ptr = 0
 
         # Virtualized call stack for JIT optimization
-        self.cs_threads = [None] * STACK_SIZE  # return threads
-        self.cs_ips = [0] * STACK_SIZE       # return IPs
+        self.cs_threads = [None] * STACK_SIZE
+        self.cs_ips = [0] * STACK_SIZE
         self.cs_ptr = 0
 
         self.heap = None
@@ -114,12 +130,25 @@ class InnerInterpreter(object):
         self.buf = [None] * HEAP_SIZE_BYTES
         self.here = 0
 
-        self.base = 10                # DECIMAL
-        self._pno_active = False      # inside <# ... #> or not
-        self._pno_buf = []            # buffer for pno (pictured numeric output)
-        self.argv = []                # command-line arguments (set by target)
+        self.base = 10
+        self._pno_active = False
+        self._pno_buf = []
+        self.argv = []
 
-        self.ds_int_frag = DSIntFragment()
+        if USE_STACK_FRAGMENT:
+            self.init_fields()
+        else:
+            # Placeholders so the attribute set is consistent; unused on the
+            # fixed path (the translator folds the dead USE_STACK_FRAGMENT
+            # branch, so the active frame and fragment pool are only built when
+            # fragmented).
+            self.t0 = 0
+            self.t1 = 0
+            self.d = 0
+            self.frame = [0]
+            self.frag_ptr = 0
+            self.spill = [0]
+            self.spill_ptr = 0
 
     def push_call(self, thread, ip):
         """Push return address onto virtualized call stack."""
@@ -133,6 +162,8 @@ class InnerInterpreter(object):
         """Pop return address from virtualized call stack."""
         ptr = self.cs_ptr - 1
         assert ptr >= 0
+        if USE_STACK_FRAGMENT:
+            pop_ds_fragments_commit(self)
         self.cs_ptr = ptr
         thread = self.cs_threads[ptr]
         ip = self.cs_ips[ptr]
@@ -157,19 +188,16 @@ class InnerInterpreter(object):
     @unroll_safe
     def peek_loop_counter(self, depth=0):
         """Get current loop counter without popping (raw int)."""
-        # Counter is at top of each loop frame (2 cells per loop)
         return self.peek_rs(promote(depth) * 2)
 
     @unroll_safe
     def peek_loop_limit(self, depth=0):
         """Get current loop limit without popping (raw int)."""
-        # Limit is below counter in each loop frame (2 cells per loop)
         return self.peek_rs(promote(depth) * 2 + 1)
 
     @unroll_safe
     def set_loop_counter(self, depth, value):
         """Set loop counter in place (raw int)."""
-        # Counter is at top of each loop frame (2 cells per loop)
         self.poke_rs(promote(depth) * 2, value)
 
     def push_ds(self, w_x):
@@ -181,7 +209,6 @@ class InnerInterpreter(object):
     def pop_ds(self):
         ds_ptr = self.ds_ptr_locals - 1
         assert ds_ptr >= 0
-        # Return boxed object
         w_x = self.ds_locals[ds_ptr]
         assert isinstance(w_x, W_Object)
         self.ds_locals[ds_ptr] = None
@@ -190,32 +217,28 @@ class InnerInterpreter(object):
 
     def push_ds_int(self, intval):
         if USE_STACK_FRAGMENT:
-            hint(self.ds_int_frag, access_directly=True).push(intval)
+            self.push_on(intval)
         else:
             self.push_ds_int_fixed(intval)
 
     def push_ds_int_fixed(self, intval):
         ds_ptr = self.ds_ptr_ints
         self.ds_ints[ds_ptr] = intval
-        #self.ds_tags[ds_ptr] = 0
         self.ds_ptr_ints = ds_ptr + 1
 
     def push_ds_float(self, floatval):
         ds_ptr = self.ds_ptr_floats
         self.ds_floats[ds_ptr] = floatval
-        #self.ds_tags[ds_ptr] = 1
         self.ds_ptr_floats = ds_ptr + 1
 
     def pop_ds_int(self):
         if USE_STACK_FRAGMENT:
-            return hint(self.ds_int_frag, access_directly=True).pop()
-        else:
-            return self.pop_ds_int_fixed()
+            return self.pop_on()
+        return self.pop_ds_int_fixed()
 
     def pop_ds_int_fixed(self):
         ds_ptr = self.ds_ptr_ints - 1
         assert ds_ptr >= 0
-        #assert self.ds_tags[ds_ptr] == 0, "Expected int on stack"
         intval = self.ds_ints[ds_ptr]
         self.ds_ptr_ints = ds_ptr
         return intval
@@ -223,38 +246,33 @@ class InnerInterpreter(object):
     def pop_ds_float(self):
         ds_ptr = self.ds_ptr_floats - 1
         assert ds_ptr >= 0
-        #assert self.ds_tags[ds_ptr] == 1, "Expected float on stack"
         floatval = self.ds_floats[ds_ptr]
         self.ds_ptr_floats = ds_ptr
         return floatval
 
     def peek_ds_int(self, depth=0):
         if USE_STACK_FRAGMENT:
-            return hint(self.ds_int_frag, access_directly=True).peek(depth)
+            return self.peek_on(depth)
         return self.peek_ds_int_fixed(depth)
 
     def peek_ds_int_fixed(self, depth=0):
         ptr = self.ds_ptr_ints - 1 - depth
         assert ptr >= 0
-        #assert self.ds_tags[ptr] == 0, "Expected int on stack"
         return self.ds_ints[ptr]
 
     def peek_ds_float(self, depth=0):
         ptr = self.ds_ptr_floats - 1 - depth
         assert ptr >= 0
-        #assert self.ds_tags[ptr] == 1, "Expected float on stack"
         return self.ds_floats[ptr]
 
     def peek_ds(self, depth=0):
-        """Peek at stack value without popping (returns boxed W_Object)."""
         ptr = self.ds_ptr_locals - 1 - depth
         assert ptr >= 0
         return self.ds_locals[ptr]
 
     def poke_ds_int(self, depth, intval):
-        """Set raw integer at depth (unboxed)."""
         if USE_STACK_FRAGMENT:
-            hint(self.ds_int_frag, access_directly=True).poke(depth, intval)
+            self.poke_on(depth, intval)
         else:
             self.poke_ds_int_fixed(depth, intval)
 
@@ -263,18 +281,22 @@ class InnerInterpreter(object):
         assert ptr >= 0
         self.ds_ints[ptr] = intval
 
-    def ds_int_size(self):
-        """Number of integers currently on the data stack (mode-aware)."""
+    def depth_ds_int(self):
         if USE_STACK_FRAGMENT:
-            return self.ds_int_frag.size()
+            return self.depth_on()
         return self.ds_ptr_ints
 
-    def clear_ds_int(self):
-        """Empty the integer data stack (mode-aware)."""
+    def reset_ds_int(self):
         if USE_STACK_FRAGMENT:
-            self.ds_int_frag.clear()
+            reset_ds_fragments(self)
         else:
             self.ds_ptr_ints = 0
+
+    def ds_int_size(self):
+        return self.depth_ds_int()
+
+    def clear_ds_int(self):
+        self.reset_ds_int()
 
     def top2_ds(self):
         w_y = self.pop_ds()
@@ -338,77 +360,59 @@ class InnerInterpreter(object):
         assert addr + span <= HEAP_SIZE_BYTES
 
     def cell_store(self, addr, intval):
-        """! ( x addr -- ) - Store value at cell address (unboxed)."""
         assert isinstance(addr, int)
         self._get_heap().cell_store(addr, intval)
 
     def cell_fetch_int(self, addr):
-        """Fetch raw integer from cell address (0 if never stored)."""
         heap = self.heap
         if heap is None:
             return 0
         return heap.cell_fetch_int(addr)
 
     def cell_fetch(self, addr):
-        """@ ( addr -- x ) - Fetch value as W_IntObject for outer interpreter."""
         heap = self.heap
         if heap is None:
             return ZERO
         return heap.cell_fetch(addr)
 
     def cell_2store(self, addr, x1_int, x2_int):
-        """2! ( x1 x2 addr -- ) - Store cell pair."""
         assert 0 <= addr < HEAP_CELL_COUNT - self.cell_size_bytes
         self.cell_store(addr, x1_int)
         self.cell_store(addr + self.cell_size_bytes, x2_int)
 
     def cell_2fetch(self, addr):
-        """2@ ( addr -- x1 x2 ) - Fetch cell pair."""
         assert 0 <= addr < HEAP_CELL_COUNT - self.cell_size_bytes
         x1 = make_int(self.cell_fetch_int(addr))
         x2 = make_int(self.cell_fetch_int(addr + self.cell_size_bytes))
         return x1, x2
 
     def char_store(self, addr, intval):
-        """C! ( char c-addr -- ) - Store character (unboxed, no allocation)."""
         self._get_heap().char_store(addr, intval)
 
     def char_fetch(self, addr):
-        """C@ ( c-addr -- char ) - Fetch character (unboxed, no allocation)."""
         heap = self.heap
         if heap is None:
             return 0
         return heap.char_fetch(addr)
 
     def float_store(self, addr, value):
-        """F! ( addr -- ) ( F: f -- ) - Store float (unboxed)."""
         self._get_heap().float_store(addr, value)
 
     def cell_float_fetch(self, addr):
-        """Fetch raw float from address (0.0 if never stored)."""
         heap = self.heap
         if heap is None:
             return 0.0
         return heap.float_fetch_float(addr)
 
     def float_fetch(self, addr):
-        """F@ ( addr -- ) ( F: -- f ) - Fetch float as W_FloatObject."""
         heap = self.heap
         if heap is None:
             return W_FloatObject(0.0)
         return heap.float_fetch(addr)
 
     def execute_thread(self, thread, ip=0):
-        if USE_STACK_FRAGMENT:
-            # bind it ONCE to a stable local and reuse it for every jit_merge_point can_enter_jit
-            ds_int_frag = hint(self.ds_int_frag, access_directly=True,
-                               fresh_virtualizable=True)
         while True:
-            if USE_STACK_FRAGMENT:
-                jitdriver.jit_merge_point(ip=ip, thread=thread, self=self,
-                                          ds_int_frag=ds_int_frag)
-            else:
-                jitdriver.jit_merge_point(ip=ip, thread=thread, self=self)
+            jitdriver.jit_merge_point(ip=ip, thread=thread, self=self)
             if ip >= len(thread.code):
                 if not self.is_call_stack_empty():
                     thread, ip = self.pop_call()
@@ -416,7 +420,6 @@ class InnerInterpreter(object):
                 else:
                     break
 
-            # Promote the word to allow JIT to specialize on it
             w = promote(thread.code[ip])
             if w is None:
                 if not self.is_call_stack_empty():
@@ -426,21 +429,16 @@ class InnerInterpreter(object):
                     break
             ip += 1
 
-            # Promote the primitive function pointer for better inlining
             prim = promote(w.prim)
             if prim is not None:
                 ip = prim(self, thread, ip)
-                # Check for EXIT sentinel (faster than exception)
                 if ip == EXIT_SENTINEL:
                     if not self.is_call_stack_empty():
                         thread, ip = self.pop_call()
                     else:
                         break
                     continue
-                # Check for TAILCALL sentinel - perform tail call optimization
                 if ip == TAILCALL_SENTINEL:
-                    # TAILCALL was the last instruction (at code[len(code)-1])
-                    # The target word is stored in lits[len(code)-1]
                     from rpyforth.objects import W_WordObject
                     tailcall_idx = len(thread.code) - 1
                     target = promote(thread.lits[tailcall_idx])
@@ -448,34 +446,23 @@ class InnerInterpreter(object):
                         target_word = promote(target.word)
                         nested_thread = promote(target_word.thread)
                         if nested_thread is not None:
-                            # Just replace thread
                             thread = nested_thread
                             ip = 0
-                            if USE_STACK_FRAGMENT:
-                                jitdriver.can_enter_jit(
-                                    ip=ip, thread=thread, self=self,
-                                    ds_int_frag=ds_int_frag)
-                            else:
-                                jitdriver.can_enter_jit(ip=ip, thread=thread, self=self)
+                            jitdriver.can_enter_jit(ip=ip, thread=thread, self=self)
                             continue
                     if not self.is_call_stack_empty():
-                        # Fall back: just pop call stack
                         thread, ip = self.pop_call()
                     else:
                         break
                     continue
             else:
-                # Colon definition: push current state and enter nested thread
                 nested_thread = promote(w.thread)
                 self.push_call(thread, ip)
+                if USE_STACK_FRAGMENT:
+                    push_ds_fragments(self)
                 thread = nested_thread
                 ip = 0
-                if USE_STACK_FRAGMENT:
-                    jitdriver.can_enter_jit(
-                        ip=ip, thread=thread, self=self,
-                        ds_int_frag=ds_int_frag)
-                else:
-                    jitdriver.can_enter_jit(ip=ip, thread=thread, self=self)
+                jitdriver.can_enter_jit(ip=ip, thread=thread, self=self)
 
     def execute_word_now(self, w):
         code = [w]
