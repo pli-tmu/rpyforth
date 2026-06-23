@@ -1,25 +1,29 @@
-"""Unit tests for the integer stack-fragment metastack and its fragment.
+"""Unit tests for the integer data stack: a single stable virtualizable fragment
+holding the 3 tops (in registers) plus a fixed-size overflow array. A push past
+the overflow capacity raises DataStackOverflow.
 
-The integer data stack keeps its top three elements in scalar virtualizable
-fields (the stable DSIntFragment) and spills anything below them into a plain
-overflow list. These tests exercise everything directly, so they run under plain
-CPython/PyPy without translating the interpreter or setting RPYFORTH_STACK_FRAGMENT.
+These exercise everything directly, so they run under plain CPython/PyPy without
+translating the interpreter or setting RPYFORTH_STACK_FRAGMENT.
 
 The float (DSFloatMetaStack/DSFloatFragment) and object
 (DSObjMetaStack/DSObjFragment) stacks are left as a student exercise; add tests
 for them here once their implementations exist.
 """
 
+import pytest
+
 from rpyforth.metastack import (
     DSIntMetaStack,
     DSIntFragment,
+    DataStackOverflow,
+    STACK_SIZE,
     FRAGMENT_SIZE,
 )
 from rpyforth.inner_interp import InnerInterpreter
 
 
 # ---------------------------------------------------------------------------
-# DSIntMetaStack: three scalar tops + plain overflow list
+# DSIntMetaStack: 3 virtualizable tops + fixed overflow array
 # ---------------------------------------------------------------------------
 
 def test_int_tops_and_overflow():
@@ -28,7 +32,7 @@ def test_int_tops_and_overflow():
         s.push(v)
     assert s.size() == 5
     assert s.active.top_count == 3
-    assert len(s.overflow) == 2
+    assert s.active.overflow_ptr == 2
     assert s.peek(0) == 5
     assert s.peek(4) == 1
     assert [s.pop() for _ in range(5)] == [5, 4, 3, 2, 1]
@@ -42,15 +46,15 @@ def test_int_spill_to_overflow():
         s.push(v)
     assert s.size() == n
     assert s.active.top_count == 3
-    assert len(s.overflow) == n - 3            # everything below the 3 tops
+    assert s.active.overflow_ptr == n - 3      # everything below the 3 tops
     assert s.peek(0) == n - 1
     assert s.peek(n - 1) == 0                   # deepest, in overflow
     assert [s.pop() for _ in range(n)] == list(range(n - 1, -1, -1))
     assert s.size() == 0
-    assert len(s.overflow) == 0                 # overflow drained on the way down
+    assert s.active.overflow_ptr == 0
 
 
-def test_int_many_fragments_peek_poke():
+def test_int_deep_peek_poke():
     s = DSIntMetaStack()
     n = 3 * FRAGMENT_SIZE + 7
     for v in range(n):
@@ -68,13 +72,23 @@ def test_int_many_fragments_peek_poke():
     assert s.size() == 0
 
 
+def test_int_overflow_raises():
+    s = DSIntMetaStack()
+    # 3 tops + STACK_SIZE overflow slots is the exact capacity.
+    for v in range(3 + STACK_SIZE):
+        s.push(v)
+    assert s.active.overflow_ptr == STACK_SIZE
+    with pytest.raises(DataStackOverflow):
+        s.push(0)
+
+
 def test_int_clear_resets():
     s = DSIntMetaStack()
     for v in range(2 * FRAGMENT_SIZE):
         s.push(v)
     s.clear()
     assert s.size() == 0
-    assert len(s.overflow) == 0
+    assert s.active.overflow_ptr == 0
     assert s.active.top_count == 0
     s.push(42); s.push(43)
     assert s.size() == 2
@@ -98,6 +112,18 @@ def test_int_fragment_ops():
     assert f.peek_top(0) == 4 and f.peek_top(2) == 2
     assert f.pop_top_refill(1) == 4     # pop 4, refill third top with 1
     assert f.peek_top(2) == 1
+
+
+def test_int_fragment_overflow_ops():
+    f = DSIntFragment()
+    assert not f.has_overflow()
+    f.spill_top(7); f.spill_top(8)
+    assert f.overflow_ptr == 2 and f.has_overflow()
+    assert f.peek_overflow(0) == 8 and f.peek_overflow(1) == 7
+    f.poke_overflow(0, 88)
+    assert f.peek_overflow(0) == 88
+    assert f.pop_overflow() == 88 and f.pop_overflow() == 7
+    assert not f.has_overflow()
 
 
 # ---------------------------------------------------------------------------
