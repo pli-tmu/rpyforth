@@ -5,10 +5,16 @@ Run all RPyForth shootout benchmarks and analyze their output.
 Usage:
     ./run_shootout.py [--output logs/]
 
-Comparison presets (--compare):
-    jit      ./rpyforth-c vs ./rpyforth-c --jit off
-    virt     ./rpyforth-c vs ./rpyforth-c-novirt
-    gforth   gforth vs ./rpyforth-c
+Comparison (--compare, repeatable):
+    Presets (single --compare):
+        jit      ./rpyforth-c vs ./rpyforth-c --jit off
+        virt     ./rpyforth-c vs ./rpyforth-c-novirt
+        gforth   gforth vs ./rpyforth-c
+    Explicit binaries (two --compare values):
+        ./run_shootout.py --compare ./rpyforth-c-stkfrag --compare ./rpyforth-c
+        ./run_shootout.py --compare gforth --compare ./rpyforth-c
+    Single executable (one --compare value that is not a preset):
+        ./run_shootout.py --compare ./rpyforth-c-stkfrag
 
 Override either side with --a-cmd / --b-cmd. Omit --compare for a single run.
 Use --iterations N to repeat each run and report median elapsed times.
@@ -30,10 +36,7 @@ from typing import Dict, List, Optional, Tuple
 
 from jitlog_analysis import (
     aggregate_benchmark_jitlogs,
-    append_jitlog_visualization_pages,
     format_jitlog_comparison,
-    is_curve_benchmark,
-    records_from_benchmark_results,
 )
 
 
@@ -66,6 +69,7 @@ class RunPlan:
     preset: Optional[str]
     configs: Tuple[Tuple[str, List[str], str], ...]  # (id, cmd, label)
     speedup_a_over_b: bool
+    gforth_baseline: bool
     skip_jit_analysis: bool
     skip_jitlog_for: frozenset[str]
 
@@ -464,6 +468,24 @@ def short_label(cmd: List[str]) -> str:
     return f"{name} {' '.join(cmd[1:])}"
 
 
+def is_gforth_cmd(cmd: List[str]) -> bool:
+    """Return True when a command prefix invokes Gforth."""
+    return bool(cmd) and Path(cmd[0]).name == "gforth"
+
+
+def normalize_comparison_commands(
+    a_text: str, b_text: str
+) -> Tuple[str, str, bool]:
+    """Return commands with gforth on the A side when present."""
+    a_cmd = parse_cmd(a_text)
+    b_cmd = parse_cmd(b_text)
+    if is_gforth_cmd(a_cmd):
+        return a_text, b_text, True
+    if is_gforth_cmd(b_cmd):
+        return b_text, a_text, True
+    return a_text, b_text, False
+
+
 def resolve_command(cmd: List[str], repo_root: Path) -> Optional[Path]:
     """Return the executable path if a command prefix is runnable."""
     if not cmd:
@@ -482,45 +504,84 @@ def resolve_command(cmd: List[str], repo_root: Path) -> Optional[Path]:
 
 def build_run_plan(args: argparse.Namespace) -> RunPlan:
     """Resolve preset, commands, and reporting behavior from CLI args."""
-    preset = args.compare
-    if preset and preset not in COMPARE_PRESETS:
-        raise SystemExit(f"Unknown compare preset: {preset}")
+    compare_values = args.compare or []
 
-    if preset:
-        default_a, default_b, speedup_a_over_b = COMPARE_PRESETS[preset]
-        a_text = args.a_cmd or default_a
-        b_text = args.b_cmd or default_b
-        skip_jit_analysis = preset == "gforth"
-        skip_jitlog_for = frozenset({"A"}) if preset == "gforth" else frozenset()
-    elif args.b_cmd:
-        a_text = args.a_cmd or "./rpyforth-c"
-        b_text = args.b_cmd
-        speedup_a_over_b = False
-        skip_jit_analysis = parse_cmd(a_text)[0] == "gforth"
-        skip_jitlog_for = frozenset({"A"}) if skip_jit_analysis else frozenset()
-        preset = None
-    else:
-        a_cmd = parse_cmd(args.a_cmd or "./rpyforth-c")
+    if len(compare_values) == 2 and all(value in COMPARE_PRESETS for value in compare_values):
+        raise SystemExit(
+            "Use one compare preset at a time "
+            f"({', '.join(sorted(COMPARE_PRESETS))}), not two preset names"
+        )
+
+    def single_plan(cmd_text: str) -> RunPlan:
+        cmd = parse_cmd(cmd_text)
         return RunPlan(
             preset=None,
-            configs=(("A", a_cmd, short_label(a_cmd)),),
+            configs=(("A", cmd, short_label(cmd)),),
             speedup_a_over_b=False,
+            gforth_baseline=False,
             skip_jit_analysis=True,
             skip_jitlog_for=frozenset(),
         )
 
-    a_cmd = parse_cmd(a_text)
-    b_cmd = parse_cmd(b_text)
-    return RunPlan(
-        preset=preset,
-        configs=(
-            ("A", a_cmd, short_label(a_cmd)),
-            ("B", b_cmd, short_label(b_cmd)),
-        ),
-        speedup_a_over_b=speedup_a_over_b,
-        skip_jit_analysis=skip_jit_analysis,
-        skip_jitlog_for=skip_jitlog_for,
-    )
+    def paired_plan(
+        a_text: str,
+        b_text: str,
+        *,
+        preset: Optional[str] = None,
+        speedup_a_over_b: Optional[bool] = None,
+    ) -> RunPlan:
+        if preset is None:
+            a_text, b_text, inferred = normalize_comparison_commands(a_text, b_text)
+            if speedup_a_over_b is None:
+                speedup_a_over_b = inferred
+        elif speedup_a_over_b is None:
+            speedup_a_over_b = COMPARE_PRESETS[preset][2]
+
+        a_cmd = parse_cmd(a_text)
+        b_cmd = parse_cmd(b_text)
+        gforth_baseline = is_gforth_cmd(a_cmd)
+        skip_jit_analysis = gforth_baseline or is_gforth_cmd(b_cmd)
+        skip_jitlog_for = frozenset({"A"}) if gforth_baseline else frozenset()
+        return RunPlan(
+            preset=preset,
+            configs=(
+                ("A", a_cmd, short_label(a_cmd)),
+                ("B", b_cmd, short_label(b_cmd)),
+            ),
+            speedup_a_over_b=speedup_a_over_b,
+            gforth_baseline=gforth_baseline,
+            skip_jit_analysis=skip_jit_analysis,
+            skip_jitlog_for=skip_jitlog_for,
+        )
+
+    if len(compare_values) == 1 and compare_values[0] in COMPARE_PRESETS:
+        preset = compare_values[0]
+        default_a, default_b, speedup_a_over_b = COMPARE_PRESETS[preset]
+        return paired_plan(
+            args.a_cmd or default_a,
+            args.b_cmd or default_b,
+            preset=preset,
+            speedup_a_over_b=speedup_a_over_b,
+        )
+
+    if len(compare_values) == 2:
+        return paired_plan(
+            args.a_cmd or compare_values[0],
+            args.b_cmd or compare_values[1],
+        )
+
+    if len(compare_values) == 1:
+        return single_plan(args.a_cmd or compare_values[0])
+
+    if len(compare_values) > 2:
+        raise SystemExit(
+            "At most two --compare values are supported for A/B comparison"
+        )
+
+    if args.b_cmd:
+        return paired_plan(args.a_cmd or "./rpyforth-c", args.b_cmd)
+
+    return single_plan(args.a_cmd or "./rpyforth-c")
 
 
 def format_comparison(results: List[BenchmarkResult], plan: RunPlan) -> str:
@@ -628,308 +689,6 @@ def save_analysis_report(
     report_path.write_text("\n".join(sections), encoding="utf-8")
 
 
-def is_stable_benchmark(name: str) -> bool:
-    """Return True for single-run shootout benchmarks (not curve/ warmup runs)."""
-    return not is_curve_benchmark(name)
-
-
-def build_stable_elapsed_samples(
-    results: List[BenchmarkResult],
-) -> Dict[str, Dict[str, List[int]]]:
-    """Return stable benchmark elapsed times grouped by name and config."""
-    samples: Dict[str, Dict[str, List[int]]] = {}
-    for result in results:
-        if not is_stable_benchmark(result.name):
-            continue
-        if result.elapsed_samples:
-            elapsed = result.elapsed_samples
-        elif result.elapsed_usec is not None:
-            elapsed = [result.elapsed_usec]
-        else:
-            continue
-        samples.setdefault(result.name, {})[result.config] = elapsed
-    return samples
-
-
-def has_iteration_variance(results: List[BenchmarkResult]) -> bool:
-    """Return True when at least one stable benchmark has multiple timed runs."""
-    for by_config in build_stable_elapsed_samples(results).values():
-        for elapsed in by_config.values():
-            if len(elapsed) > 1:
-                return True
-    return False
-
-
-def build_paired_stable_data(
-    results: List[BenchmarkResult],
-    plan: RunPlan,
-) -> Tuple[List[str], List[int], List[int], List[float], List[float], List[float]]:
-    """Return paired elapsed times, speedups, and per-config stddevs."""
-    samples_by_name = build_stable_elapsed_samples(results)
-
-    names: List[str] = []
-    a_values: List[int] = []
-    b_values: List[int] = []
-    speedups: List[float] = []
-    a_stdevs: List[float] = []
-    b_stdevs: List[float] = []
-    for name in sorted(samples_by_name):
-        by_config = samples_by_name[name]
-        a_samples = by_config.get("A")
-        b_samples = by_config.get("B") if plan.compare else None
-        if a_samples is None:
-            continue
-        if plan.compare and b_samples is None:
-            continue
-
-        a_elapsed = int(statistics.median(a_samples))
-        if plan.compare:
-            assert b_samples is not None
-            b_elapsed = int(statistics.median(b_samples))
-            if plan.speedup_a_over_b:
-                if b_elapsed == 0:
-                    continue
-                speedup = a_elapsed / b_elapsed
-            else:
-                if a_elapsed == 0:
-                    continue
-                speedup = b_elapsed / a_elapsed
-        else:
-            b_elapsed = 0
-            speedup = 0.0
-
-        names.append(name)
-        a_values.append(a_elapsed)
-        b_values.append(b_elapsed)
-        speedups.append(speedup)
-        a_stdevs.append(statistics.stdev(a_samples) if len(a_samples) > 1 else 0.0)
-        b_stdevs.append(
-            statistics.stdev(b_samples) if b_samples and len(b_samples) > 1 else 0.0
-        )
-    return names, a_values, b_values, speedups, a_stdevs, b_stdevs
-
-
-def generate_pdf_report(
-    pdf_path: Path,
-    results: List[BenchmarkResult],
-    plan: RunPlan,
-    jitlog_mode: str,
-) -> None:
-    """Generate a multi-page PDF report with benchmark graphs.
-
-    Requires matplotlib to be installed.
-    """
-    try:
-        import matplotlib
-
-        matplotlib.use("Agg")  # non-interactive backend
-        from matplotlib import pyplot as plt
-        from matplotlib.backends.backend_pdf import PdfPages
-    except ImportError as exc:
-        raise RuntimeError(
-            "PDF report generation requires matplotlib. Install it with: pip install matplotlib"
-        ) from exc
-
-    pdf_path.parent.mkdir(parents=True, exist_ok=True)
-
-    label_a = plan.label_for("A")
-    label_b = plan.label_for("B")
-    if plan.preset == "gforth":
-        elapsed_title = f"Stable Performance: {label_b} vs {label_a} (baseline)"
-        speedup_title = f"Stable Performance: Speedup vs {label_a} Baseline"
-        speedup_xlabel = f"Speedup ({label_a} / {label_b}); >1 means {label_b} is faster"
-    elif plan.compare:
-        elapsed_title = "Stable Performance: Elapsed Time Comparison"
-        speedup_title = "Stable Performance: Speedup Ratio"
-        speedup_xlabel = f"Speedup ({label_b} / {label_a}); >1 means {label_a} is faster"
-    else:
-        elapsed_title = speedup_title = speedup_xlabel = ""
-
-    curve_colors = {"A": "#3498db", "B": "#e74c3c"} if plan.preset == "gforth" else {
-        "A": "#1f77b4",
-        "B": "#ff7f0e",
-    }
-
-    with PdfPages(str(pdf_path)) as pdf:
-        show_variance = has_iteration_variance(results)
-
-        if plan.compare:
-            names, a_values, b_values, speedups, a_stdevs, b_stdevs = build_paired_stable_data(
-                results, plan
-            )
-            if names:
-                x = range(len(names))
-                width = 0.35
-                fig, ax = plt.subplots(figsize=(10, max(6, len(names) * 0.4)))
-                ax.barh(
-                    [i - width / 2 for i in x],
-                    a_values,
-                    width,
-                    label=label_a,
-                    xerr=a_stdevs if show_variance else None,
-                    capsize=3 if show_variance else 0,
-                )
-                ax.barh(
-                    [i + width / 2 for i in x],
-                    b_values,
-                    width,
-                    label=label_b,
-                    xerr=b_stdevs if show_variance else None,
-                    capsize=3 if show_variance else 0,
-                )
-                ax.set_yticks(list(x))
-                ax.set_yticklabels(names)
-                ax.set_xlabel("Elapsed time (microseconds)")
-                title = elapsed_title
-                if show_variance:
-                    title += " (median +/- stdev)"
-                ax.set_title(title)
-                ax.legend()
-                ax.grid(axis="x", linestyle="--", alpha=0.5)
-                plt.tight_layout()
-                pdf.savefig(fig)
-                plt.close(fig)
-
-            if names:
-                fig, ax = plt.subplots(figsize=(10, max(6, len(names) * 0.4)))
-                colors = ["green" if s > 1 else "red" for s in speedups]
-                ax.barh(names, speedups, color=colors, alpha=0.7)
-                ax.axvline(1.0, color="black", linestyle="--", linewidth=1)
-                ax.set_xlabel(speedup_xlabel)
-                ax.set_title(speedup_title)
-                ax.grid(axis="x", linestyle="--", alpha=0.5)
-                plt.tight_layout()
-                pdf.savefig(fig)
-                plt.close(fig)
-
-        if show_variance:
-            from matplotlib.patches import Patch
-
-            samples_by_name = build_stable_elapsed_samples(results)
-            benchmarks = [
-                name
-                for name in sorted(samples_by_name)
-                if any(len(samples) > 1 for samples in samples_by_name[name].values())
-            ]
-            config_ids = [config_id for config_id, _, _ in plan.configs]
-            bar_colors = curve_colors
-
-            fig, ax = plt.subplots(figsize=(max(10, len(benchmarks) * 1.8), 6))
-            positions: List[float] = []
-            boxplot_data: List[List[int]] = []
-            colors: List[str] = []
-            x_ticks: List[float] = []
-            x_labels: List[str] = []
-            x_pos = 0.0
-
-            for benchmark in benchmarks:
-                group_start = x_pos
-                for config_id in config_ids:
-                    elapsed = samples_by_name.get(benchmark, {}).get(config_id, [])
-                    if len(elapsed) < 2:
-                        continue
-                    boxplot_data.append(elapsed)
-                    positions.append(x_pos)
-                    colors.append(bar_colors.get(config_id, "#95a5a6"))
-                    x_pos += 1.0
-                if x_pos > group_start:
-                    x_ticks.append((group_start + x_pos - 1.0) / 2.0)
-                    x_labels.append(benchmark.replace("shootout/", ""))
-                    x_pos += 0.5
-
-            if boxplot_data:
-                bp = ax.boxplot(
-                    boxplot_data,
-                    positions=positions,
-                    widths=0.6,
-                    patch_artist=True,
-                    showmeans=True,
-                )
-                for patch, color in zip(bp["boxes"], colors):
-                    patch.set_facecolor(color)
-                    patch.set_alpha(0.7)
-
-                ax.set_xticks(x_ticks)
-                ax.set_xticklabels(x_labels, rotation=45, ha="right")
-                ax.set_ylabel("Elapsed time (microseconds)")
-                ax.set_title("Run-to-run Variance Across Iterations")
-                ax.grid(axis="y", linestyle="--", alpha=0.5)
-
-                legend_elements = [
-                    Patch(
-                        facecolor=bar_colors.get(config_id, "#95a5a6"),
-                        alpha=0.7,
-                        label=plan.label_for(config_id),
-                    )
-                    for config_id in config_ids
-                ]
-                ax.legend(handles=legend_elements)
-                plt.tight_layout()
-                pdf.savefig(fig)
-                plt.close(fig)
-
-        # --- Page: Combined curve iteration time plots (all programs) ---
-        curve_data: Dict[str, Dict[str, List[int]]] = {}
-        for r in results:
-            if not r.name.startswith("curve/") or not r.curve_times:
-                continue
-            curve_data.setdefault(r.name, {})[r.config] = r.curve_times
-
-        if curve_data:
-            programs = sorted(curve_data.keys())
-            n_programs = len(programs)
-            cols = min(3, n_programs)
-            rows = (n_programs + cols - 1) // cols
-            fig, axes = plt.subplots(
-                rows, cols, figsize=(5 * cols, 4 * rows), squeeze=False
-            )
-            color_map = curve_colors
-
-            for idx, program in enumerate(programs):
-                ax = axes.flatten()[idx]
-                for config in sorted(curve_data[program]):
-                    times = curve_data[program][config]
-                    iters = list(range(len(times)))
-                    legend_label = plan.label_for(config)
-                    ax.plot(
-                        iters,
-                        times,
-                        marker="o",
-                        linestyle="-",
-                        linewidth=1,
-                        markersize=3,
-                        label=legend_label,
-                        color=color_map.get(config),
-                    )
-                short_name = program.replace("curve/", "")
-                ax.set_title(short_name)
-                ax.set_xlabel("Iteration")
-                ax.set_ylabel("Time (microseconds)")
-                ax.legend(fontsize=8)
-                ax.grid(True, linestyle="--", alpha=0.5)
-
-            for idx in range(n_programs, rows * cols):
-                axes.flatten()[idx].set_visible(False)
-
-            fig.suptitle("Per-iteration Timings (all programs)", fontsize=14)
-            plt.tight_layout()
-            pdf.savefig(fig)
-            plt.close(fig)
-
-        # --- Page: JIT metrics comparison ---
-        if jitlog_mode == "jit-summary" and plan.compare and not plan.skip_jit_analysis:
-            grouped = aggregate_benchmark_jitlogs(results)
-            if grouped:
-                append_jitlog_visualization_pages(
-                    pdf,
-                    grouped,
-                    records_from_benchmark_results(results),
-                    label_a,
-                    label_b,
-                    chart_title_prefix="Virtualization Analysis",
-                )
-
-
 def make_env_with_jitlog(
     base_env: Dict[str, str],
     jitlog_dir: Path,
@@ -1019,9 +778,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
     parser.add_argument(
         "--compare",
-        choices=sorted(COMPARE_PRESETS),
+        action="append",
+        metavar="CMD",
         default=None,
-        help="Compare two configurations using a preset (jit, virt, gforth)",
+        help=(
+            "Executable or shell command to run. Repeat twice to compare A vs B "
+            f"(e.g. --compare ./rpyforth-c-stkfrag --compare ./rpyforth-c). "
+            f"A single preset name also works ({', '.join(sorted(COMPARE_PRESETS))})."
+        ),
     )
     parser.add_argument(
         "--a-cmd",
@@ -1174,6 +938,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"\nAnalysis report written to {report_path}")
 
     if args.pdf:
+        from plot_shootout import generate_pdf_report
+
         pdf_path = args.pdf if args.pdf.is_absolute() else repo_root / args.pdf
         try:
             generate_pdf_report(pdf_path, results, plan, args.jitlog_mode)
