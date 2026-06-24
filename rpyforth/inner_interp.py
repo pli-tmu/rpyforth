@@ -86,13 +86,14 @@ class InnerInterpreter(InterpBase, object):
     # reference is immutable even though its elements are mutated in place; this
     # lets the JIT hoist the array-pointer load to the loop header instead of
     # reloading it on every spill/refill.
-    _immutable_fields_ = ["cell_size", "cell_size_bytes", "base", "spill"]
+    _immutable_fields_ = ["cell_size", "cell_size_bytes", "base", "spill",
+                          "lc_is", "lc_ls"]
 
     if USE_VIRTUALIZATION:
         _virtualizable_ = ["ds_ints", "ds_floats", "ds_locals",
                            "ds_ptr_ints", "ds_ptr_floats", "ds_ptr_locals",
                            "rs", "rs_ptr", "cs_threads",
-                           "cs_ips", "cs_ptr",
+                           "cs_ips", "cs_ptr", "li",
                            "cell_size", "cell_size_bytes", "base"]
     elif USE_STACK_FRAGMENT:
         _virtualizable_ = STACK_FRAGMENT_VIRTUALIZABLES
@@ -116,6 +117,13 @@ class InnerInterpreter(InterpBase, object):
 
         self.rs = [0] * STACK_SIZE  # return stack
         self.rs_ptr = 0
+
+        # dedicated loop-control stack
+        self.li = 0
+        self.ll = 0
+        self.lc_depth = 0
+        self.lc_is = [0] * STACK_SIZE
+        self.lc_ls = [0] * STACK_SIZE
 
         # Virtualized call stack for JIT optimization
         self.cs_threads = [None] * STACK_SIZE
@@ -175,30 +183,52 @@ class InnerInterpreter(InterpBase, object):
         return self.cs_ptr == 0
 
     def push_loop(self, limit, counter):
-        """Push loop parameters onto return stack (limit first, then counter on top)."""
-        self.push_rs(limit)
-        self.push_rs(counter)
+        """Push loop parameters onto the dedicated loop-control stack."""
+        d = self.lc_depth
+        assert d < len(self.lc_is)
+        if d > 0:
+            self.lc_is[d - 1] = self.li
+            self.lc_ls[d - 1] = self.ll
+        self.li = counter
+        self.ll = limit
+        self.lc_depth = d + 1
 
     def pop_loop(self):
-        """Pop loop parameters from return stack."""
-        counter = self.pop_rs()
-        limit = self.pop_rs()
+        """Pop loop parameters from the loop-control stack."""
+        d = self.lc_depth - 1
+        assert d >= 0
+        limit = self.ll
+        counter = self.li
+        if d > 0:
+            self.li = self.lc_is[d - 1]
+            self.ll = self.lc_ls[d - 1]
+        self.lc_depth = d
         return limit, counter
 
     @unroll_safe
     def peek_loop_counter(self, depth=0):
         """Get current loop counter without popping (raw int)."""
-        return self.peek_rs(promote(depth) * 2)
+        depth = promote(depth)
+        if depth == 0:
+            return self.li
+        return self.lc_is[self.lc_depth - 1 - depth]
 
     @unroll_safe
     def peek_loop_limit(self, depth=0):
         """Get current loop limit without popping (raw int)."""
-        return self.peek_rs(promote(depth) * 2 + 1)
+        depth = promote(depth)
+        if depth == 0:
+            return self.ll
+        return self.lc_ls[self.lc_depth - 1 - depth]
 
     @unroll_safe
     def set_loop_counter(self, depth, value):
         """Set loop counter in place (raw int)."""
-        self.poke_rs(promote(depth) * 2, value)
+        depth = promote(depth)
+        if depth == 0:
+            self.li = value
+        else:
+            self.lc_is[self.lc_depth - 1 - depth] = value
 
     def push_ds(self, w_x):
         assert isinstance(w_x, W_Object)

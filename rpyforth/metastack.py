@@ -71,6 +71,7 @@ STACK_FRAGMENT_VIRTUALIZABLES = [
     "frag_ptr", "spill_ptr",
     "rs", "rs_ptr",
     "cs_threads", "cs_ips", "cs_ptr",
+    "li",
     "cell_size", "cell_size_bytes", "base",
     "ds_floats", "ds_ptr_floats",
     "ds_locals", "ds_ptr_locals",

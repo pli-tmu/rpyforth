@@ -871,8 +871,7 @@ def prim_DO_RUNTIME(inner, cur, ip):
     start = inner.pop_ds_int()
     limit = inner.pop_ds_int()
     # Push to dedicated loop stack (raw integers, no boxing!)
-    inner.push_rs(limit)
-    inner.push_rs(start)
+    inner.push_loop(limit, start)
     return ip
 
 
@@ -1330,6 +1329,7 @@ def prim_ABORT_QUOTE_RUNTIME(inner, cur, ip):
         inner.ds_ptr_floats = 0
         inner.ds_ptr_locals = 0
         inner.rs_ptr = 0
+        inner.lc_depth = 0  # Also clear the loop-control stack
         inner.cs_ptr = 0  # Also clear call stack
         # Signal abort by returning EXIT_SENTINEL
         from rpyforth.inner_interp import EXIT_SENTINEL
