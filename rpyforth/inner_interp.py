@@ -87,13 +87,12 @@ class InnerInterpreter(InterpBase, object):
     # lets the JIT hoist the array-pointer load to the loop header instead of
     # reloading it on every spill/refill.
     _immutable_fields_ = ["cell_size", "cell_size_bytes", "base", "spill",
-                          "lc_is", "lc_ls"]
+                          "lc_is", "lc_ls", "rs", "ds_locals"]
 
     if USE_VIRTUALIZATION:
-        _virtualizable_ = ["ds_ints", "ds_floats", "ds_locals",
+        _virtualizable_ = ["ds_ints", "ds_floats",
                            "ds_ptr_ints", "ds_ptr_floats", "ds_ptr_locals",
-                           "rs", "rs_ptr", "cs_threads",
-                           "cs_ips", "cs_ptr", "li",
+                           "rs_ptr", "cs_threads", "cs_ips", "cs_ptr", "li",
                            "cell_size", "cell_size_bytes", "base"]
     elif USE_STACK_FRAGMENT:
         _virtualizable_ = STACK_FRAGMENT_VIRTUALIZABLES

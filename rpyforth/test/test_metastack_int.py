@@ -26,17 +26,15 @@ def test_init_fields_sets_virtualizable_host_slots():
 
 
 def test_stack_fragment_virtualizables_include_tops_and_frame():
-    # The scalar tops, the cache depth, the small frame array and the scalar
-    # metastack pointers are virtualized.
+    # Tops, cache depth, frame array and the changing stack pointers.
     for name in (
         "t0", "t1", "d", "frame[*]",
         "frag_ptr", "spill_ptr",
-        "rs", "rs_ptr", "cs_threads", "cs_ips", "cs_ptr",
+        "rs_ptr", "cs_threads", "cs_ips", "cs_ptr",
     ):
         assert name in STACK_FRAGMENT_VIRTUALIZABLES
-    # The arena (deep backing store) is plain heap: a large virtualizable [*]
-    # array is pathological for the trace optimizer.
-    for name in ("spill", "spill[*]"):
+    # The arena and the immutable array references stay out.
+    for name in ("spill", "spill[*]", "rs", "ds_locals"):
         assert name not in STACK_FRAGMENT_VIRTUALIZABLES
 
 
