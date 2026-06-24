@@ -55,3 +55,17 @@ _pypy_binary/bin/python:  ## Download a PyPy binary
 	rm pypy.tar.bz2
 	./_pypy_binary/bin/python -m ensurepip
 	./_pypy_binary/bin/python -mpip install "hypothesis<4.40" junit_xml coverage==5.5 "pdbpp==0.10.3"
+
+.PHONY: bench-shootout
+bench-shootout: build-jit-stkfrag
+	@python3 run_shootout.py \
+    	--compare ./rpyforth-c-stkfrag --compare gforth-fast --compare gforth \
+    	--exclude curve/ --iterations 5 \
+    	--chart compare.pdf
+
+.PHONY: bench-shootout-curve
+bench-shootout-curve: build-jit-stkfrag
+	@python3 run_shootout.py \
+    	--compare ./rpyforth-c-stkfrag --compare gforth-fast --compare gforth \
+    	--only curve/ --iterations 5 \
+    	--curve-chart warmup.pdf
