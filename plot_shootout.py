@@ -216,6 +216,92 @@ def generate_bar_chart(
     plt.close(fig)
 
 
+def steady_state(times: List[int], frac: float = 0.5) -> Optional[float]:
+    """Median of the converged tail (last `frac` of the curve)."""
+    if not times:
+        return None
+    tail = times[int(len(times) * (1.0 - frac)):] or times
+    return float(statistics.median(tail))
+
+
+def build_curve_data(
+    results: List[BenchmarkResult],
+) -> Dict[str, Dict[str, List[int]]]:
+    """Return per-iteration timings grouped by curve benchmark and config."""
+    curve_data: Dict[str, Dict[str, List[int]]] = {}
+    for r in results:
+        if r.name.startswith("curve/") and r.curve_times:
+            curve_data.setdefault(r.name, {})[r.config] = r.curve_times
+    return curve_data
+
+
+def draw_curve(ax, program, by_config, plan, colors, logy: bool = True) -> None:
+    """Plot warm-up curves for one benchmark with a steady-state line per config."""
+    for config in sorted(by_config):
+        times = by_config[config]
+        if not times:
+            continue
+        color = colors.get(config)
+        ss = steady_state(times)
+        warmup = times[0] / ss if ss else float("nan")
+        label = f"{plan.label_for(config)} (warm-up {warmup:.1f}x)"
+        ax.plot(range(len(times)), times, marker="o", markersize=3,
+                linewidth=1, color=color, label=label)
+        if ss:
+            ax.axhline(ss, color=color, linestyle=":", linewidth=1, alpha=0.6)
+    if logy:
+        ax.set_yscale("log")
+    ax.set_title(program.replace("curve/", ""))
+    ax.set_xlabel("Iteration")
+    ax.set_ylabel("Time / iteration (us%s)" % (", log" if logy else ""))
+    ax.legend(fontsize=8)
+    ax.grid(True, linestyle="--", alpha=0.4)
+
+
+def generate_curve_chart(
+    out_path: Path,
+    results: List[BenchmarkResult],
+    plan: RunPlan,
+    logy: bool = True,
+) -> None:
+    """Write a single-image (PNG/PDF) grid of warm-up curves, one per benchmark."""
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        from matplotlib import pyplot as plt
+    except ImportError as exc:
+        raise RuntimeError(
+            "Plotting requires matplotlib. Install it with: pip install matplotlib"
+        ) from exc
+
+    curve_data = build_curve_data(results)
+    if not curve_data:
+        raise RuntimeError(
+            "No warm-up-curve results to plot. Run the curve benchmarks first, "
+            "e.g. --only curve/ (they live in shootout/curve/)."
+        )
+
+    programs = sorted(curve_data)
+    colors = config_colors([cfg_id for cfg_id, _, _ in plan.configs])
+    cols = min(3, len(programs))
+    rows = (len(programs) + cols - 1) // cols
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig, axes = plt.subplots(rows, cols, figsize=(5 * cols, 3.6 * rows), squeeze=False)
+    flat = axes.flatten()
+    for idx, program in enumerate(programs):
+        draw_curve(flat[idx], program, curve_data[program], plan, colors, logy=logy)
+    for idx in range(len(programs), rows * cols):
+        flat[idx].set_visible(False)
+    fig.suptitle(
+        "Warm-up curves: time per iteration (dotted = steady state)", fontsize=13
+    )
+    fig.tight_layout(rect=(0, 0, 1, 0.97))
+    fig.savefig(str(out_path), dpi=120)
+    plt.close(fig)
+
+
 def generate_pdf_report(
     pdf_path: Path,
     results: List[BenchmarkResult],
@@ -390,11 +476,7 @@ def generate_pdf_report(
                 pdf.savefig(fig)
                 plt.close(fig)
 
-        curve_data: Dict[str, Dict[str, List[int]]] = {}
-        for r in results:
-            if not r.name.startswith("curve/") or not r.curve_times:
-                continue
-            curve_data.setdefault(r.name, {})[r.config] = r.curve_times
+        curve_data = build_curve_data(results)
 
         if curve_data:
             programs = sorted(curve_data.keys())
@@ -404,35 +486,15 @@ def generate_pdf_report(
             fig, axes = plt.subplots(
                 rows, cols, figsize=(5 * cols, 4 * rows), squeeze=False
             )
-            color_map = curve_colors
+            colors = config_colors([cfg_id for cfg_id, _, _ in plan.configs])
 
             for idx, program in enumerate(programs):
-                ax = axes.flatten()[idx]
-                for config in sorted(curve_data[program]):
-                    times = curve_data[program][config]
-                    iters = list(range(len(times)))
-                    legend_label = plan.label_for(config)
-                    ax.plot(
-                        iters,
-                        times,
-                        marker="o",
-                        linestyle="-",
-                        linewidth=1,
-                        markersize=3,
-                        label=legend_label,
-                        color=color_map.get(config),
-                    )
-                short_name = program.replace("curve/", "")
-                ax.set_title(short_name)
-                ax.set_xlabel("Iteration")
-                ax.set_ylabel("Time (microseconds)")
-                ax.legend(fontsize=8)
-                ax.grid(True, linestyle="--", alpha=0.5)
+                draw_curve(axes.flatten()[idx], program, curve_data[program], plan, colors)
 
             for idx in range(n_programs, rows * cols):
                 axes.flatten()[idx].set_visible(False)
 
-            fig.suptitle("Per-iteration Timings (all programs)", fontsize=14)
+            fig.suptitle("Warm-up curves: time per iteration (log scale)", fontsize=14)
             plt.tight_layout()
             pdf.savefig(fig)
             plt.close(fig)
@@ -532,6 +594,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         default="jit-summary",
         help="Jitlog category referenced in logs (default: jit-summary)",
     )
+    parser.add_argument(
+        "--curve",
+        action="store_true",
+        help="Emit a warm-up curve chart (time per iteration) instead of the "
+        "steady-state report; works with any image extension",
+    )
     args = parser.parse_args(argv)
     if args.iterations < 1:
         print("Error: --iterations must be at least 1", file=sys.stderr)
@@ -544,7 +612,9 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     try:
         results = load_results_from_logs(output_dir, plan, args.only, args.iterations)
-        if pdf_path.suffix.lower() in (".png", ".svg", ".jpg", ".jpeg"):
+        if args.curve:
+            generate_curve_chart(pdf_path, results, plan)
+        elif pdf_path.suffix.lower() in (".png", ".svg", ".jpg", ".jpeg"):
             generate_bar_chart(pdf_path, results, plan)
         else:
             generate_pdf_report(pdf_path, results, plan, args.jitlog_mode)

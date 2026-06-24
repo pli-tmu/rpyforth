@@ -923,10 +923,18 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="Generate a multi-page PDF graph report and save it to this file",
     )
     parser.add_argument(
-        "--png",
+        "--chart",
         type=Path,
         default=None,
-        help="Save a single-image bar chart (normalized + absolute elapsed) to this file",
+        help="Save a single-image bar chart (normalized + absolute elapsed); "
+        "the format is chosen from the file extension (.pdf, .png, .svg)",
+    )
+    parser.add_argument(
+        "--curve-chart",
+        type=Path,
+        default=None,
+        help="Save a single-image warm-up curve chart (time per iteration for the "
+        "curve/ benchmarks); format chosen from the file extension",
     )
     parser.add_argument(
         "--analyze-only",
@@ -1053,13 +1061,24 @@ def main(argv: Optional[List[str]] = None) -> int:
             print(f"Error: {exc}", file=sys.stderr)
             return 1
 
-    if args.png:
+    if args.chart:
         from plot_shootout import generate_bar_chart
 
-        png_path = args.png if args.png.is_absolute() else repo_root / args.png
+        chart_path = args.chart if args.chart.is_absolute() else repo_root / args.chart
         try:
-            generate_bar_chart(png_path, results, plan)
-            print(f"Bar chart written to {png_path}")
+            generate_bar_chart(chart_path, results, plan)
+            print(f"Bar chart written to {chart_path}")
+        except RuntimeError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
+
+    if args.curve_chart:
+        from plot_shootout import generate_curve_chart
+
+        curve_path = args.curve_chart if args.curve_chart.is_absolute() else repo_root / args.curve_chart
+        try:
+            generate_curve_chart(curve_path, results, plan)
+            print(f"Warm-up curve chart written to {curve_path}")
         except RuntimeError as exc:
             print(f"Error: {exc}", file=sys.stderr)
             return 1
