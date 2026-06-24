@@ -72,10 +72,16 @@ class RunPlan:
     gforth_baseline: bool
     skip_jit_analysis: bool
     skip_jitlog_for: frozenset[str]
+    reference_config: str = "A"  # baseline column for multi-way (>2) comparisons
 
     @property
     def compare(self) -> bool:
         return len(self.configs) > 1
+
+    @property
+    def multi(self) -> bool:
+        """True for an N-way comparison of three or more configurations."""
+        return len(self.configs) > 2
 
     def label_for(self, config_id: str) -> str:
         for cfg_id, _, label in self.configs:
@@ -259,8 +265,10 @@ def discover_log_files(
 ) -> List[Path]:
     """Find saved log files for analyze-only mode."""
     if compare:
-        numbered = sorted(output_dir.glob("*_A_i*.log")) + sorted(output_dir.glob("*_B_i*.log"))
-        unnumbered = sorted(output_dir.glob("*_A.log")) + sorted(output_dir.glob("*_B.log"))
+        # Config ids are single uppercase letters (A, B, C, ...), so a charclass
+        # glob covers two-way and N-way comparisons alike.
+        numbered = sorted(output_dir.glob("*_[A-Z]_i*.log"))
+        unnumbered = sorted(output_dir.glob("*_[A-Z].log"))
         if iterations > 1 or (numbered and not unnumbered):
             log_files = numbered
         else:
@@ -506,10 +514,10 @@ def build_run_plan(args: argparse.Namespace) -> RunPlan:
     """Resolve preset, commands, and reporting behavior from CLI args."""
     compare_values = args.compare or []
 
-    if len(compare_values) == 2 and all(value in COMPARE_PRESETS for value in compare_values):
+    if len(compare_values) >= 2 and all(value in COMPARE_PRESETS for value in compare_values):
         raise SystemExit(
-            "Use one compare preset at a time "
-            f"({', '.join(sorted(COMPARE_PRESETS))}), not two preset names"
+            "Pass one comparison preset on its own "
+            f"({', '.join(sorted(COMPARE_PRESETS))}), not several together"
         )
 
     def single_plan(cmd_text: str) -> RunPlan:
@@ -554,6 +562,28 @@ def build_run_plan(args: argparse.Namespace) -> RunPlan:
             skip_jitlog_for=skip_jitlog_for,
         )
 
+    def multi_plan(cmd_texts: List[str]) -> RunPlan:
+        """Compare three or more configurations; the first is the baseline."""
+        configs: List[Tuple[str, List[str], str]] = []
+        skip_jitlog: set[str] = set()
+        for index, text in enumerate(cmd_texts):
+            config_id = chr(ord("A") + index)
+            cmd = parse_cmd(text)
+            configs.append((config_id, cmd, short_label(cmd)))
+            if is_gforth_cmd(cmd):
+                skip_jitlog.add(config_id)
+        return RunPlan(
+            preset=None,
+            configs=tuple(configs),
+            speedup_a_over_b=False,
+            gforth_baseline=False,
+            # The JIT-summary comparison is intrinsically pairwise; skip it when
+            # more than two configs are present.
+            skip_jit_analysis=True,
+            skip_jitlog_for=frozenset(skip_jitlog),
+            reference_config="A",
+        )
+
     if len(compare_values) == 1 and compare_values[0] in COMPARE_PRESETS:
         preset = compare_values[0]
         default_a, default_b, speedup_a_over_b = COMPARE_PRESETS[preset]
@@ -574,9 +604,7 @@ def build_run_plan(args: argparse.Namespace) -> RunPlan:
         return single_plan(args.a_cmd or compare_values[0])
 
     if len(compare_values) > 2:
-        raise SystemExit(
-            "At most two --compare values are supported for A/B comparison"
-        )
+        return multi_plan(compare_values)
 
     if args.b_cmd:
         return paired_plan(args.a_cmd or "./rpyforth-c", args.b_cmd)
@@ -659,6 +687,64 @@ def format_comparison(results: List[BenchmarkResult], plan: RunPlan) -> str:
     return "\n".join(lines)
 
 
+def format_multi_comparison(results: List[BenchmarkResult], plan: RunPlan) -> str:
+    """Build a comparison table across three or more configurations.
+
+    Elapsed times are shown per configuration; the ratio column is each
+    configuration's time divided by the reference (first) configuration, so a
+    value below 1.0 means that engine is faster than the reference.
+    """
+    groups: Dict[str, Dict[str, BenchmarkResult]] = {}
+    for r in results:
+        groups.setdefault(r.name, {})[r.config] = r
+
+    config_ids = [cfg_id for cfg_id, _, _ in plan.configs]
+    ref = plan.reference_config
+
+    width = 24 + 18 * len(config_ids) + 12
+    lines: List[str] = []
+    lines.append("=" * width)
+    lines.append(f"Performance comparison (ratio vs {plan.label_for(ref)})")
+    lines.append("=" * width)
+    header = f"{'Benchmark':<24}"
+    for cfg_id in config_ids:
+        header += f" {plan.label_for(cfg_id) + ' (us)':>17}"
+    header += f" {'ratios':>12}"
+    lines.append(header)
+    lines.append("-" * width)
+
+    mismatches = 0
+    for name in sorted(groups):
+        group = groups[name]
+        row = f"{name:<24}"
+        ref_result = group.get(ref)
+        ref_elapsed = ref_result.elapsed_usec if ref_result and ref_result.elapsed_usec else 0
+        ratios: List[str] = []
+        values = set()
+        for cfg_id in config_ids:
+            r = group.get(cfg_id)
+            if r is None or r.status not in ("ok", "warning") or r.elapsed_usec is None:
+                row += f" {'-':>17}"
+                ratios.append("-")
+                continue
+            row += f" {r.elapsed_usec:>15,}us"
+            if cfg_id != ref:
+                ratios.append(f"{r.elapsed_usec / ref_elapsed:.2f}x" if ref_elapsed else "n/a")
+            if r.result_value is not None:
+                values.add(r.result_value)
+        if len(values) > 1:
+            mismatches += 1
+        row += f" {'/'.join(ratios):>12}"
+        lines.append(row)
+
+    lines.append("=" * width)
+    others = ", ".join(plan.label_for(c) for c in config_ids if c != ref)
+    lines.append(f"ratios = ({others}) / {plan.label_for(ref)}; <1.0 means faster than {plan.label_for(ref)}")
+    if mismatches:
+        lines.append(f"Warning: {mismatches} benchmark(s) produced differing result values!")
+    return "\n".join(lines)
+
+
 def format_virtualization_analysis(results: List[BenchmarkResult], plan: RunPlan) -> str:
     """Build a virtualization-focused report comparing JIT metrics from jit-summaries."""
     grouped = aggregate_benchmark_jitlogs(results)
@@ -681,7 +767,9 @@ def save_analysis_report(
     """Write a full text analysis report to disk."""
     report_path.parent.mkdir(parents=True, exist_ok=True)
     sections: List[str] = [format_summary(results), ""]
-    if plan.compare:
+    if plan.multi:
+        sections.append(format_multi_comparison(results, plan))
+    elif plan.compare:
         sections.append(format_comparison(results, plan))
     if jitlog_mode == "jit-summary" and not plan.skip_jit_analysis:
         sections.append(format_virtualization_analysis(results, plan))
@@ -777,6 +865,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="Only run benchmarks whose path contains this substring",
     )
     parser.add_argument(
+        "--exclude",
+        metavar="PATTERN",
+        default=None,
+        help="Skip benchmarks whose path contains this substring (e.g. curve/)",
+    )
+    parser.add_argument(
         "--compare",
         action="append",
         metavar="CMD",
@@ -829,6 +923,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="Generate a multi-page PDF graph report and save it to this file",
     )
     parser.add_argument(
+        "--png",
+        type=Path,
+        default=None,
+        help="Save a single-image bar chart (normalized + absolute elapsed) to this file",
+    )
+    parser.add_argument(
         "--analyze-only",
         action="store_true",
         help="Skip running benchmarks; analyze existing logs in --output and jitlogs in --jitlog-dir",
@@ -866,6 +966,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         benchmarks = discover_benchmarks(repo_root)
         if args.only:
             benchmarks = [b for b in benchmarks if args.only in str(b.relative_to(repo_root))]
+        if args.exclude:
+            benchmarks = [b for b in benchmarks if args.exclude not in str(b.relative_to(repo_root))]
 
         if not benchmarks:
             print("No benchmarks found.", file=sys.stderr)
@@ -921,7 +1023,10 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     print(format_summary(results))
 
-    if plan.compare:
+    if plan.multi:
+        print()
+        print(format_multi_comparison(results, plan))
+    elif plan.compare:
         print()
         print(format_comparison(results, plan))
 
@@ -944,6 +1049,17 @@ def main(argv: Optional[List[str]] = None) -> int:
         try:
             generate_pdf_report(pdf_path, results, plan, args.jitlog_mode)
             print(f"PDF graph report written to {pdf_path}")
+        except RuntimeError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
+
+    if args.png:
+        from plot_shootout import generate_bar_chart
+
+        png_path = args.png if args.png.is_absolute() else repo_root / args.png
+        try:
+            generate_bar_chart(png_path, results, plan)
+            print(f"Bar chart written to {png_path}")
         except RuntimeError as exc:
             print(f"Error: {exc}", file=sys.stderr)
             return 1
