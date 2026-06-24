@@ -23,6 +23,8 @@ Use --iterations N to repeat each run and report median elapsed times.
 import argparse
 import json
 import os
+import platform
+import random
 import re
 import shlex
 import shutil
@@ -104,11 +106,65 @@ class BenchmarkResult:
     result_value: Optional[str] = None
     elapsed_usec: Optional[int] = None
     curve_times: List[int] = field(default_factory=list)
+    curve_runs: List[List[int]] = field(default_factory=list)
     error_message: str = ""
     jitlog_path: Optional[Path] = None
     iteration: int = 1
     run_count: int = 1
     elapsed_samples: List[int] = field(default_factory=list)
+
+
+# Set from --steady-state: curve/ metric becomes the converged-tail median.
+STEADY_STATE = False
+
+
+def steady_state_tail(times: List[int], frac: float = 0.5) -> Optional[int]:
+    """Median of the converged tail (last `frac`) of a per-iteration curve."""
+    if not times:
+        return None
+    tail = times[int(len(times) * (1.0 - frac)):] or times
+    return int(statistics.median(tail))
+
+
+def median_ci(samples: List[int], confidence: float = 0.90,
+              resamples: int = 2000) -> Tuple[Optional[float], float]:
+    """Median and the relative half-width (%) of a bootstrap CI of the median."""
+    if not samples:
+        return (None, 0.0)
+    med = statistics.median(samples)
+    if len(samples) == 1 or med == 0:
+        return (med, 0.0)
+    rng = random.Random(20240624)
+    n = len(samples)
+    boot = sorted(
+        statistics.median(samples[rng.randrange(n)] for _ in range(n))
+        for _ in range(resamples)
+    )
+    lo = boot[int((1.0 - confidence) / 2 * resamples)]
+    hi = boot[min(resamples - 1, int((1.0 + confidence) / 2 * resamples))]
+    return (med, 100.0 * (hi - lo) / 2.0 / med)
+
+
+def capture_environment(pin: Optional[int]) -> str:
+    """One-line description of the measurement environment, for reproducibility."""
+    cpu = platform.processor() or platform.machine()
+    try:
+        for line in Path("/proc/cpuinfo").read_text().splitlines():
+            if line.startswith("model name"):
+                cpu = line.split(":", 1)[1].strip()
+                break
+    except OSError:
+        pass
+    try:
+        gov = Path("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor").read_text().strip()
+    except OSError:
+        gov = "?"
+    try:
+        load1 = "%.2f" % os.getloadavg()[0]
+    except (OSError, AttributeError):
+        load1 = "?"
+    pin_s = "core %d" % pin if pin is not None else "unpinned"
+    return f"env: {cpu} | governor {gov} | load1 {load1} | {pin_s}"
 
 
 def discover_benchmarks(root: Path) -> List[Path]:
@@ -126,6 +182,7 @@ def run_benchmark(
     timeout: int,
     config: str,
     env: Optional[Dict[str, str]] = None,
+    wrapper: Optional[List[str]] = None,
 ) -> BenchmarkResult:
     """Execute one benchmark and capture its output."""
     rel_path = benchmark.relative_to(benchmark.parents[1])
@@ -136,7 +193,7 @@ def run_benchmark(
         config=config,
     )
 
-    cmd = list(cmd_prefix) + [str(benchmark)] + args
+    cmd = list(wrapper or []) + list(cmd_prefix) + [str(benchmark)] + args
     start = time.perf_counter()
     try:
         proc = subprocess.run(
@@ -225,7 +282,7 @@ def parse_curve_output(result: BenchmarkResult) -> None:
                 continue
     result.curve_times = times
     if times:
-        result.elapsed_usec = sum(times)
+        result.elapsed_usec = steady_state_tail(times) if STEADY_STATE else sum(times)
 
 
 def analyze_result(result: BenchmarkResult) -> None:
@@ -303,6 +360,8 @@ def aggregate_iterations(results: List[BenchmarkResult]) -> List[BenchmarkResult
             run = runs[0]
             if run.elapsed_usec is not None:
                 run.elapsed_samples = [run.elapsed_usec]
+            if run.curve_times and not run.curve_runs:
+                run.curve_runs = [run.curve_times]
             aggregated.append(run)
             continue
 
@@ -324,6 +383,7 @@ def aggregate_iterations(results: List[BenchmarkResult]) -> List[BenchmarkResult
             result_value=last_ok.result_value,
             elapsed_usec=int(statistics.median(elapsed_samples)) if elapsed_samples else None,
             curve_times=last_ok.curve_times,
+            curve_runs=[r.curve_times for r in ok_runs if r.curve_times],
             error_message=last_ok.error_message,
             jitlog_path=last_ok.jitlog_path,
             iteration=0,
@@ -701,45 +761,58 @@ def format_multi_comparison(results: List[BenchmarkResult], plan: RunPlan) -> st
     config_ids = [cfg_id for cfg_id, _, _ in plan.configs]
     ref = plan.reference_config
 
-    width = 24 + 18 * len(config_ids) + 12
+    def cell(r: Optional[BenchmarkResult]) -> Tuple[str, float, Optional[int]]:
+        """Return (display, relative CI half-width %, median) for one result."""
+        if r is None or r.status not in ("ok", "warning") or r.elapsed_usec is None:
+            return ("-", 0.0, None)
+        _, ci = median_ci(r.elapsed_samples or [r.elapsed_usec])
+        disp = f"{r.elapsed_usec:,}" + (f" ±{ci:.0f}%" if ci > 0 else "")
+        return (disp, ci, r.elapsed_usec)
+
+    colw = 22
+    width = 24 + (colw + 1) * len(config_ids) + 14
     lines: List[str] = []
     lines.append("=" * width)
-    lines.append(f"Performance comparison (ratio vs {plan.label_for(ref)})")
+    lines.append(f"Performance comparison (median us, ratio vs {plan.label_for(ref)})")
     lines.append("=" * width)
     header = f"{'Benchmark':<24}"
     for cfg_id in config_ids:
-        header += f" {plan.label_for(cfg_id) + ' (us)':>17}"
-    header += f" {'ratios':>12}"
+        header += f" {plan.label_for(cfg_id):>{colw}}"
+    header += f" {'ratios':>14}"
     lines.append(header)
     lines.append("-" * width)
 
     mismatches = 0
+    noisy = False
     for name in sorted(groups):
         group = groups[name]
         row = f"{name:<24}"
-        ref_result = group.get(ref)
-        ref_elapsed = ref_result.elapsed_usec if ref_result and ref_result.elapsed_usec else 0
+        ref_disp, ref_ci, ref_elapsed = cell(group.get(ref))
         ratios: List[str] = []
         values = set()
         for cfg_id in config_ids:
             r = group.get(cfg_id)
-            if r is None or r.status not in ("ok", "warning") or r.elapsed_usec is None:
-                row += f" {'-':>17}"
-                ratios.append("-")
-                continue
-            row += f" {r.elapsed_usec:>15,}us"
-            if cfg_id != ref:
-                ratios.append(f"{r.elapsed_usec / ref_elapsed:.2f}x" if ref_elapsed else "n/a")
-            if r.result_value is not None:
+            disp, ci, elapsed = cell(r)
+            row += f" {disp:>{colw}}"
+            if cfg_id != ref and elapsed and ref_elapsed:
+                ratio = elapsed / ref_elapsed
+                # Mark ratios that fall within the combined run-to-run noise.
+                within = abs(ratio - 1.0) <= (ci + ref_ci) / 100.0
+                noisy = noisy or within
+                ratios.append(f"{ratio:.2f}x{'~' if within else ''}")
+            if r is not None and r.result_value is not None:
                 values.add(r.result_value)
         if len(values) > 1:
             mismatches += 1
-        row += f" {'/'.join(ratios):>12}"
+        row += f" {'/'.join(ratios):>14}"
         lines.append(row)
 
     lines.append("=" * width)
     others = ", ".join(plan.label_for(c) for c in config_ids if c != ref)
     lines.append(f"ratios = ({others}) / {plan.label_for(ref)}; <1.0 means faster than {plan.label_for(ref)}")
+    lines.append("± = 90% bootstrap CI of the median over the timed runs")
+    if noisy:
+        lines.append("~ = difference within combined run-to-run noise (not significant)")
     if mismatches:
         lines.append(f"Warning: {mismatches} benchmark(s) produced differing result values!")
     return "\n".join(lines)
@@ -941,10 +1014,35 @@ def main(argv: Optional[List[str]] = None) -> int:
         action="store_true",
         help="Skip running benchmarks; analyze existing logs in --output and jitlogs in --jitlog-dir",
     )
+    parser.add_argument(
+        "--pin",
+        type=int,
+        default=None,
+        metavar="CORE",
+        help="Pin every benchmark to this CPU core via taskset, to reduce scheduler noise",
+    )
+    parser.add_argument(
+        "--steady-state",
+        action="store_true",
+        help="For curve/ benchmarks, report the converged-tail median (warm-up excluded) "
+        "instead of the total time",
+    )
     args = parser.parse_args(argv)
     if args.iterations < 1:
         print("Error: --iterations must be at least 1", file=sys.stderr)
         return 1
+
+    global STEADY_STATE
+    STEADY_STATE = args.steady_state
+
+    wrapper: List[str] = []
+    if args.pin is not None:
+        if shutil.which("taskset") is None:
+            print("Error: --pin requires taskset (util-linux)", file=sys.stderr)
+            return 1
+        wrapper = ["taskset", "-c", str(args.pin)]
+
+    env_line = capture_environment(args.pin)
 
     repo_root = Path(__file__).resolve().parent
     plan = build_run_plan(args)
@@ -1006,7 +1104,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                             )
 
                         result = run_benchmark(
-                            cmd_prefix, benchmark, bench_args, args.timeout, config_id, env=env
+                            cmd_prefix, benchmark, bench_args, args.timeout, config_id,
+                            env=env, wrapper=wrapper,
                         )
                         result.iteration = iteration
                         analyze_result(result)
@@ -1029,6 +1128,9 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     results = aggregate_iterations(results)
 
+    print(env_line)
+    if STEADY_STATE:
+        print("metric: curve/ steady-state = converged-tail median (warm-up excluded)")
     print(format_summary(results))
 
     if plan.multi:

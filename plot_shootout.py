@@ -113,12 +113,12 @@ def config_colors(config_ids: List[str]) -> Dict[str, str]:
 def build_multi_stable_data(
     results: List[BenchmarkResult],
     plan: RunPlan,
-) -> Tuple[List[str], Dict[str, List[Optional[float]]], List[str]]:
-    """Return per-config median elapsed times for every stable benchmark.
+) -> Tuple[List[str], Dict[str, List[Optional[float]]],
+           Dict[str, List[float]], List[str]]:
+    """Return per-config median elapsed times and CI half-widths (us) per stable
+    benchmark (only benchmarks with a reference sample are kept)."""
+    from run_shootout import median_ci
 
-    Only benchmarks that have a sample for the reference config are kept, so the
-    normalized chart always has a denominator.
-    """
     samples_by_name = build_stable_elapsed_samples(results)
     config_ids = [cfg_id for cfg_id, _, _ in plan.configs]
     names = sorted(
@@ -127,12 +127,19 @@ def build_multi_stable_data(
         if plan.reference_config in samples_by_name[name]
     )
     data: Dict[str, List[Optional[float]]] = {cid: [] for cid in config_ids}
+    errs: Dict[str, List[float]] = {cid: [] for cid in config_ids}
     for name in names:
         by_config = samples_by_name[name]
         for cid in config_ids:
             samples = by_config.get(cid)
-            data[cid].append(float(statistics.median(samples)) if samples else None)
-    return names, data, config_ids
+            if samples:
+                med, ci_pct = median_ci(samples)
+                data[cid].append(float(med))
+                errs[cid].append(float(med) * ci_pct / 100.0)
+            else:
+                data[cid].append(None)
+                errs[cid].append(0.0)
+    return names, data, errs, config_ids
 
 
 def _short(name: str) -> str:
@@ -159,7 +166,7 @@ def draw_grouped_elapsed(ax, names, data, plan, colors, logx: bool = False) -> N
     ax.grid(axis="x", linestyle="--", alpha=0.5)
 
 
-def draw_normalized(ax, names, data, plan, colors) -> None:
+def draw_normalized(ax, names, data, plan, colors, errs=None) -> None:
     """Horizontal grouped bars normalized to the reference config (=1.0)."""
     ref = plan.reference_config
     ref_vals = data.get(ref, [None] * len(names))
@@ -173,7 +180,14 @@ def draw_normalized(ax, names, data, plan, colors) -> None:
             (v / r) if (v is not None and r) else 0
             for v, r in zip(data[cid], ref_vals)
         ]
-        ax.barh(offsets, norm, width, label=plan.label_for(cid), color=colors[cid])
+        xerr = None
+        if errs:
+            xerr = [
+                (errs[cid][i] / ref_vals[i]) if (ref_vals[i] and data[cid][i] is not None) else 0
+                for i in y
+            ]
+        ax.barh(offsets, norm, width, label=plan.label_for(cid), color=colors[cid],
+                xerr=xerr, error_kw={"elinewidth": 0.8, "capsize": 2})
     ax.axvline(1.0, color="black", linestyle="--", linewidth=1)
     ax.set_yticks(list(y))
     ax.set_yticklabels([_short(n) for n in names])
@@ -199,7 +213,7 @@ def generate_bar_chart(
             "Plotting requires matplotlib. Install it with: pip install matplotlib"
         ) from exc
 
-    names, data, config_ids = build_multi_stable_data(results, plan)
+    names, data, errs, config_ids = build_multi_stable_data(results, plan)
     if not names:
         raise RuntimeError("No stable benchmark results to plot")
 
@@ -207,7 +221,7 @@ def generate_bar_chart(
     colors = config_colors(config_ids)
     height = max(4.0, len(names) * 0.6)
     fig, (ax_norm, ax_abs) = plt.subplots(1, 2, figsize=(15, height))
-    draw_normalized(ax_norm, names, data, plan, colors)
+    draw_normalized(ax_norm, names, data, plan, colors, errs=errs)
     draw_grouped_elapsed(ax_abs, names, data, plan, colors, logx=True)
     labels = ", ".join(plan.label_for(c) for c in config_ids)
     fig.suptitle(f"Shootout benchmarks: {labels}", fontsize=13)
@@ -224,29 +238,40 @@ def steady_state(times: List[int], frac: float = 0.5) -> Optional[float]:
     return float(statistics.median(tail))
 
 
-def build_curve_data(
+def build_curve_runs(
     results: List[BenchmarkResult],
-) -> Dict[str, Dict[str, List[int]]]:
-    """Return per-iteration timings grouped by curve benchmark and config."""
-    curve_data: Dict[str, Dict[str, List[int]]] = {}
+) -> Dict[str, Dict[str, List[List[int]]]]:
+    """Return per-iteration curves (one list per timed run) grouped by curve
+    benchmark and config."""
+    curve_runs: Dict[str, Dict[str, List[List[int]]]] = {}
     for r in results:
-        if r.name.startswith("curve/") and r.curve_times:
-            curve_data.setdefault(r.name, {})[r.config] = r.curve_times
-    return curve_data
+        if not r.name.startswith("curve/"):
+            continue
+        runs = [c for c in (r.curve_runs or ([r.curve_times] if r.curve_times else [])) if c]
+        if runs:
+            curve_runs.setdefault(r.name, {})[r.config] = runs
+    return curve_runs
 
 
-def draw_curve(ax, program, by_config, plan, colors, logy: bool = True) -> None:
-    """Plot warm-up curves for one benchmark with a steady-state line per config."""
-    for config in sorted(by_config):
-        times = by_config[config]
-        if not times:
+def draw_curve(ax, program, runs_by_config, plan, colors, logy: bool = True) -> None:
+    """Plot warm-up curves for one benchmark: per-config median over runs with a
+    min-max variance band and a steady-state line."""
+    for config in sorted(runs_by_config):
+        runs = [c for c in runs_by_config[config] if c]
+        if not runs:
             continue
         color = colors.get(config)
-        ss = steady_state(times)
-        warmup = times[0] / ss if ss else float("nan")
-        label = f"{plan.label_for(config)} (warm-up {warmup:.1f}x)"
-        ax.plot(range(len(times)), times, marker="o", markersize=3,
-                linewidth=1, color=color, label=label)
+        m = min(len(c) for c in runs)
+        cols = [[c[i] for c in runs] for i in range(m)]
+        med = [statistics.median(col) for col in cols]
+        iters = list(range(m))
+        ax.plot(iters, med, marker="o", markersize=3, linewidth=1.2,
+                color=color, label=plan.label_for(config))
+        if len(runs) > 1:
+            lo = [min(col) for col in cols]
+            hi = [max(col) for col in cols]
+            ax.fill_between(iters, lo, hi, color=color, alpha=0.18, linewidth=0)
+        ss = steady_state(med)
         if ss:
             ax.axhline(ss, color=color, linestyle=":", linewidth=1, alpha=0.6)
     if logy:
@@ -275,14 +300,14 @@ def generate_curve_chart(
             "Plotting requires matplotlib. Install it with: pip install matplotlib"
         ) from exc
 
-    curve_data = build_curve_data(results)
-    if not curve_data:
+    curve_runs = build_curve_runs(results)
+    if not curve_runs:
         raise RuntimeError(
             "No warm-up-curve results to plot. Run the curve benchmarks first, "
             "e.g. --only curve/ (they live in shootout/curve/)."
         )
 
-    programs = sorted(curve_data)
+    programs = sorted(curve_runs)
     colors = config_colors([cfg_id for cfg_id, _, _ in plan.configs])
     cols = min(3, len(programs))
     rows = (len(programs) + cols - 1) // cols
@@ -291,7 +316,7 @@ def generate_curve_chart(
     fig, axes = plt.subplots(rows, cols, figsize=(5 * cols, 3.6 * rows), squeeze=False)
     flat = axes.flatten()
     for idx, program in enumerate(programs):
-        draw_curve(flat[idx], program, curve_data[program], plan, colors, logy=logy)
+        draw_curve(flat[idx], program, curve_runs[program], plan, colors, logy=logy)
     for idx in range(len(programs), rows * cols):
         flat[idx].set_visible(False)
     fig.suptitle(
@@ -347,11 +372,11 @@ def generate_pdf_report(
         show_variance = has_iteration_variance(results)
 
         if plan.multi:
-            names, data, config_ids = build_multi_stable_data(results, plan)
+            names, data, errs, config_ids = build_multi_stable_data(results, plan)
             if names:
                 colors = config_colors(config_ids)
                 fig, ax = plt.subplots(figsize=(10, max(6, len(names) * 0.5)))
-                draw_normalized(ax, names, data, plan, colors)
+                draw_normalized(ax, names, data, plan, colors, errs=errs)
                 plt.tight_layout()
                 pdf.savefig(fig)
                 plt.close(fig)
@@ -476,10 +501,10 @@ def generate_pdf_report(
                 pdf.savefig(fig)
                 plt.close(fig)
 
-        curve_data = build_curve_data(results)
+        curve_runs = build_curve_runs(results)
 
-        if curve_data:
-            programs = sorted(curve_data.keys())
+        if curve_runs:
+            programs = sorted(curve_runs.keys())
             n_programs = len(programs)
             cols = min(3, n_programs)
             rows = (n_programs + cols - 1) // cols
@@ -489,7 +514,7 @@ def generate_pdf_report(
             colors = config_colors([cfg_id for cfg_id, _, _ in plan.configs])
 
             for idx, program in enumerate(programs):
-                draw_curve(axes.flatten()[idx], program, curve_data[program], plan, colors)
+                draw_curve(axes.flatten()[idx], program, curve_runs[program], plan, colors)
 
             for idx in range(n_programs, rows * cols):
                 axes.flatten()[idx].set_visible(False)
