@@ -1,7 +1,7 @@
 \ Fibonacci benchmark for JIT analysis
 
 30 constant NUM
-30 constant ITERATIONS
+50 constant ITERATIONS
 
 : get-time ( -- d ) utime ;
 : diff-time ( d-start d-end -- d-diff ) 2swap d- ;

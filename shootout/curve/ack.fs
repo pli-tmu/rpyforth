@@ -1,7 +1,7 @@
 \ Ackermann function benchmark for JIT analysis
 
 7 constant NUM
-30 constant ITERATIONS
+50 constant ITERATIONS
 
 : ack ( n m -- res )
     recursive
