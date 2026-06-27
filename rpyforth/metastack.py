@@ -39,7 +39,7 @@ STACK_FRAGMENT_VIRTUALIZABLES = [
     "t0", "t1", "d", "frame[*]",
     "frag_ptr", "spill_ptr",
     "rs_ptr",
-    "cs_threads", "cs_ips", "cs_ptr",
+    "cs_tids", "cs_ips", "cs_ptr",
     "li",
     "cell_size", "cell_size_bytes", "base",
     "ds_floats", "ds_ptr_floats",
