@@ -174,6 +174,8 @@ class InnerInterpreter(InterpBase, object):
         self.cs_ptr = ptr
         thread = self.cs_threads[ptr]
         ip = self.cs_ips[ptr]
+        # Keep this null write: it lets the JIT prove the cs_threads tail is null
+        # and elide the reads; dropping it pessimizes recursive traces.
         self.cs_threads[ptr] = None
         return thread, ip
 
