@@ -4,6 +4,7 @@ import sys
 from rpyforth.inner_interp import InnerInterpreter, Bye
 from rpyforth.outer_interp import OuterInterpreter
 from rpyforth.metastack import DataStackOverflow
+from rpyforth.prelude import load_prelude
 
 from rpython.rlib import jit
 from rpython.rlib.streamio import open_file_as_stream
@@ -26,6 +27,7 @@ def entry_point(argv):
     jit.set_user_param(None, "trace_limit=200000")
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
+    load_prelude(outer)
     path = argv[1]
     args = []
     if len(argv) > 2:

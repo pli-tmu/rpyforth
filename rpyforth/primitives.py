@@ -20,7 +20,15 @@ from rpyforth.objects import (
     SMALL_INT_MAX,
 )
 from rpyforth.inner_interp import jitdriver, HEAP_SIZE_BYTES, USE_STACK_FRAGMENT
+from rpyforth.metastack_int import snapshot_cache, restore_cache
 from rpyforth.util import digit_to_char
+
+
+class ForthException(Exception):
+    """Raised by THROW with a non-zero code; caught by the nearest CATCH."""
+
+    def __init__(self, code):
+        self.code = code
 
 
 # Internal helpers -----------------------------------------------------------
@@ -875,6 +883,21 @@ def prim_DO_RUNTIME(inner, cur, ip):
     return ip
 
 
+# (?DO) ( limit start -- )
+def prim_QDO_RUNTIME(inner, cur, ip):
+    """Runtime for ?DO: like (DO), but skip the loop body when limit == start
+    (branching to the patched loop end, with no loop parameters pushed)."""
+    start = inner.pop_ds_int()
+    limit = inner.pop_ds_int()
+    if limit == start:
+        target = cur.lits[ip - 1]
+        assert isinstance(target, W_IntObject)
+        ip = target.intval
+    else:
+        inner.push_loop(limit, start)
+    return ip
+
+
 # (LOOP) ( -- ) ( R: limit counter -- limit counter+1 | )
 def prim_LOOP_RUNTIME(inner, cur, ip):
     # Use dedicated integer loop stack - no object allocation!
@@ -1514,6 +1537,58 @@ def prim_EXECUTE(inner, cur, ip):
     return ip
 
 
+# (DEFER) ( id -- ) -- execute the word bound to deferred slot id.
+def prim_DEFER_EXEC(inner, cur, ip):
+    idx = inner.pop_ds_int()
+    word = inner.deferred_words[idx]
+    if word is None:
+        print "uninitialized DEFER"
+        return ip
+    inner.execute_word_now(word)
+    return ip
+
+
+# (IS!) ( xt id -- ) -- bind xt to deferred slot id (compiled by IS).
+def prim_IS_STORE(inner, cur, ip):
+    idx = inner.pop_ds_int()
+    xt = inner.pop_ds()
+    assert isinstance(xt, W_WordObject)
+    inner.deferred_words[idx] = xt.word
+    return ip
+
+
+# COMPARE ( c-addr1 u1 c-addr2 u2 -- n ) -- lexicographic string comparison.
+def prim_COMPARE(inner, cur, ip):
+    inner.pop_ds_int()                 # u2
+    a2 = inner.pop_ds_int()
+    inner.pop_ds_int()                 # u1
+    a1 = inner.pop_ds_int()
+    s1 = inner.buf[a1]
+    s2 = inner.buf[a2]
+    assert isinstance(s1, W_StringObject)
+    assert isinstance(s2, W_StringObject)
+    if s1.strval < s2.strval:
+        inner.push_ds_int(-1)
+    elif s1.strval > s2.strval:
+        inner.push_ds_int(1)
+    else:
+        inner.push_ds_int(0)
+    return ip
+
+
+# DEFER! ( xt xt-deferred -- ) -- bind xt as the action of a deferred word. The
+# slot id lives in the deferred word's body (LIT id (DEFER) EXIT).
+def prim_DEFER_STORE(inner, cur, ip):
+    xt_def = inner.pop_ds()
+    xt = inner.pop_ds()
+    assert isinstance(xt_def, W_WordObject)
+    assert isinstance(xt, W_WordObject)
+    slot_w = xt_def.word.thread.lits[0]
+    assert isinstance(slot_w, W_IntObject)
+    inner.deferred_words[slot_w.intval] = xt.word
+    return ip
+
+
 # >BODY ( xt -- a-addr )
 def prim_TOBODY(inner, cur, ip):
     """GForth core 2012: return the parameter field address corresponding to xt."""
@@ -1882,12 +1957,44 @@ def prim_FREE(inner, cur, ip):
 
 # THROW ( k*x n -- k*x | i*x n )
 def prim_THROW(inner, cur, ip):
-    """Throw exception. If n is 0, do nothing. Otherwise, abort with message."""
+    """Throw an exception with code n; n=0 is a no-op. Unwinds to the nearest CATCH."""
     n = inner.pop_ds_int()
     if n != 0:
-        print "THROW: exception", n
-        import os
-        os._exit(1)
+        raise ForthException(n)
+    return ip
+
+
+# CATCH ( i*x xt -- j*x 0 | i*x n ) -- execute xt, returning 0 normally or the
+# THROW code n with the stack depth restored to just before xt ran.
+def prim_CATCH(inner, cur, ip):
+    xt = inner.pop_ds()
+    assert isinstance(xt, W_WordObject)
+    if USE_STACK_FRAGMENT:
+        snap = snapshot_cache(inner)
+    else:
+        snap = None
+    s_dsi = inner.ds_ptr_ints
+    s_dsf = inner.ds_ptr_floats
+    s_dsl = inner.ds_ptr_locals
+    s_rs = inner.rs_ptr
+    s_li = inner.li
+    s_lc = inner.lc_depth
+    s_cs = inner.cs_ptr
+    try:
+        inner.execute_word_now(xt.word)
+    except ForthException as e:
+        if USE_STACK_FRAGMENT:
+            restore_cache(inner, snap)
+        inner.ds_ptr_ints = s_dsi
+        inner.ds_ptr_floats = s_dsf
+        inner.ds_ptr_locals = s_dsl
+        inner.rs_ptr = s_rs
+        inner.li = s_li
+        inner.lc_depth = s_lc
+        inner.cs_ptr = s_cs
+        inner.push_ds_int(e.code)
+        return ip
+    inner.push_ds_int(0)
     return ip
 
 
@@ -2480,6 +2587,7 @@ def install_primitives(outer):
     outer.define_prim("0BRANCH", prim_0BRANCH)
     outer.define_prim("BRANCH", prim_BRANCH)
     outer.define_prim("(DO)", prim_DO_RUNTIME)
+    outer.define_prim("(?DO)", prim_QDO_RUNTIME)
     outer.define_prim("(LOOP)", prim_LOOP_RUNTIME)
     outer.define_prim("(+LOOP)", prim_PLUSLOOP_RUNTIME)
     outer.define_prim("UNLOOP", prim_UNLOOP)
@@ -2569,6 +2677,10 @@ def install_primitives(outer):
 
     # dictionary
     outer.define_prim("EXECUTE", prim_EXECUTE)
+    outer.define_prim("(DEFER)", prim_DEFER_EXEC)
+    outer.define_prim("(IS!)", prim_IS_STORE)
+    outer.define_prim("DEFER!", prim_DEFER_STORE)
+    outer.define_prim("COMPARE", prim_COMPARE)
     outer.define_prim(">BODY", prim_TOBODY)
 
     # data space
@@ -2589,6 +2701,7 @@ def install_primitives(outer):
 
     # exception handling
     outer.define_prim("THROW", prim_THROW)
+    outer.define_prim("CATCH", prim_CATCH)
 
     # system
     outer.define_prim("BYE", prim_BYE)

@@ -145,6 +145,9 @@ class InnerInterpreter(InterpBase, object):
         self._pno_buf = []
         self.argv = []
 
+        # Words bound to DEFER slots; a deferred word executes deferred_words[id].
+        self.deferred_words = []
+
         if USE_STACK_FRAGMENT:
             self.init_fields()
         else:
