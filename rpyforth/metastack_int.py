@@ -46,6 +46,52 @@ def init_fields(host):
     host.spill_ptr = 0
 
 
+class DSCacheSnapshot(object):
+    """Immutable capture of the active-fragment cache, for saving and restoring
+    the data stack. Holds the scalar tops, the cached depth, a private copy of the
+    frame array, and the cache/arena pointers. The arena buffer is not copied:
+    restore rolls the spill pointer back (discarding cells parked above it) and
+    relies on the cells below it being undisturbed."""
+
+    _immutable_fields_ = ["t0", "t1", "d", "frame[*]", "frag_ptr", "spill_ptr"]
+
+    def __init__(self, t0, t1, d, frame, frag_ptr, spill_ptr):
+        self.t0 = t0
+        self.t1 = t1
+        self.d = d
+        self.frame = frame
+        self.frag_ptr = frag_ptr
+        self.spill_ptr = spill_ptr
+
+
+def snapshot_cache(host):
+    """Capture host's active-fragment state. Copies the fixed-size frame so later
+    cache writes cannot disturb the snapshot."""
+    frame_copy = [0] * FRAME_SIZE
+    i = 0
+    while i < FRAME_SIZE:
+        frame_copy[i] = host.frame[i]
+        i += 1
+    make_sure_not_resized(frame_copy)
+    return DSCacheSnapshot(host.t0, host.t1, host.d, frame_copy,
+                           host.frag_ptr, host.spill_ptr)
+
+
+def restore_cache(host, snap):
+    """Roll host's stack back to a snapshot, discarding everything pushed since.
+    Restores the cache and the cache/arena pointers; the arena cells below the
+    saved spill pointer are left in place."""
+    host.t0 = snap.t0
+    host.t1 = snap.t1
+    host.d = snap.d
+    i = 0
+    while i < FRAME_SIZE:
+        host.frame[i] = snap.frame[i]
+        i += 1
+    host.frag_ptr = snap.frag_ptr
+    host.spill_ptr = snap.spill_ptr
+
+
 class DSIntMetaStack(DSMetaStack):
     def init_fields(self):
         init_fields(self)
@@ -222,3 +268,9 @@ class DSIntMetaStack(DSMetaStack):
 
     def pop_fragment_commit(self):
         self.pop_fragment_commit_on()
+
+    def snapshot(self):
+        return snapshot_cache(self)
+
+    def restore(self, snap):
+        restore_cache(self, snap)
