@@ -309,10 +309,19 @@ def extract_special_words_from_outer(filepath):
     for pattern in (
         r'if\s+tkey\s*==\s*"([^"]+)"',
         r'tkey\s*==\s*"([^"]+)"',
+        r'ckey\s*==\s*"([^"]+)"',
         r"if\s+t\s*==\s*'([^']+)'",
         r'if\s+t\s*==\s*"([^"]+)"',
     ):
         words.update(re.findall(pattern, content))
+    return words
+
+
+def extract_prelude_words(filepath):
+    words = set()
+    with open(filepath, "r") as f:
+        content = f.read()
+    words.update(re.findall(r"^:\s+(\S+)", content, re.MULTILINE))
     return words
 
 
@@ -321,12 +330,17 @@ def collect_implemented_words(script_dir):
     for word in (
         extract_primitives_from_file(os.path.join(script_dir, "rpyforth", "primitives.py"))
         | extract_special_words_from_outer(os.path.join(script_dir, "rpyforth", "outer_interp.py"))
+        | extract_prelude_words(os.path.join(script_dir, "rpyforth", "prelude.py"))
         | {":", ";"}
     ):
         implemented.add(word.upper())
     # Words implemented under parenthesized runtime names.
     if any(w.startswith("(ABORT") for w in implemented):
         implemented.add('ABORT"')
+    # :NONAME is recognized by name during compilation, not a dispatch key.
+    with open(os.path.join(script_dir, "rpyforth", "outer_interp.py")) as f:
+        if "noname_mode" in f.read():
+            implemented.add(":NONAME")
     return implemented
 
 

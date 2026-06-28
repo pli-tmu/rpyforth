@@ -4,6 +4,7 @@ from rpyforth.primitives import install_primitives
 from rpyforth.util import to_upper, split_whitespace
 
 from rpython.rlib.rfile import create_stdio
+from rpython.rlib.streamio import open_file_as_stream
 from rpython.rlib.jit import elidable, unroll_safe, promote
 
 INTERPRET = 0
@@ -18,6 +19,8 @@ CTRL_ELSE = 1
 CTRL_DO   = 2
 CTRL_BEGIN = 3
 CTRL_WHILE = 4
+CTRL_CASE = 5
+CTRL_OF   = 6
 
 class CtrlEntry(object):
     """Control stack entry for compilation-time control structures.
@@ -30,7 +33,7 @@ class CtrlEntry(object):
         self.leave_addrs = []  # list of LEAVE positions to patch (for DO loops)
 
 class OuterInterpreter(object):
-    _immutable_fields_ = ['wBR', 'w0BR', 'wLIT', 'wEXIT', 'wDO', 'wLOOP', 'wPLUSLOOP', 'wLEAVE', 'wTYPE', 'wUNLOOP', 'wABORTQUOTE']
+    _immutable_fields_ = ['wBR', 'w0BR', 'wLIT', 'wEXIT', 'wDO', 'wQDO', 'wLOOP', 'wPLUSLOOP', 'wLEAVE', 'wTYPE', 'wUNLOOP', 'wABORTQUOTE']
 
     def __init__(self, inner):
         self.inner = inner
@@ -61,12 +64,27 @@ class OuterInterpreter(object):
         self.wLIT = self.dict["LIT"]
         self.wEXIT = self.dict["EXIT"]
         self.wDO = self.dict["(DO)"]
+        self.wQDO = self.dict["(?DO)"]
         self.wLOOP = self.dict["(LOOP)"]
         self.wPLUSLOOP = self.dict["(+LOOP)"]
         self.wUNLOOP = self.dict["UNLOOP"]
         self.wLEAVE = self.dict["LEAVE"]
         self.wTYPE = self.dict["TYPE"]
         self.wABORTQUOTE = self.dict['(ABORT")']
+
+        # Cell address backing each VALUE name (for TO to locate its storage).
+        self.value_addrs = {}
+
+        # Slot id backing each DEFER name (for IS to locate its binding).
+        self.defer_ids = {}
+
+        # True while compiling a :NONAME definition (push xt instead of naming it).
+        self.noname_mode = False
+
+        # [IF]/[ELSE]/[THEN] conditional-compilation skip state (spans lines).
+        self.cond_skipping = False
+        self.cond_skip_depth = 0
+        self.cond_skip_to_else = False
 
         # Define LITERAL as an immediate word (for POSTPONE to find it)
         self._define_literal_word()
@@ -406,6 +424,108 @@ class OuterInterpreter(object):
         self._define_simple_word(name, W_IntObject(addr))
         return i
 
+    def _handle_value(self, toks, i):
+        """Handle VALUE: a cell-backed mutable constant. The word fetches its cell
+        (LIT addr @); TO stores into the cell."""
+        toks_len = len(toks)
+        if i >= toks_len:
+            print "VALUE requires a name"
+            return -1
+        name, i = self._read_tok(toks, i)
+        if self.inner.ds_int_size() <= 0:
+            print "VALUE: stack underflow"
+            return -1
+        intval = self.inner.pop_ds_int()
+        addr = self.inner.here
+        self.inner.here += self.inner.cell_size_bytes
+        self.inner.cell_store(addr, intval)
+        self.value_addrs[to_upper(name)] = addr
+        code = [self.wLIT, self.dict["@"], self.wEXIT]
+        lits = [W_IntObject(addr), ZERO, ZERO]
+        self.define_colon(name, CodeThread(code, lits))
+        return i
+
+    def _handle_to(self, toks, i):
+        """Handle TO (interpret mode): store the top value into the named VALUE."""
+        toks_len = len(toks)
+        if i >= toks_len:
+            print "TO requires a name"
+            return -1
+        name, i = self._read_tok(toks, i)
+        key = to_upper(name)
+        if key not in self.value_addrs:
+            print "TO: not a VALUE"
+            return -1
+        if self.inner.ds_int_size() <= 0:
+            print "TO: stack underflow"
+            return -1
+        self.inner.cell_store(self.value_addrs[key], self.inner.pop_ds_int())
+        return i
+
+    def _include_file(self, path):
+        """Read a Forth source file and interpret it line by line, preserving the
+        caller's source-scan state across the nested interpretation."""
+        f = open_file_as_stream(path)
+        content = f.readall()
+        f.close()
+        saved_buf = self.source_buffer
+        saved_idx = self.source_index
+        saved_cnt = self.string_token_count
+        for line in content.split('\n'):
+            self.interpret_line(line)
+        self.source_buffer = saved_buf
+        self.source_index = saved_idx
+        self.string_token_count = saved_cnt
+
+    def _handle_include(self, toks, i):
+        """Handle INCLUDE / REQUIRE: the filename is the next token."""
+        toks_len = len(toks)
+        if i >= toks_len:
+            print "INCLUDE requires a filename"
+            return -1
+        name, i = self._read_tok(toks, i)
+        self._include_file(name)
+        return i
+
+    def _handle_included(self):
+        """Handle INCLUDED / REQUIRED ( c-addr u -- ): the filename is a string."""
+        self.inner.pop_ds_int()           # length (unused: the cell holds the string)
+        c_addr = self.inner.pop_ds_int()
+        w = self.inner.buf[c_addr]
+        assert isinstance(w, W_StringObject)
+        self._include_file(w.strval)
+
+    def _handle_defer(self, toks, i):
+        """Handle DEFER: define a word that executes a later-bound xt."""
+        toks_len = len(toks)
+        if i >= toks_len:
+            print "DEFER requires a name"
+            return -1
+        name, i = self._read_tok(toks, i)
+        slot = len(self.inner.deferred_words)
+        self.inner.deferred_words.append(None)
+        self.defer_ids[to_upper(name)] = slot
+        code = [self.wLIT, self.dict["(DEFER)"], self.wEXIT]
+        lits = [W_IntObject(slot), ZERO, ZERO]
+        self.define_colon(name, CodeThread(code, lits))
+        return i
+
+    def _handle_is(self, toks, i):
+        """Handle IS (interpret mode): bind the xt on the stack to a DEFER word."""
+        toks_len = len(toks)
+        if i >= toks_len:
+            print "IS requires a name"
+            return -1
+        name, i = self._read_tok(toks, i)
+        key = to_upper(name)
+        if key not in self.defer_ids:
+            print "IS: not a DEFER"
+            return -1
+        xt = self.inner.pop_ds()
+        assert isinstance(xt, W_WordObject)
+        self.inner.deferred_words[self.defer_ids[key]] = xt.word
+        return i
+
     # Control structure compilation helpers
 
     def _compile_if(self):
@@ -447,6 +567,16 @@ class OuterInterpreter(object):
         self._emit_word(self.wDO)
         do_body_start = self.cc_ptr
         self.ctrl.append(CtrlEntry(CTRL_DO, do_body_start))
+
+    def _compile_qdo(self):
+        """Compile ?DO. Like DO, but emits a forward branch (patched to the loop
+        end by LOOP/+LOOP) taken at runtime when limit == start."""
+        qdo_addr = self.cc_ptr
+        self._emit_with_target(self.wQDO, 0)
+        do_body_start = self.cc_ptr
+        entry = CtrlEntry(CTRL_DO, do_body_start)
+        entry.leave_addrs.append(qdo_addr)
+        self.ctrl.append(entry)
 
     def _compile_loop(self):
         """Compile LOOP."""
@@ -550,6 +680,49 @@ class OuterInterpreter(object):
         print "LEAVE without DO"
         return False
 
+    def _compile_case(self):
+        """Compile CASE. The entry collects each ENDOF's forward branch, all
+        patched past the selector DROP at ENDCASE."""
+        self.ctrl.append(CtrlEntry(CTRL_CASE, 0))
+
+    def _compile_of(self):
+        """Compile OF: OVER = 0BRANCH<next-clause> DROP."""
+        if not self.ctrl or self.ctrl[len(self.ctrl) - 1].kind != CTRL_CASE:
+            print "OF without CASE"
+            return False
+        self._emit_word(self.dict["OVER"])
+        self._emit_word(self.dict["="])
+        of_addr = self.cc_ptr
+        self._emit_with_target(self.w0BR, 0)
+        self._emit_word(self.dict["DROP"])
+        self.ctrl.append(CtrlEntry(CTRL_OF, of_addr))
+        return True
+
+    def _compile_endof(self):
+        """Compile ENDOF: BRANCH<endcase>; patch the OF 0BRANCH to the next clause."""
+        if not self.ctrl or self.ctrl[len(self.ctrl) - 1].kind != CTRL_OF:
+            print "ENDOF without OF"
+            return False
+        of_entry = self.ctrl.pop()
+        endof_addr = self.cc_ptr
+        self._emit_with_target(self.wBR, 0)
+        self.ctrl[len(self.ctrl) - 1].leave_addrs.append(endof_addr)
+        self._patch_here(of_entry.index)
+        return True
+
+    def _compile_endcase(self):
+        """Compile ENDCASE: DROP the selector, then patch every ENDOF branch past it."""
+        if not self.ctrl or self.ctrl[len(self.ctrl) - 1].kind != CTRL_CASE:
+            print "ENDCASE without CASE"
+            return False
+        entry = self.ctrl.pop()
+        self._emit_word(self.dict["DROP"])
+        end = self.cc_ptr
+        for endof_addr in entry.leave_addrs:
+            self.current_lits[endof_addr] = W_IntObject(end)
+        return True
+        return False
+
     def _compile_char(self, toks, i):
         """Compile [CHAR]."""
         toks_len = len(toks)
@@ -631,8 +804,8 @@ class OuterInterpreter(object):
         while i < body_len:
             cw = code[i]
             if (cw is self.wEXIT or cw is self.wBR or cw is self.w0BR or
-                    cw is self.wDO or cw is self.wLOOP or cw is self.wPLUSLOOP or
-                    cw is self.wLEAVE or cw is self.wUNLOOP):
+                    cw is self.wDO or cw is self.wQDO or cw is self.wLOOP or
+                    cw is self.wPLUSLOOP or cw is self.wLEAVE or cw is self.wUNLOOP):
                 return None
             i += 1
         return thread
@@ -972,6 +1145,40 @@ class OuterInterpreter(object):
                 return True, i, True
             return True, result, False
 
+        if tkey == "VALUE":
+            result = self._handle_value(toks, i)
+            if result < 0:
+                return True, i, True
+            return True, result, False
+
+        if tkey == "TO":
+            result = self._handle_to(toks, i)
+            if result < 0:
+                return True, i, True
+            return True, result, False
+
+        if tkey == "INCLUDE" or tkey == "REQUIRE":
+            result = self._handle_include(toks, i)
+            if result < 0:
+                return True, i, True
+            return True, result, False
+
+        if tkey == "INCLUDED" or tkey == "REQUIRED":
+            self._handle_included()
+            return True, i, False
+
+        if tkey == "DEFER":
+            result = self._handle_defer(toks, i)
+            if result < 0:
+                return True, i, True
+            return True, result, False
+
+        if tkey == "IS":
+            result = self._handle_is(toks, i)
+            if result < 0:
+                return True, i, True
+            return True, result, False
+
         if tkey == "FIND":
             self._handle_find()
             return True, i, False
@@ -1062,6 +1269,38 @@ class OuterInterpreter(object):
             self._compile_do()
             return True, i, False
 
+        if tkey == "?DO":
+            self._compile_qdo()
+            return True, i, False
+
+        if tkey == "TO":
+            if i >= toks_len:
+                print "TO requires a name"
+                return True, i, True
+            name = toks[i]
+            i += 1
+            key = to_upper(name)
+            if key not in self.value_addrs:
+                print "TO: not a VALUE"
+                return True, i, True
+            self._emit_lit(W_IntObject(self.value_addrs[key]))
+            self._emit_word(self.dict["!"])
+            return True, i, False
+
+        if tkey == "IS":
+            if i >= toks_len:
+                print "IS requires a name"
+                return True, i, True
+            name = toks[i]
+            i += 1
+            key = to_upper(name)
+            if key not in self.defer_ids:
+                print "IS: not a DEFER"
+                return True, i, True
+            self._emit_lit(W_IntObject(self.defer_ids[key]))
+            self._emit_word(self.dict["(IS!)"])
+            return True, i, False
+
         if tkey == "LOOP":
             if not self._compile_loop():
                 return True, i, True
@@ -1098,6 +1337,25 @@ class OuterInterpreter(object):
 
         if tkey == "LEAVE":
             if not self._compile_leave():
+                return True, i, True
+            return True, i, False
+
+        if tkey == "CASE":
+            self._compile_case()
+            return True, i, False
+
+        if tkey == "OF":
+            if not self._compile_of():
+                return True, i, True
+            return True, i, False
+
+        if tkey == "ENDOF":
+            if not self._compile_endof():
+                return True, i, True
+            return True, i, False
+
+        if tkey == "ENDCASE":
+            if not self._compile_endcase():
                 return True, i, True
             return True, i, False
 
@@ -1198,6 +1456,46 @@ class OuterInterpreter(object):
         while i < toks_len:
             t, i = self._read_tok(toks, i)
 
+            # Conditional compilation. While skipping, only [IF]/[ELSE]/[THEN]
+            # adjust nesting -- everything else (including : ; definitions) is
+            # dropped. This runs before any other handling and spans lines.
+            ckey = to_upper(t)
+            if self.cond_skipping:
+                if ckey == "[IF]":
+                    self.cond_skip_depth += 1
+                elif ckey == "[ELSE]":
+                    if self.cond_skip_depth == 0 and self.cond_skip_to_else:
+                        self.cond_skipping = False
+                elif ckey == "[THEN]":
+                    if self.cond_skip_depth == 0:
+                        self.cond_skipping = False
+                    else:
+                        self.cond_skip_depth -= 1
+                continue
+            if ckey == "[IF]":
+                if self.inner.pop_ds_int() == 0:
+                    self.cond_skipping = True
+                    self.cond_skip_depth = 0
+                    self.cond_skip_to_else = True
+                continue
+            if ckey == "[ELSE]":
+                self.cond_skipping = True
+                self.cond_skip_depth = 0
+                self.cond_skip_to_else = False
+                continue
+            if ckey == "[THEN]":
+                continue
+            if ckey == "[DEFINED]" or ckey == "[UNDEFINED]":
+                nm, i = self._read_tok(toks, i)
+                present = to_upper(nm) in self.dict
+                if ckey == "[UNDEFINED]":
+                    present = not present
+                if present:
+                    self.inner.push_ds_int(-1)
+                else:
+                    self.inner.push_ds_int(0)
+                continue
+
             # Handle string literals (case-sensitive)
             if t == 'S"':
                 i = self._handle_s_quote(toks, i)
@@ -1219,6 +1517,7 @@ class OuterInterpreter(object):
                     return
                 self.state = COMPILE
                 self.current_name, i = self._read_tok(toks, i)
+                self.noname_mode = to_upper(self.current_name) == "NONAME"
                 self.reset_code()
                 continue
 
@@ -1279,12 +1578,16 @@ class OuterInterpreter(object):
         lits = [self.current_lits[idx] for idx in range(self.lit_ptr)]
         thread = CodeThread(code, lits)
 
-        name_upper = to_upper(self.current_name)
-        if name_upper in self.dict:
-            existing_word = self.dict[name_upper]
-            existing_word.thread = thread
+        if self.noname_mode:
+            self.inner.push_ds(W_WordObject(Word("", thread=thread)))
+            self.noname_mode = False
         else:
-            self.define_colon(self.current_name, thread)
+            name_upper = to_upper(self.current_name)
+            if name_upper in self.dict:
+                existing_word = self.dict[name_upper]
+                existing_word.thread = thread
+            else:
+                self.define_colon(self.current_name, thread)
 
         self.state = INTERPRET
         self.current_name = ''
