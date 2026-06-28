@@ -11,6 +11,7 @@ from rpyforth.objects import (
     CELL_SIZE_BYTES,
     CELL_SIZE,
     make_int,
+    THREAD_REGISTRY,
 )
 
 
@@ -92,7 +93,7 @@ class InnerInterpreter(InterpBase, object):
     if USE_VIRTUALIZATION:
         _virtualizable_ = ["ds_ints", "ds_floats",
                            "ds_ptr_ints", "ds_ptr_floats", "ds_ptr_locals",
-                           "rs_ptr", "cs_threads", "cs_ips", "cs_ptr", "li",
+                           "rs_ptr", "cs_tids", "cs_ips", "cs_ptr", "li",
                            "cell_size", "cell_size_bytes", "base"]
     elif USE_STACK_FRAGMENT:
         _virtualizable_ = STACK_FRAGMENT_VIRTUALIZABLES
@@ -124,8 +125,10 @@ class InnerInterpreter(InterpBase, object):
         self.lc_is = [0] * STACK_SIZE
         self.lc_ls = [0] * STACK_SIZE
 
-        # Virtualized call stack for JIT optimization
-        self.cs_threads = [None] * STACK_SIZE
+        # Virtualized call stack for JIT optimization. The return thread is stored
+        # by id (int, no GC barrier) and recovered from THREAD_REGISTRY; the
+        # foldable lookup removes the per-return thread guard.
+        self.cs_tids = [0] * STACK_SIZE
         self.cs_ips = [0] * STACK_SIZE
         self.cs_ptr = 0
 
@@ -158,23 +161,26 @@ class InnerInterpreter(InterpBase, object):
             self.spill_ptr = 0
 
     def push_call(self, thread, ip):
-        """Push return address onto virtualized call stack."""
+        """Push return address (thread id + ip) onto the virtualized call stack."""
         ptr = self.cs_ptr
-        assert ptr < len(self.cs_threads)
-        self.cs_threads[ptr] = thread
+        assert ptr < len(self.cs_tids)
+        self.cs_tids[ptr] = thread.tid
         self.cs_ips[ptr] = ip
         self.cs_ptr = ptr + 1
 
     def pop_call(self):
-        """Pop return address from virtualized call stack."""
+        """Pop return address; recover the thread from its id."""
         ptr = self.cs_ptr - 1
         assert ptr >= 0
         if USE_STACK_FRAGMENT:
             pop_ds_fragments_commit(self)
         self.cs_ptr = ptr
-        thread = self.cs_threads[ptr]
+        tid = self.cs_tids[ptr]
         ip = self.cs_ips[ptr]
-        self.cs_threads[ptr] = None
+        # Clear the slot (mirrors the old null write): helps the JIT treat the
+        # tail above cs_ptr as dead and elide the reads on recursive traces.
+        self.cs_tids[ptr] = 0
+        thread = THREAD_REGISTRY.threads[tid]
         return thread, ip
 
     def is_call_stack_empty(self):

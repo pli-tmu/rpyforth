@@ -30,7 +30,7 @@ def test_stack_fragment_virtualizables_include_tops_and_frame():
     for name in (
         "t0", "t1", "d", "frame[*]",
         "frag_ptr", "spill_ptr",
-        "rs_ptr", "cs_threads", "cs_ips", "cs_ptr",
+        "rs_ptr", "cs_tids", "cs_ips", "cs_ptr",
     ):
         assert name in STACK_FRAGMENT_VIRTUALIZABLES
     # The arena and the immutable array references stay out.
@@ -191,3 +191,100 @@ def test_int_fragment_consume_all_args():
     s.pop_fragment_commit()
     assert s.size() == 0
     assert s.frag_ptr == 0
+
+
+# ------------------------------------------------------------------
+# snapshot / restore. snapshot() captures the active cache (scalar tops + frame
+# + the cache/arena pointers); restore() puts the stack back to that captured
+# state, discarding anything pushed since. The arena cells below the saved spill
+# pointer are assumed undisturbed (true for code that does not pop below the
+# snapshot depth).
+# ------------------------------------------------------------------
+def test_snapshot_restore_identity():
+    s = DSIntMetaStack()
+    for v in range(5):
+        s.push(v)
+    snap = s.snapshot()
+    s.restore(snap)
+    assert s.size() == 5
+    assert [s.pop() for _ in range(5)] == [4, 3, 2, 1, 0]
+
+
+def test_snapshot_restore_within_cache():
+    # Depth inside tops + frame (no arena). Mutate after snapshot, then restore.
+    s = DSIntMetaStack()
+    for v in range(NTOP + 3):
+        s.push(v)
+    snap = s.snapshot()
+    before = [s.peek(i) for i in range(s.size())]
+    s.push(100)
+    s.push(101)
+    s.pop()
+    s.poke(0, 999)
+    s.restore(snap)
+    assert s.size() == NTOP + 3
+    assert [s.peek(i) for i in range(s.size())] == before
+
+
+def test_restore_discards_pushed_values():
+    s = DSIntMetaStack()
+    for v in range(NTOP + 1):
+        s.push(v)
+    d0 = s.size()
+    snap = s.snapshot()
+    for v in range(50):
+        s.push(v)
+    s.restore(snap)
+    assert s.size() == d0
+    assert s.peek(0) == NTOP
+
+
+def test_snapshot_is_independent_copy():
+    # Overwriting every cached cell after the snapshot must not affect it.
+    s = DSIntMetaStack()
+    for v in range(ACTIVE_MAX):
+        s.push(v)
+    snap = s.snapshot()
+    for i in range(ACTIVE_MAX):
+        s.poke(i, -1)
+    s.restore(snap)
+    assert [s.peek(i) for i in range(ACTIVE_MAX)] == [ACTIVE_MAX - 1 - i for i in range(ACTIVE_MAX)]
+
+
+def test_snapshot_restore_across_arena():
+    # Depth past ACTIVE_MAX so cells live in the arena. Churn (more spill + pops)
+    # then restore must rebuild the exact stack through the cache/arena boundary.
+    s = DSIntMetaStack()
+    n = 2 * ACTIVE_MAX + 5
+    for v in range(n):
+        s.push(v)
+    snap = s.snapshot()
+    before = [s.peek(i) for i in range(s.size())]
+    for v in range(ACTIVE_MAX + 7):
+        s.push(1000 + v)
+    for _ in range(3):
+        s.pop()
+    s.restore(snap)
+    assert s.size() == n
+    assert [s.peek(i) for i in range(s.size())] == before
+    assert [s.pop() for _ in range(n)] == list(range(n - 1, -1, -1))
+    assert s.spill_ptr == 0
+
+
+def test_snapshot_restore_nested():
+    # Nested CATCH frames: snapshots form a stack, each restoring its own depth.
+    s = DSIntMetaStack()
+    for v in range(NTOP + 1):
+        s.push(v)
+    outer = s.snapshot()
+    for v in range(ACTIVE_MAX):
+        s.push(50 + v)
+    inner = s.snapshot()
+    for v in range(20):
+        s.push(900 + v)
+    s.restore(inner)
+    assert s.size() == NTOP + 1 + ACTIVE_MAX
+    assert s.peek(0) == 50 + ACTIVE_MAX - 1
+    s.restore(outer)
+    assert s.size() == NTOP + 1
+    assert s.peek(0) == NTOP

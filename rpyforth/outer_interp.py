@@ -9,6 +9,9 @@ from rpython.rlib.jit import elidable, unroll_safe, promote
 INTERPRET = 0
 COMPILE   = 1
 
+# Max callee body length (excluding trailing EXIT) spliced inline at a call site.
+MAX_INLINE_BODY = 32
+
 # Control stack entry kinds
 CTRL_IF   = 0
 CTRL_ELSE = 1
@@ -77,7 +80,8 @@ class OuterInterpreter(object):
         self.lit_ptr = 0
 
     def push_code(self, w):
-        assert self.cc_ptr < len(self.current_code)
+        if self.cc_ptr >= len(self.current_code):
+            self.current_code = self.current_code + [None] * len(self.current_code)
         self.current_code[self.cc_ptr] = w
         self.cc_ptr += 1
 
@@ -87,7 +91,8 @@ class OuterInterpreter(object):
         return self.current_code[self.cc_ptr]
 
     def push_lit(self, w):
-        assert self.lit_ptr < len(self.current_lits)
+        if self.lit_ptr >= len(self.current_lits):
+            self.current_lits = self.current_lits + [None] * len(self.current_lits)
         self.current_lits[self.lit_ptr] = w
         self.lit_ptr += 1
 
@@ -572,6 +577,77 @@ class OuterInterpreter(object):
         else:
             print "UNKNOWN: " + t
 
+    def _value_word_literal(self, w):
+        """Return the literal x if w is a value-word (body LIT x ; EXIT), else None.
+
+        Lets a VARIABLE/CONSTANT/CREATE reference compile to an immediate push
+        instead of a call. The word stays in the dictionary, so ' / >BODY /
+        EXECUTE are unaffected."""
+        if w.prim is not None:
+            return None
+        if w.immediate:
+            return None
+        if w.does_ip != -1:          # CREATE ... DOES> has custom runtime behavior
+            return None
+        thread = w.thread
+        if thread is None:
+            return None
+        code = thread.code
+        if len(code) != 2:
+            return None
+        if code[0] is not self.wLIT:
+            return None
+        if code[1] is not self.wEXIT:
+            return None
+        return thread.lits[0]
+
+    def _inlinable_colon_body(self, w):
+        """Return w's CodeThread if it is a small straight-line colon word that can
+        be spliced inline, else None.
+
+        Straight-line = ends in EXIT and contains none of the ip-altering words
+        (BRANCH, 0BRANCH, (DO), (LOOP), (+LOOP), LEAVE, UNLOOP, interior EXIT,
+        TAILCALL). The branch/loop ones encode an absolute target into their own
+        thread and cannot be relocated; everything else is position independent."""
+        if w.prim is not None:
+            return None
+        if w.immediate:
+            return None
+        if w.does_ip != -1:            # CREATE ... DOES> has custom runtime behavior
+            return None
+        thread = w.thread
+        if thread is None:
+            return None
+        code = thread.code
+        n = len(code)
+        if n < 2:
+            return None
+        if code[n - 1] is not self.wEXIT:  # tail-call-optimized words end in TAILCALL
+            return None
+        body_len = n - 1
+        if body_len > MAX_INLINE_BODY:
+            return None
+        i = 0
+        while i < body_len:
+            cw = code[i]
+            if (cw is self.wEXIT or cw is self.wBR or cw is self.w0BR or
+                    cw is self.wDO or cw is self.wLOOP or cw is self.wPLUSLOOP or
+                    cw is self.wLEAVE or cw is self.wUNLOOP):
+                return None
+            i += 1
+        return thread
+
+    def _emit_inline(self, thread):
+        """Splice a callee body (all but its trailing EXIT) into the current def."""
+        code = thread.code
+        lits = thread.lits
+        body_len = len(code) - 1
+        i = 0
+        while i < body_len:
+            self.push_code(code[i])
+            self.push_lit(lits[i])
+            i += 1
+
     def _compile_word_or_literal(self, w, t):
         """Compile word or literal in COMPILE mode."""
         if w is not None:
@@ -581,7 +657,15 @@ class OuterInterpreter(object):
                 # LITERAL and FLITERAL have primitives that pop from the stack and emit literals
                 self.inner.execute_word_now(w)
             else:
-                self._emit_word(w)
+                lit = self._value_word_literal(w)
+                if lit is not None:
+                    self._emit_lit(lit)
+                else:
+                    body = self._inlinable_colon_body(w)
+                    if body is not None:
+                        self._emit_inline(body)
+                    else:
+                        self._emit_word(w)
         elif self._is_float(t):
             self._emit_lit(W_FloatObject(self._to_float(t)))
         elif self._is_number(t):
