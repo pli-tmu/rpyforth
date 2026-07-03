@@ -322,6 +322,12 @@ def extract_prelude_words(filepath):
     with open(filepath, "r") as f:
         content = f.read()
     words.update(re.findall(r"^:\s+(\S+)", content, re.MULTILINE))
+    # Words defined by defining words other than ':' (e.g. the struct type
+    # descriptors "... 2CONSTANT cell%") name the new word after the keyword.
+    words.update(re.findall(
+        r"\b(?:2CONSTANT|CONSTANT|2VARIABLE|VARIABLE|CREATE)\s+(\S+)",
+        content,
+    ))
     return words
 
 

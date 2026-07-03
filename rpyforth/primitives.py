@@ -1649,6 +1649,34 @@ def prim_MOVE(inner, cur, ip):
     return ip
 
 
+# CMOVE ( c-addr1 c-addr2 u -- )
+@unroll_safe
+def prim_CMOVE(inner, cur, ip):
+    """GForth string 2012: copy u chars from c-addr1 to c-addr2, low address
+    first (so an overlapping move propagates the leading bytes upward)."""
+    u = inner.pop_ds_int()
+    addr2 = inner.pop_ds_int()
+    addr1 = inner.pop_ds_int()
+    for i in range(u):
+        inner.char_store(addr2 + i, inner.char_fetch(addr1 + i))
+    return ip
+
+
+# CMOVE> ( c-addr1 c-addr2 u -- )
+@unroll_safe
+def prim_CMOVE_UP(inner, cur, ip):
+    """GForth string 2012: copy u chars from c-addr1 to c-addr2, high address
+    first, so a move toward a higher overlapping address preserves the source."""
+    u = inner.pop_ds_int()
+    addr2 = inner.pop_ds_int()
+    addr1 = inner.pop_ds_int()
+    i = u - 1
+    while i >= 0:
+        inner.char_store(addr2 + i, inner.char_fetch(addr1 + i))
+        i -= 1
+    return ip
+
+
 # Memory Access Operations (additional)
 
 # +! ( n|u a-addr -- )
@@ -1926,6 +1954,291 @@ def prim_FLOATPLUS(inner, cur, ip):
     """Add size of float to address."""
     addr = inner.pop_ds_int()
     inner.push_ds_int(addr + 8)  # 8 bytes for a double
+    return ip
+
+
+# File access -------------------------------------------------------------
+#
+# fam encoding (private to these words; the standard leaves it implementation
+# defined): bit 0/1 select the read/write access, bit 2 is the BIN flag. The
+# BIN flag is ignored on POSIX (all files are binary) but must round-trip.
+FAM_RO = 0
+FAM_WO = 1
+FAM_RW = 2
+FAM_BIN = 4
+
+
+def _read_cstr(inner, addr, u):
+    """Return the u-char string at c-addr. Handles both representations: a
+    filename produced by S" lives as a single W_StringObject in inner.buf,
+    while a byte buffer built with C!/CMOVE lives in char memory."""
+    entry = None
+    if 0 <= addr < len(inner.buf):
+        entry = inner.buf[addr]
+    if entry is not None and isinstance(entry, W_StringObject):
+        s = entry.strval
+        if len(s) > u:
+            return s[:u]
+        return s
+    chars = []
+    for i in range(u):
+        chars.append(chr(inner.char_fetch(addr + i)))
+    return "".join(chars)
+
+
+def _open_flags(fam):
+    import os
+    access = fam & 3
+    if access == FAM_WO:
+        return os.O_WRONLY
+    elif access == FAM_RW:
+        return os.O_RDWR
+    else:
+        return os.O_RDONLY
+
+
+# R/O ( -- fam )
+def prim_R_O(inner, cur, ip):
+    inner.push_ds_int(FAM_RO)
+    return ip
+
+
+# W/O ( -- fam )
+def prim_W_O(inner, cur, ip):
+    inner.push_ds_int(FAM_WO)
+    return ip
+
+
+# R/W ( -- fam )
+def prim_R_W(inner, cur, ip):
+    inner.push_ds_int(FAM_RW)
+    return ip
+
+
+# BIN ( fam1 -- fam2 )
+def prim_BIN(inner, cur, ip):
+    fam = inner.pop_ds_int()
+    inner.push_ds_int(fam | FAM_BIN)
+    return ip
+
+
+# STDIN / STDOUT / STDERR ( -- fileid )
+def prim_STDIN(inner, cur, ip):
+    inner.push_ds_int(0)
+    return ip
+
+
+def prim_STDOUT(inner, cur, ip):
+    inner.push_ds_int(1)
+    return ip
+
+
+def prim_STDERR(inner, cur, ip):
+    inner.push_ds_int(2)
+    return ip
+
+
+# OPEN-FILE ( c-addr u fam -- fileid ior )
+@dont_look_inside
+def prim_OPEN_FILE(inner, cur, ip):
+    import os
+    fam = inner.pop_ds_int()
+    u = inner.pop_ds_int()
+    addr = inner.pop_ds_int()
+    name = _read_cstr(inner, addr, u)
+    try:
+        fd = os.open(name, _open_flags(fam), 0666)
+    except OSError as e:
+        inner.push_ds_int(0)
+        inner.push_ds_int(e.errno)
+        return ip
+    inner.push_ds_int(fd)
+    inner.push_ds_int(0)
+    return ip
+
+
+# CREATE-FILE ( c-addr u fam -- fileid ior )
+@dont_look_inside
+def prim_CREATE_FILE(inner, cur, ip):
+    import os
+    fam = inner.pop_ds_int()
+    u = inner.pop_ds_int()
+    addr = inner.pop_ds_int()
+    name = _read_cstr(inner, addr, u)
+    flags = _open_flags(fam) | os.O_CREAT | os.O_TRUNC
+    try:
+        fd = os.open(name, flags, 0666)
+    except OSError as e:
+        inner.push_ds_int(0)
+        inner.push_ds_int(e.errno)
+        return ip
+    inner.push_ds_int(fd)
+    inner.push_ds_int(0)
+    return ip
+
+
+# CLOSE-FILE ( fileid -- ior )
+@dont_look_inside
+def prim_CLOSE_FILE(inner, cur, ip):
+    import os
+    fd = inner.pop_ds_int()
+    try:
+        os.close(fd)
+    except OSError as e:
+        inner.push_ds_int(e.errno)
+        return ip
+    inner.push_ds_int(0)
+    return ip
+
+
+# READ-FILE ( c-addr u1 fileid -- u2 ior )
+@dont_look_inside
+def prim_READ_FILE(inner, cur, ip):
+    import os
+    fd = inner.pop_ds_int()
+    u1 = inner.pop_ds_int()
+    addr = inner.pop_ds_int()
+    try:
+        data = os.read(fd, u1)
+    except OSError as e:
+        inner.push_ds_int(0)
+        inner.push_ds_int(e.errno)
+        return ip
+    n = len(data)
+    for i in range(n):
+        inner.char_store(addr + i, ord(data[i]))
+    inner.push_ds_int(n)
+    inner.push_ds_int(0)
+    return ip
+
+
+# READ-LINE ( c-addr u1 fileid -- u2 flag ior )
+@dont_look_inside
+def prim_READ_LINE(inner, cur, ip):
+    import os
+    fd = inner.pop_ds_int()
+    u1 = inner.pop_ds_int()
+    addr = inner.pop_ds_int()
+    n = 0
+    got_any = False
+    try:
+        while n < u1:
+            ch = os.read(fd, 1)
+            if len(ch) == 0:
+                break
+            got_any = True
+            c = ch[0]
+            if c == '\n':
+                inner.push_ds_int(n)
+                inner.push_ds_int(-1)
+                inner.push_ds_int(0)
+                return ip
+            if c != '\r':
+                inner.char_store(addr + n, ord(c))
+                n += 1
+    except OSError as e:
+        inner.push_ds_int(n)
+        inner.push_ds_int(-1)
+        inner.push_ds_int(e.errno)
+        return ip
+    inner.push_ds_int(n)
+    if got_any:
+        inner.push_ds_int(-1)
+    else:
+        inner.push_ds_int(0)
+    inner.push_ds_int(0)
+    return ip
+
+
+# WRITE-FILE ( c-addr u fileid -- ior )
+@dont_look_inside
+def prim_WRITE_FILE(inner, cur, ip):
+    import os
+    fd = inner.pop_ds_int()
+    u = inner.pop_ds_int()
+    addr = inner.pop_ds_int()
+    data = _read_cstr(inner, addr, u)
+    try:
+        os.write(fd, data)
+    except OSError as e:
+        inner.push_ds_int(e.errno)
+        return ip
+    inner.push_ds_int(0)
+    return ip
+
+
+# WRITE-LINE ( c-addr u fileid -- ior )
+@dont_look_inside
+def prim_WRITE_LINE(inner, cur, ip):
+    import os
+    fd = inner.pop_ds_int()
+    u = inner.pop_ds_int()
+    addr = inner.pop_ds_int()
+    data = _read_cstr(inner, addr, u)
+    try:
+        os.write(fd, data)
+        os.write(fd, "\n")
+    except OSError as e:
+        inner.push_ds_int(e.errno)
+        return ip
+    inner.push_ds_int(0)
+    return ip
+
+
+# FILE-POSITION ( fileid -- ud ior )
+@dont_look_inside
+def prim_FILE_POSITION(inner, cur, ip):
+    import os
+    fd = inner.pop_ds_int()
+    try:
+        pos = os.lseek(fd, 0, 1)   # SEEK_CUR
+    except OSError as e:
+        inner.push_ds_int(0)
+        inner.push_ds_int(0)
+        inner.push_ds_int(e.errno)
+        return ip
+    BIT_MASK = (1 << LONG_BIT) - 1
+    inner.push_ds_int(pos & BIT_MASK)
+    inner.push_ds_int(pos >> LONG_BIT)
+    inner.push_ds_int(0)
+    return ip
+
+
+# REPOSITION-FILE ( ud fileid -- ior )
+@dont_look_inside
+def prim_REPOSITION_FILE(inner, cur, ip):
+    import os
+    fd = inner.pop_ds_int()
+    hi = inner.pop_ds_int()
+    lo = inner.pop_ds_int()
+    BIT_MASK = (1 << LONG_BIT) - 1
+    pos = (lo & BIT_MASK) + (hi << LONG_BIT)
+    try:
+        os.lseek(fd, pos, 0)   # SEEK_SET
+    except OSError as e:
+        inner.push_ds_int(e.errno)
+        return ip
+    inner.push_ds_int(0)
+    return ip
+
+
+# FILE-SIZE ( fileid -- ud ior )
+@dont_look_inside
+def prim_FILE_SIZE(inner, cur, ip):
+    import os
+    fd = inner.pop_ds_int()
+    try:
+        st = os.fstat(fd)
+        size = st.st_size
+    except OSError as e:
+        inner.push_ds_int(0)
+        inner.push_ds_int(0)
+        inner.push_ds_int(e.errno)
+        return ip
+    BIT_MASK = (1 << LONG_BIT) - 1
+    inner.push_ds_int(size & BIT_MASK)
+    inner.push_ds_int(size >> LONG_BIT)
+    inner.push_ds_int(0)
     return ip
 
 
@@ -2496,6 +2809,8 @@ def install_primitives(outer):
     outer.define_prim("BL", prim_BL)
     outer.define_prim("FILL", prim_FILL)
     outer.define_prim("MOVE", prim_MOVE)
+    outer.define_prim("CMOVE", prim_CMOVE)
+    outer.define_prim("CMOVE>", prim_CMOVE_UP)
 
     outer.define_prim("2*", prim_2STAR)
     outer.define_prim("2/", prim_2SLASH)
@@ -2698,6 +3013,25 @@ def install_primitives(outer):
     # memory allocation
     outer.define_prim("ALLOCATE", prim_ALLOCATE)
     outer.define_prim("FREE", prim_FREE)
+
+    # file access
+    outer.define_prim("R/O", prim_R_O)
+    outer.define_prim("W/O", prim_W_O)
+    outer.define_prim("R/W", prim_R_W)
+    outer.define_prim("BIN", prim_BIN)
+    outer.define_prim("STDIN", prim_STDIN)
+    outer.define_prim("STDOUT", prim_STDOUT)
+    outer.define_prim("STDERR", prim_STDERR)
+    outer.define_prim("OPEN-FILE", prim_OPEN_FILE)
+    outer.define_prim("CREATE-FILE", prim_CREATE_FILE)
+    outer.define_prim("CLOSE-FILE", prim_CLOSE_FILE)
+    outer.define_prim("READ-FILE", prim_READ_FILE)
+    outer.define_prim("READ-LINE", prim_READ_LINE)
+    outer.define_prim("WRITE-FILE", prim_WRITE_FILE)
+    outer.define_prim("WRITE-LINE", prim_WRITE_LINE)
+    outer.define_prim("FILE-POSITION", prim_FILE_POSITION)
+    outer.define_prim("REPOSITION-FILE", prim_REPOSITION_FILE)
+    outer.define_prim("FILE-SIZE", prim_FILE_SIZE)
 
     # exception handling
     outer.define_prim("THROW", prim_THROW)

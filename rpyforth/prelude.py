@@ -24,6 +24,15 @@ PRELUDE = """\
 : D<> D= 0= ;
 CREATE pad-buf 512 ALLOT
 : PAD pad-buf ;
+: NALIGNED 1- TUCK + SWAP INVERT AND ;
+1 CHARS 0 2CONSTANT struct
+1 ALIGNED 1 CELLS 2CONSTANT cell%
+1 CHARS 1 CHARS 2CONSTANT char%
+1 FLOATS 1 FLOATS 2CONSTANT float%
+: %alignment DROP ;
+: %size NIP ;
+: %align DROP NALIGNED DROP ;
+: %allot NIP ALLOT ;
 """
 
 
