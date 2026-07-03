@@ -24,6 +24,7 @@ from rpyforth.objects import (
 )
 from rpyforth.inner_interp import (
     jitdriver,
+    Abort,
     HEAP_SIZE_BYTES,
     USE_STACK_FRAGMENT,
     CALL_SENTINEL,
@@ -1356,9 +1357,8 @@ def prim_ABORT_QUOTE_RUNTIME(inner, cur, ip):
         inner.rs_ptr = 0
         inner.lc_depth = 0  # Also clear the loop-control stack
         inner.cs_ptr = 0  # Also clear call stack
-        # Signal abort by returning EXIT_SENTINEL
-        from rpyforth.inner_interp import EXIT_SENTINEL
-        return EXIT_SENTINEL
+        inner.catch_ptr = 0
+        raise Abort
     return ip
 
 

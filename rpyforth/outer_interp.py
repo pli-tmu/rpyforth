@@ -1,5 +1,6 @@
 from rpyforth.objects import (
     W_StringObject, Word, CodeThread, W_IntObject, W_PtrObject, W_FloatObject, W_WordObject, ZERO, TRUE)
+from rpyforth.inner_interp import Abort
 from rpyforth.primitives import install_primitives
 from rpyforth.util import to_upper, split_whitespace
 
@@ -818,7 +819,11 @@ class OuterInterpreter(object):
     def _execute_or_push(self, w, t):
         """Execute word or push number in INTERPRET mode."""
         if w is not None:
-            self.inner.execute_word_now(w)
+            try:
+                self.inner.execute_word_now(w)
+            except Abort:
+                # ABORT" already cleared the stacks; resume interpretation.
+                pass
         elif self._is_float(t):
             self.inner.push_ds_float(self._to_float(t))
         elif self._is_number(t):
@@ -904,7 +909,10 @@ class OuterInterpreter(object):
             if w.immediate:
                 # Immediate words (including LITERAL, FLITERAL) are executed immediately
                 # LITERAL and FLITERAL have primitives that pop from the stack and emit literals
-                self.inner.execute_word_now(w)
+                try:
+                    self.inner.execute_word_now(w)
+                except Abort:
+                    pass
             else:
                 lit = self._value_word_literal(w)
                 if lit is not None:
@@ -1844,19 +1852,114 @@ class OuterInterpreter(object):
 
         code = [self.current_code[idx] for idx in range(self.cc_ptr)]
         lits = [self.current_lits[idx] for idx in range(self.lit_ptr)]
-        thread = CodeThread(code, lits)
 
         if self.noname_mode:
+            thread = CodeThread(code, lits)
             self.inner.push_ds(W_WordObject(Word("", thread=thread)))
             self.noname_mode = False
         else:
             name_upper = to_upper(self.current_name)
             if name_upper in self.dict:
                 existing_word = self.dict[name_upper]
-                existing_word.thread = thread
+                code, lits = self._inline_self_calls(code, lits, existing_word)
+                existing_word.thread = CodeThread(code, lits)
             else:
-                self.define_colon(self.current_name, thread)
+                self.define_colon(self.current_name, CodeThread(code, lits))
 
         self.state = INTERPRET
         self.current_name = ''
         self.reset_code()
+
+    def _is_branch_target_word(self, w):
+        """True for words whose literal is an instruction index in the current
+        thread (must be relocated when code is spliced)."""
+        return (w is self.wBR or w is self.w0BR or w is self.wQDO or
+                w is self.wLOOP or w is self.wPLUSLOOP)
+
+    def _inline_self_calls(self, code, lits, selfword):
+        """Splice one copy of the body into each non-tail self-call site, so a
+        recursive word does two levels of work per interpreter call frame. The
+        copy's EXITs become branches past the copy; its self-calls stay real
+        calls (which re-enter the inlined thread). Branch-target literals are
+        relocated on both the original code and the copies."""
+        n = len(code)
+        if n == 0 or n > 48:
+            return code, lits
+        sites = 0
+        i = 0
+        while i < n:
+            if code[i] is selfword:
+                sites += 1
+            i += 1
+        # Cap the expansion: many-site words with large bodies (e.g. tak's four
+        # sites) explode the trace length and run slower inlined.
+        if sites == 0 or sites > 4 or n * (sites + 1) > 96:
+            return code, lits
+        wTAILCALL = self.dict.get("TAILCALL", None)
+        # Pass 1: map every original instruction index (plus the one-past-end
+        # position, a valid branch target) to its position in the new code.
+        newpos = [0] * (n + 1)
+        p = 0
+        i = 0
+        while i < n:
+            newpos[i] = p
+            if code[i] is selfword:
+                p += n
+            else:
+                p += 1
+            i += 1
+        newpos[n] = p
+        # Pass 2: emit into pre-sized lists (CodeThread requires non-resizable
+        # lists), relocating branch targets.
+        total = newpos[n]
+        newcode = [None] * total
+        newlits = [ZERO] * total
+        out = 0
+        i = 0
+        while i < n:
+            w = code[i]
+            if w is selfword:
+                base = newpos[i]
+                copy_end = base + n
+                j = 0
+                while j < n:
+                    cw = code[j]
+                    cl = lits[j]
+                    if cw is self.wEXIT:
+                        newcode[out] = self.wBR
+                        newlits[out] = W_IntObject(copy_end)
+                    elif wTAILCALL is not None and cw is wTAILCALL:
+                        assert isinstance(cl, W_WordObject)
+                        if cl.word is selfword:
+                            newcode[out] = self.wBR
+                            newlits[out] = W_IntObject(base)
+                        else:
+                            # A mid-thread TAILCALL would misread its literal;
+                            # demote to a plain call (it falls through to
+                            # copy_end, which is the site's continuation).
+                            newcode[out] = cl.word
+                            newlits[out] = ZERO
+                    elif self._is_branch_target_word(cw):
+                        assert isinstance(cl, W_IntObject)
+                        newcode[out] = cw
+                        newlits[out] = W_IntObject(base + cl.intval)
+                    else:
+                        newcode[out] = cw
+                        newlits[out] = cl
+                    j += 1
+                    out += 1
+            elif self._is_branch_target_word(w):
+                cl = lits[i]
+                assert isinstance(cl, W_IntObject)
+                target = cl.intval
+                assert 0 <= target <= n
+                newcode[out] = w
+                newlits[out] = W_IntObject(newpos[target])
+                out += 1
+            else:
+                newcode[out] = w
+                newlits[out] = lits[i]
+                out += 1
+            i += 1
+        assert out == total
+        return newcode, newlits

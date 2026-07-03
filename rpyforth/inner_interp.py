@@ -71,6 +71,17 @@ class Bye(Exception):
     """Raised by BYE to exit the Forth system cleanly."""
     pass
 
+class Abort(Exception):
+    """Raised by ABORT" at runtime: unwinds every active portal (the stacks are
+    already cleared by the raiser); the outer interpreter resumes."""
+    pass
+
+
+# Portal-boundary sentinel: execute_thread pushes it on entry, and popping it
+# ends that invocation's dispatch loop. Inside a trace the popped return
+# address is promoted, so the halt test constant-folds away on real returns.
+HALT_THREAD = CodeThread([], [])
+
 def get_printable_location(ip, thread):
     return "ip=%d %s %s" % (ip, thread.code[ip].to_string(), thread.lits[ip].to_string())
 
@@ -546,22 +557,26 @@ class InnerInterpreter(InterpBase, object):
         return self.heap.float_fetch(addr)
 
     def execute_thread(self, thread, ip=0):
+        # A halt frame marks the portal boundary. Every return pops
+        # unconditionally; the pop's promoted return address folds the halt test
+        # away inside traces, so returning costs one guard and no depth compare.
+        self.push_call(HALT_THREAD, 0)
+        if USE_STACK_FRAGMENT:
+            push_ds_fragments(self)
         while True:
             jitdriver.jit_merge_point(ip=ip, thread=thread, self=self)
             if ip >= len(thread.code):
-                if self.cs_ptr > self.cs_base:
-                    thread, ip = self.pop_call()
-                    continue
-                else:
+                thread, ip = self.pop_call()
+                if thread is HALT_THREAD:
                     break
+                continue
 
             w = promote(thread.code[ip])
             if w is None:
-                if self.cs_ptr > self.cs_base:
-                    thread, ip = self.pop_call()
-                    continue
-                else:
+                thread, ip = self.pop_call()
+                if thread is HALT_THREAD:
                     break
+                continue
             ip += 1
 
             prim = promote(w.prim)
@@ -572,9 +587,8 @@ class InnerInterpreter(InterpBase, object):
                     thread, ip = self.throw_unwind(e.code)
                     continue
                 if ip == EXIT_SENTINEL:
-                    if self.cs_ptr > self.cs_base:
-                        thread, ip = self.pop_call()
-                    else:
+                    thread, ip = self.pop_call()
+                    if thread is HALT_THREAD:
                         break
                     continue
                 if ip == CALL_SENTINEL:
@@ -596,9 +610,8 @@ class InnerInterpreter(InterpBase, object):
                             ip = 0
                             jitdriver.can_enter_jit(ip=ip, thread=thread, self=self)
                             continue
-                    if self.cs_ptr > self.cs_base:
-                        thread, ip = self.pop_call()
-                    else:
+                    thread, ip = self.pop_call()
+                    if thread is HALT_THREAD:
                         break
                     continue
             else:

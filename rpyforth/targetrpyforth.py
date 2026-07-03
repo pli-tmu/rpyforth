@@ -1,7 +1,7 @@
 import os
 import sys
 
-from rpyforth.inner_interp import InnerInterpreter, Bye
+from rpyforth.inner_interp import InnerInterpreter, Bye, Abort
 from rpyforth.objects import ForthException
 from rpyforth.outer_interp import OuterInterpreter
 from rpyforth.metastack import DataStackOverflow
@@ -41,6 +41,8 @@ def entry_point(argv):
             outer.interpret_line(line)
     except Bye:
         pass
+    except Abort:
+        err = 1
     except DataStackOverflow:
         print("data stack overflow")
         err = 1
