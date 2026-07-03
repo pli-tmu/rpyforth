@@ -2,6 +2,7 @@ import os
 import sys
 
 from rpyforth.inner_interp import InnerInterpreter, Bye
+from rpyforth.objects import ForthException
 from rpyforth.outer_interp import OuterInterpreter
 from rpyforth.metastack import DataStackOverflow
 from rpyforth.prelude import load_prelude
@@ -42,6 +43,9 @@ def entry_point(argv):
         pass
     except DataStackOverflow:
         print("data stack overflow")
+        err = 1
+    except ForthException as e:
+        print("uncaught THROW: %d" % e.code)
         err = 1
     f.close()
     return err

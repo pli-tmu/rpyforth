@@ -1,4 +1,5 @@
 from rpyforth.objects import ZERO, W_FloatObject, make_int
+from rpython.rlib.debug import make_sure_not_resized
 
 HEAP_CELL_COUNT = 65536
 HEAP_SIZE_BYTES = HEAP_CELL_COUNT
@@ -7,45 +8,31 @@ TAG_CELL = 1
 
 
 class Heap(object):
-    """Lazy unboxed data space: bytes (C!), cells+tags (@/!), float_mem (f@/f!)."""
-
-    _immutable_fields_ = ["size"]
+    # bytes/cells/tags/float_mem are reference-immutable: the array pointer
+    # never changes after __init__, so the JIT can hoist the load once.
+    _immutable_fields_ = ["size", "bytes", "cells", "tags", "float_mem"]
 
     def __init__(self, size):
         self.size = size
-        self.bytes = [0] * size
-        self.cells = None
-        self.tags = None
-        self.float_mem = None
-
-    def _ensure_cells(self):
-        if self.cells is None:
-            self.cells = [0] * self.size
-            self.tags = [0] * self.size
-
-    def _ensure_floats(self):
-        if self.float_mem is None:
-            self.float_mem = [0.0] * self.size
+        self.bytes = make_sure_not_resized([0] * size)
+        self.cells = make_sure_not_resized([0] * size)
+        self.tags = make_sure_not_resized([0] * size)
+        self.float_mem = make_sure_not_resized([0.0] * size)
 
     def _ensure_addr(self, addr, span):
         assert 0 <= addr < self.size
         assert addr + span <= self.size
 
     def cell_tagged(self, addr):
-        if self.tags is None:
-            return False
         return self.tags[addr] & TAG_CELL
 
     def cell_store(self, addr, intval):
         self._ensure_addr(addr, 1)
-        self._ensure_cells()
         self.cells[addr] = intval
-        self.tags[addr] = self.tags[addr] | TAG_CELL
+        self.tags[addr] = TAG_CELL
 
     def cell_fetch_int(self, addr):
         self._ensure_addr(addr, 1)
-        if self.cells is None:
-            return 0
         return self.cells[addr]
 
     def cell_fetch(self, addr):
@@ -64,13 +51,10 @@ class Heap(object):
 
     def float_store(self, addr, value):
         self._ensure_addr(addr, 1)
-        self._ensure_floats()
         self.float_mem[addr] = value
 
     def float_fetch_float(self, addr):
         self._ensure_addr(addr, 1)
-        if self.float_mem is None:
-            return 0.0
         return self.float_mem[addr]
 
     def float_fetch(self, addr):

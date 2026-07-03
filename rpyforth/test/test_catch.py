@@ -37,3 +37,55 @@ def test_catch_nested():
     inner = run(": bad 9 THROW ;  : mid ['] bad CATCH ;  ' mid CATCH")
     assert inner.pop_ds_int() == 0   # outer: mid returned normally
     assert inner.pop_ds_int() == 9   # inner caught 9
+
+
+def test_catch_of_primitive_xt():
+    inner = run("1 2 ' + CATCH")
+    assert inner.pop_ds_int() == 0
+    assert inner.pop_ds_int() == 3
+
+
+def test_throw_through_execute():
+    inner = run(": bad 5 THROW ;  : mid ['] bad EXECUTE ;  ' mid CATCH")
+    assert inner.pop_ds_int() == 5
+
+
+def test_throw_from_deep_call_chain():
+    inner = run(": a 7 THROW ;  : b a ;  : c b ;  ' c CATCH")
+    assert inner.pop_ds_int() == 7
+
+
+def test_throw_inside_loop_restores_loop_state():
+    # THROW from inside DO..LOOP must restore the loop-control stack so the
+    # handler's own loop still works.
+    inner = run(": bad 10 0 do i 3 = if 7 throw then loop ;"
+                "  : go ['] bad catch 100 + 3 0 do 10 + loop ;  go")
+    assert inner.pop_ds_int() == 137
+
+
+def test_throw_restores_return_stack():
+    inner = run(": bad 42 >r 7 throw ;  ' bad CATCH")
+    assert inner.pop_ds_int() == 7
+    assert inner.rs_ptr == 0
+
+
+def test_nested_catch_in_loop_bounds_recursion():
+    # Nested CATCH where an inner protected word returns normally after handling
+    # a THROW, driven from a loop. execute_word_now must stop when its word is
+    # done rather than draining the shared call stack into the caller's frames;
+    # otherwise the loop's continuation runs nested inside each CATCH and the
+    # native call stack grows with the iteration count (StackOverflow at scale).
+    inner = InnerInterpreter()
+    outer = OuterInterpreter(inner)
+    prog = [
+        "1 constant LOE  2 constant HIE  variable cn",
+        ": bad cn @ 1 and if HIE throw else LOE throw then ;",
+        ": lo ['] bad catch ?dup if dup LOE = if drop else throw then then ;",
+        ": hi ['] lo catch ?dup if dup HIE = if drop else throw then then ;",
+        ": some ['] hi catch ?dup if drop then ;",
+        ": go 3000 0 do i cn ! some loop 123 ;",
+        "go",
+    ]
+    for line in prog:
+        outer.interpret_line(line)
+    assert inner.pop_ds_int() == 123

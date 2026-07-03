@@ -10,6 +10,9 @@ from rpyforth.objects import (
     HEX,
     TRUE,
     ZERO,
+    CodeThread,
+    ForthException,
+    Word,
     W_IntObject,
     W_StringObject,
     W_FloatObject,
@@ -19,16 +22,15 @@ from rpyforth.objects import (
     SMALL_INT_MIN,
     SMALL_INT_MAX,
 )
-from rpyforth.inner_interp import jitdriver, HEAP_SIZE_BYTES, USE_STACK_FRAGMENT
+from rpyforth.inner_interp import (
+    jitdriver,
+    HEAP_SIZE_BYTES,
+    USE_STACK_FRAGMENT,
+    CALL_SENTINEL,
+)
+from rpyforth.metastack import push_ds_fragments
 from rpyforth.metastack_int import snapshot_cache, restore_cache
 from rpyforth.util import digit_to_char
-
-
-class ForthException(Exception):
-    """Raised by THROW with a non-zero code; caught by the nearest CATCH."""
-
-    def __init__(self, code):
-        self.code = code
 
 
 # Internal helpers -----------------------------------------------------------
@@ -1527,12 +1529,25 @@ def prim_FDUP(inner, cur, ip):
 
 # Dictionary Operations
 
+def _call_word_inline(inner, cur, ip, word):
+    """Transfer control to a colon word from inside a primitive without leaving
+    the dispatch loop: push the return frame exactly like a compiled call, hand
+    the target to the loop via pending_word, and signal with CALL_SENTINEL.
+    Keeps EXECUTE/CATCH/deferred calls traceable (no nested portal)."""
+    inner.push_call(cur, ip)
+    push_ds_fragments(inner)
+    inner.pending_word = word
+    return CALL_SENTINEL
+
+
 # EXECUTE ( xt -- )
 def prim_EXECUTE(inner, cur, ip):
     """GForth core 2012: execute the execution token xt."""
     xt = inner.pop_ds()
     assert isinstance(xt, W_WordObject)
     word = xt.word
+    if word.thread is not None:
+        return _call_word_inline(inner, cur, ip, word)
     inner.execute_word_now(word)
     return ip
 
@@ -1544,6 +1559,8 @@ def prim_DEFER_EXEC(inner, cur, ip):
     if word is None:
         print "uninitialized DEFER"
         return ip
+    if word.thread is not None:
+        return _call_word_inline(inner, cur, ip, word)
     inner.execute_word_now(word)
     return ip
 
@@ -1635,8 +1652,7 @@ def prim_MOVE(inner, cur, ip):
     addr1 = inner.pop_ds_int()
 
     # Use cell memory when the source was written via ! ; otherwise char bytes
-    heap = inner.heap
-    if heap is not None and heap.cell_tagged(addr1):
+    if inner.heap.cell_tagged(addr1):
         for i in range(u):
             inner.cell_store(addr2 + i, inner.cell_fetch_int(addr1 + i))
     else:
@@ -1977,7 +1993,7 @@ def _read_cstr(inner, addr, u):
         entry = inner.buf[addr]
     if entry is not None and isinstance(entry, W_StringObject):
         s = entry.strval
-        if len(s) > u:
+        if 0 <= u < len(s):
             return s[:u]
         return s
     chars = []
@@ -2277,11 +2293,41 @@ def prim_THROW(inner, cur, ip):
     return ip
 
 
+# (CATCH-EPILOGUE) -- runs when a CATCH-protected word returns normally: the
+# catch frame is no longer needed and the success code 0 goes on the stack.
+def prim_CATCH_EPILOGUE(inner, cur, ip):
+    inner.catch_drop_frame()
+    inner.push_ds_int(0)
+    return ip
+
+
+CATCH_EPILOGUE_WORD = Word("(catch-epilogue)", prim=prim_CATCH_EPILOGUE)
+CATCH_EPILOGUE_THREAD = CodeThread([CATCH_EPILOGUE_WORD], [ZERO])
+
+
 # CATCH ( i*x xt -- j*x 0 | i*x n ) -- execute xt, returning 0 normally or the
 # THROW code n with the stack depth restored to just before xt ran.
+# The frame is recorded in the interpreter's flat catch arrays and xt runs via
+# a normal in-loop call (through the epilogue trampoline), so the whole
+# mechanism stays inside the trace; THROW unwinds in execute_thread.
 def prim_CATCH(inner, cur, ip):
     xt = inner.pop_ds()
     assert isinstance(xt, W_WordObject)
+    word = xt.word
+    if word.thread is None:
+        return _catch_primitive_xt(inner, cur, ip, word)
+    inner.catch_push_frame(cur, ip)
+    inner.push_call(cur, ip)
+    push_ds_fragments(inner)
+    inner.push_call(CATCH_EPILOGUE_THREAD, 0)
+    push_ds_fragments(inner)
+    inner.pending_word = word
+    return CALL_SENTINEL
+
+
+# Cold fallback for CATCH of a primitive xt: run it in a bounded nested portal.
+@dont_look_inside
+def _catch_primitive_xt(inner, cur, ip, word):
     if USE_STACK_FRAGMENT:
         snap = snapshot_cache(inner)
     else:
@@ -2293,8 +2339,9 @@ def prim_CATCH(inner, cur, ip):
     s_li = inner.li
     s_lc = inner.lc_depth
     s_cs = inner.cs_ptr
+    s_catch = inner.catch_ptr
     try:
-        inner.execute_word_now(xt.word)
+        inner.execute_word_now(word)
     except ForthException as e:
         if USE_STACK_FRAGMENT:
             restore_cache(inner, snap)
@@ -2305,6 +2352,7 @@ def prim_CATCH(inner, cur, ip):
         inner.li = s_li
         inner.lc_depth = s_lc
         inner.cs_ptr = s_cs
+        inner.catch_ptr = s_catch
         inner.push_ds_int(e.code)
         return ip
     inner.push_ds_int(0)

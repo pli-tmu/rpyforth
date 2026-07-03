@@ -9,7 +9,6 @@ from rpyforth.metastack import (
     DataStackOverflow,
     DSFragment,
     DSMetaStack,
-    STACK_FRAGMENT_STRICT,
 )
 
 
@@ -130,11 +129,9 @@ class DSIntMetaStack(DSMetaStack):
 
     def _pop_from_arena(self):
         # Cache empty: the top now lives in the arena (a callee consumed past its
-        # imported window into parent cells).
+        # imported window into parent cells). Underflow is an interpreter bug,
+        # checked by assert (no branch on the hot path).
         ap = self.spill_ptr - 1
-        if ap < 0:
-            assert not STACK_FRAGMENT_STRICT
-            assert False, "integer stack underflow"
         assert ap >= 0
         r = self.spill[ap]
         self.spill_ptr = ap
@@ -169,9 +166,6 @@ class DSIntMetaStack(DSMetaStack):
             assert si >= 0
             return self.frame[si]
         ai = self.spill_ptr - 1 - (depth - dd)
-        if ai < 0:
-            assert not STACK_FRAGMENT_STRICT
-            assert False, "integer stack underflow"
         assert ai >= 0
         return self.spill[ai]
 
@@ -189,9 +183,6 @@ class DSIntMetaStack(DSMetaStack):
                 self.frame[si] = v
             return
         ai = self.spill_ptr - 1 - (depth - dd)
-        if ai < 0:
-            assert not STACK_FRAGMENT_STRICT
-            assert False, "integer stack underflow"
         assert ai >= 0
         self.spill[ai] = v
 
@@ -235,9 +226,13 @@ class DSIntMetaStack(DSMetaStack):
     def pop_fragment_commit_on(self):
         # O(1): the callee's net result is already the cache top and the caller's
         # parked cells are already the arena top, contiguously below it. Nothing
-        # to move -- just unwind the call counter.
-        if self.frag_ptr > 0:
-            self.frag_ptr = self.frag_ptr - 1
+        # to move -- just unwind the call counter. Every poppable call-stack
+        # entry was pushed with a paired push_fragment_on (and ABORT zeroes both
+        # counters together), so the counter cannot underflow; assert instead of
+        # branching on the hot return path.
+        fp = self.frag_ptr - 1
+        assert fp >= 0
+        self.frag_ptr = fp
 
     # ------------------------------------------------------------------
     # Public, test-facing wrappers.

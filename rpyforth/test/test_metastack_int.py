@@ -30,7 +30,7 @@ def test_stack_fragment_virtualizables_include_tops_and_frame():
     for name in (
         "t0", "t1", "d", "frame[*]",
         "frag_ptr", "spill_ptr",
-        "rs_ptr", "cs_tids", "cs_ips", "cs_ptr",
+        "rs_ptr", "cs_pcs", "cs_ptr", "cs_base",
     ):
         assert name in STACK_FRAGMENT_VIRTUALIZABLES
     # The arena and the immutable array references stay out.

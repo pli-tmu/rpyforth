@@ -7,6 +7,13 @@ except ImportError:
 from rpython.rlib.jit import elidable
 
 
+class ForthException(Exception):
+    """Raised by THROW with a non-zero code; caught by the nearest CATCH."""
+
+    def __init__(self, code):
+        self.code = code
+
+
 class Word(object):
     """
     Dictionary entry for a Forth word.
@@ -19,6 +26,10 @@ class Word(object):
         self.immediate = immediate # bool (mutable for IMMEDIATE)
         self.thread = thread # code thread (mutable for RECURSIVE)
         self.does_ip = -1  # DOES> instruction pointer (-1 means not set)
+        # Single-instruction thread wrapping this word, built on first use by
+        # execute_word_now and reused so each EXECUTE/CATCH does not allocate a
+        # fresh thread (and register id) on every call.
+        self.now_thread = None
 
     @elidable
     def is_primitive(self):

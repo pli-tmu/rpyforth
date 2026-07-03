@@ -1,5 +1,6 @@
 from rpyforth.objects import (
     DECIMAL,
+    ForthException,
     Word,
     CodeThread,
     ZERO,
@@ -7,7 +8,6 @@ from rpyforth.objects import (
     W_IntObject,
     W_StringObject,
     W_PtrObject,
-    W_FloatObject,
     CELL_SIZE_BYTES,
     CELL_SIZE,
     make_int,
@@ -28,6 +28,7 @@ USE_VIRTUALIZATION = bool(os.environ.get("RPYFORTH_VIRTUALIZE"))
 USE_STACK_FRAGMENT = bool(os.environ.get("RPYFORTH_STACK_FRAGMENT"))
 
 from rpyforth.metastack import (
+    FRAME_SIZE,
     STACK_FRAGMENT_VIRTUALIZABLES,
     push_ds_fragments,
     pop_ds_fragments_commit,
@@ -49,6 +50,19 @@ EXIT_SENTINEL = -1
 
 # Sentinel value for TAILCALL - indicates a tail call to another word
 TAILCALL_SENTINEL = -2
+
+# Sentinel value for a primitive-initiated call (EXECUTE, CATCH): the primitive
+# has already pushed the return frame(s); the dispatch loop transfers control to
+# self.pending_word's thread, keeping the call inside the traced loop.
+CALL_SENTINEL = -3
+
+# Maximum number of simultaneously active CATCH frames.
+CATCH_DEPTH = 16384
+
+# Call-stack packing: a return address is (tid << CS_IP_BITS) | ip. 24 bits
+# bound the ip within one code thread; tids are bounded by MAX_THREADS.
+CS_IP_BITS = 24
+CS_IP_MASK = (1 << CS_IP_BITS) - 1
 
 class Exit(Exception):
     pass
@@ -88,12 +102,17 @@ class InnerInterpreter(InterpBase, object):
     # lets the JIT hoist the array-pointer load to the loop header instead of
     # reloading it on every spill/refill.
     _immutable_fields_ = ["cell_size", "cell_size_bytes", "base", "spill",
-                          "lc_is", "lc_ls", "rs", "ds_locals"]
+                          "lc_is", "lc_ls", "rs", "ds_locals", "heap",
+                          "ca_tids", "ca_ips", "ca_dsi", "ca_dsf", "ca_dsl",
+                          "ca_rs", "ca_li", "ca_lc", "ca_cs",
+                          "ca_t0", "ca_t1", "ca_d", "ca_frag", "ca_spill",
+                          "ca_frames"]
 
     if USE_VIRTUALIZATION:
         _virtualizable_ = ["ds_ints", "ds_floats",
                            "ds_ptr_ints", "ds_ptr_floats", "ds_ptr_locals",
-                           "rs_ptr", "cs_tids", "cs_ips", "cs_ptr", "li",
+                           "rs_ptr", "cs_pcs", "cs_ptr", "cs_base",
+                           "li",
                            "cell_size", "cell_size_bytes", "base"]
     elif USE_STACK_FRAGMENT:
         _virtualizable_ = STACK_FRAGMENT_VIRTUALIZABLES
@@ -125,14 +144,19 @@ class InnerInterpreter(InterpBase, object):
         self.lc_is = [0] * STACK_SIZE
         self.lc_ls = [0] * STACK_SIZE
 
-        # Virtualized call stack for JIT optimization. The return thread is stored
-        # by id (int, no GC barrier) and recovered from THREAD_REGISTRY; the
-        # foldable lookup removes the per-return thread guard.
-        self.cs_tids = [0] * STACK_SIZE
-        self.cs_ips = [0] * STACK_SIZE
+        # Virtualized call stack for JIT optimization. A return address is one
+        # packed int (thread id << CS_IP_BITS | ip): no GC write barrier, one
+        # array access per push/pop, and a single promote covers both the return
+        # ip and the return thread (the THREAD_REGISTRY lookup on the folded tid
+        # is pure), so each return costs one guard instead of two.
+        self.cs_pcs = [0] * STACK_SIZE
         self.cs_ptr = 0
+        # Lower bound for execute_thread: it stops popping return frames when the
+        # call stack drains back to this depth. execute_word_now raises it so a
+        # nested run (e.g. CATCH) returns instead of escaping into outer frames.
+        self.cs_base = 0
 
-        self.heap = None
+        self.heap = Heap(HEAP_SIZE_BYTES)
         self.cell_size = CELL_SIZE
         self.cell_size_bytes = CELL_SIZE_BYTES
 
@@ -147,6 +171,30 @@ class InnerInterpreter(InterpBase, object):
 
         # Words bound to DEFER slots; a deferred word executes deferred_words[id].
         self.deferred_words = []
+
+        # Catch-frame stack: flat parallel arrays (no allocation per CATCH).
+        # A frame records the resume address plus every piece of machine state
+        # THROW must restore; catch_ptr indexes the top. The frame's cached
+        # stack-cache cells live at ca_frames[i*FRAME_SIZE : (i+1)*FRAME_SIZE].
+        self.ca_tids = [0] * CATCH_DEPTH
+        self.ca_ips = [0] * CATCH_DEPTH
+        self.ca_dsi = [0] * CATCH_DEPTH
+        self.ca_dsf = [0] * CATCH_DEPTH
+        self.ca_dsl = [0] * CATCH_DEPTH
+        self.ca_rs = [0] * CATCH_DEPTH
+        self.ca_li = [0] * CATCH_DEPTH
+        self.ca_lc = [0] * CATCH_DEPTH
+        self.ca_cs = [0] * CATCH_DEPTH
+        self.ca_t0 = [0] * CATCH_DEPTH
+        self.ca_t1 = [0] * CATCH_DEPTH
+        self.ca_d = [0] * CATCH_DEPTH
+        self.ca_frag = [0] * CATCH_DEPTH
+        self.ca_spill = [0] * CATCH_DEPTH
+        self.ca_frames = [0] * (CATCH_DEPTH * FRAME_SIZE)
+        self.catch_ptr = 0
+
+        # Target of a CALL_SENTINEL transfer, set by the initiating primitive.
+        self.pending_word = None
 
         if USE_STACK_FRAGMENT:
             self.init_fields()
@@ -164,31 +212,102 @@ class InnerInterpreter(InterpBase, object):
             self.spill_ptr = 0
 
     def push_call(self, thread, ip):
-        """Push return address (thread id + ip) onto the virtualized call stack."""
+        """Push packed return address (tid << CS_IP_BITS | ip)."""
         ptr = self.cs_ptr
-        assert ptr < len(self.cs_tids)
-        self.cs_tids[ptr] = thread.tid
-        self.cs_ips[ptr] = ip
+        assert ptr < len(self.cs_pcs)
+        assert 0 <= ip < (1 << CS_IP_BITS)
+        self.cs_pcs[ptr] = (thread.tid << CS_IP_BITS) | ip
         self.cs_ptr = ptr + 1
 
     def pop_call(self):
-        """Pop return address; recover the thread from its id."""
+        """Pop packed return address; recover the thread from its id."""
         ptr = self.cs_ptr - 1
         assert ptr >= 0
         if USE_STACK_FRAGMENT:
             pop_ds_fragments_commit(self)
         self.cs_ptr = ptr
-        tid = self.cs_tids[ptr]
-        ip = self.cs_ips[ptr]
+        pc = promote(self.cs_pcs[ptr])
         # Clear the slot (mirrors the old null write): helps the JIT treat the
         # tail above cs_ptr as dead and elide the reads on recursive traces.
-        self.cs_tids[ptr] = 0
+        self.cs_pcs[ptr] = 0
+        tid = pc >> CS_IP_BITS
+        ip = pc & CS_IP_MASK
         thread = THREAD_REGISTRY.threads[tid]
         return thread, ip
 
     def is_call_stack_empty(self):
         """Check if call stack is empty."""
         return self.cs_ptr == 0
+
+    @unroll_safe
+    def catch_push_frame(self, thread, ip):
+        """Record a CATCH resume point: return address plus all the state a
+        THROW must restore. Flat array writes, no allocation."""
+        cp = self.catch_ptr
+        assert 0 <= cp < CATCH_DEPTH
+        self.ca_tids[cp] = thread.tid
+        self.ca_ips[cp] = ip
+        self.ca_dsf[cp] = self.ds_ptr_floats
+        self.ca_dsl[cp] = self.ds_ptr_locals
+        self.ca_rs[cp] = self.rs_ptr
+        self.ca_li[cp] = self.li
+        self.ca_lc[cp] = self.lc_depth
+        self.ca_cs[cp] = self.cs_ptr
+        if USE_STACK_FRAGMENT:
+            self.ca_t0[cp] = self.t0
+            self.ca_t1[cp] = self.t1
+            self.ca_d[cp] = self.d
+            self.ca_frag[cp] = self.frag_ptr
+            self.ca_spill[cp] = self.spill_ptr
+            fbase = cp * FRAME_SIZE
+            i = 0
+            while i < FRAME_SIZE:
+                self.ca_frames[fbase + i] = self.frame[i]
+                i += 1
+        else:
+            self.ca_dsi[cp] = self.ds_ptr_ints
+        self.catch_ptr = cp + 1
+
+    def catch_drop_frame(self):
+        """Discard the top catch frame (protected word returned normally)."""
+        cp = self.catch_ptr - 1
+        assert cp >= 0
+        self.catch_ptr = cp
+
+    @unroll_safe
+    def throw_unwind(self, code):
+        """Unwind to the nearest CATCH frame of this portal: restore its saved
+        state, push the throw code, and return the resume (thread, ip). If the
+        top frame belongs to an outer portal (below cs_base), re-raise so the
+        exception propagates out of this execute_thread invocation."""
+        cp = self.catch_ptr - 1
+        if cp < 0 or self.ca_cs[cp] < self.cs_base:
+            raise ForthException(code)
+        assert cp >= 0
+        self.catch_ptr = cp
+        self.ds_ptr_floats = self.ca_dsf[cp]
+        self.ds_ptr_locals = self.ca_dsl[cp]
+        self.rs_ptr = self.ca_rs[cp]
+        self.li = self.ca_li[cp]
+        self.lc_depth = self.ca_lc[cp]
+        self.cs_ptr = self.ca_cs[cp]
+        if USE_STACK_FRAGMENT:
+            self.t0 = self.ca_t0[cp]
+            self.t1 = self.ca_t1[cp]
+            self.d = self.ca_d[cp]
+            self.frag_ptr = self.ca_frag[cp]
+            self.spill_ptr = self.ca_spill[cp]
+            fbase = cp * FRAME_SIZE
+            i = 0
+            while i < FRAME_SIZE:
+                self.frame[i] = self.ca_frames[fbase + i]
+                i += 1
+        else:
+            self.ds_ptr_ints = self.ca_dsi[cp]
+        self.push_ds_int(code)
+        thread = THREAD_REGISTRY.threads[self.ca_tids[cp]]
+        ip = self.ca_ips[cp]
+        return thread, ip
 
     def push_loop(self, limit, counter):
         """Push loop parameters onto the dedicated loop-control stack."""
@@ -386,32 +505,19 @@ class InnerInterpreter(InterpBase, object):
         self.here += 1
         return addr
 
-    def _get_heap(self):
-        heap = self.heap
-        if heap is None:
-            heap = Heap(HEAP_SIZE_BYTES)
-            self.heap = heap
-        return heap
-
     def _ensure_addr(self, addr, span):
         assert 0 <= addr < HEAP_SIZE_BYTES
         assert addr + span <= HEAP_SIZE_BYTES
 
     def cell_store(self, addr, intval):
         assert isinstance(addr, int)
-        self._get_heap().cell_store(addr, intval)
+        self.heap.cell_store(addr, intval)
 
     def cell_fetch_int(self, addr):
-        heap = self.heap
-        if heap is None:
-            return 0
-        return heap.cell_fetch_int(addr)
+        return self.heap.cell_fetch_int(addr)
 
     def cell_fetch(self, addr):
-        heap = self.heap
-        if heap is None:
-            return ZERO
-        return heap.cell_fetch(addr)
+        return self.heap.cell_fetch(addr)
 
     def cell_2store(self, addr, x1_int, x2_int):
         assert 0 <= addr < HEAP_CELL_COUNT - self.cell_size_bytes
@@ -425,34 +531,25 @@ class InnerInterpreter(InterpBase, object):
         return x1, x2
 
     def char_store(self, addr, intval):
-        self._get_heap().char_store(addr, intval)
+        self.heap.char_store(addr, intval)
 
     def char_fetch(self, addr):
-        heap = self.heap
-        if heap is None:
-            return 0
-        return heap.char_fetch(addr)
+        return self.heap.char_fetch(addr)
 
     def float_store(self, addr, value):
-        self._get_heap().float_store(addr, value)
+        self.heap.float_store(addr, value)
 
     def cell_float_fetch(self, addr):
-        heap = self.heap
-        if heap is None:
-            return 0.0
-        return heap.float_fetch_float(addr)
+        return self.heap.float_fetch_float(addr)
 
     def float_fetch(self, addr):
-        heap = self.heap
-        if heap is None:
-            return W_FloatObject(0.0)
-        return heap.float_fetch(addr)
+        return self.heap.float_fetch(addr)
 
     def execute_thread(self, thread, ip=0):
         while True:
             jitdriver.jit_merge_point(ip=ip, thread=thread, self=self)
             if ip >= len(thread.code):
-                if not self.is_call_stack_empty():
+                if self.cs_ptr > self.cs_base:
                     thread, ip = self.pop_call()
                     continue
                 else:
@@ -460,7 +557,7 @@ class InnerInterpreter(InterpBase, object):
 
             w = promote(thread.code[ip])
             if w is None:
-                if not self.is_call_stack_empty():
+                if self.cs_ptr > self.cs_base:
                     thread, ip = self.pop_call()
                     continue
                 else:
@@ -469,12 +566,23 @@ class InnerInterpreter(InterpBase, object):
 
             prim = promote(w.prim)
             if prim is not None:
-                ip = prim(self, thread, ip)
+                try:
+                    ip = prim(self, thread, ip)
+                except ForthException as e:
+                    thread, ip = self.throw_unwind(e.code)
+                    continue
                 if ip == EXIT_SENTINEL:
-                    if not self.is_call_stack_empty():
+                    if self.cs_ptr > self.cs_base:
                         thread, ip = self.pop_call()
                     else:
                         break
+                    continue
+                if ip == CALL_SENTINEL:
+                    target = promote(self.pending_word)
+                    self.pending_word = None
+                    thread = target.thread
+                    ip = 0
+                    jitdriver.can_enter_jit(ip=ip, thread=thread, self=self)
                     continue
                 if ip == TAILCALL_SENTINEL:
                     from rpyforth.objects import W_WordObject
@@ -488,7 +596,7 @@ class InnerInterpreter(InterpBase, object):
                             ip = 0
                             jitdriver.can_enter_jit(ip=ip, thread=thread, self=self)
                             continue
-                    if not self.is_call_stack_empty():
+                    if self.cs_ptr > self.cs_base:
                         thread, ip = self.pop_call()
                     else:
                         break
@@ -503,6 +611,17 @@ class InnerInterpreter(InterpBase, object):
                 jitdriver.can_enter_jit(ip=ip, thread=thread, self=self)
 
     def execute_word_now(self, w):
-        code = [w]
-        lits = [ZERO]
-        self.execute_thread(CodeThread(code, lits), 0)
+        # Run w as a self-contained call: bound the interpreter to the current
+        # call-stack depth so it returns when w finishes instead of draining the
+        # shared call stack into the caller's frames. CATCH relies on this to
+        # avoid native-stack growth when nested inside a loop.
+        nt = w.now_thread
+        if nt is None:
+            nt = CodeThread([w], [ZERO])
+            w.now_thread = nt
+        saved_base = self.cs_base
+        self.cs_base = self.cs_ptr
+        try:
+            self.execute_thread(nt, 0)
+        finally:
+            self.cs_base = saved_base
