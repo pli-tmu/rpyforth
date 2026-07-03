@@ -2761,9 +2761,41 @@ def prim_MS(inner, cur, ip):
     return ip
 
 
+def _civil_from_days(z):
+    """Gregorian (year, month, day) for a count of days since 1970-01-01.
+    Howard Hinnant's civil_from_days, integer-only so it is RPython-safe."""
+    z += 719468
+    era = z // 146097
+    doe = z - era * 146097
+    yoe = (doe - doe // 1460 + doe // 36524 - doe // 146096) // 365
+    y = yoe + era * 400
+    doy = doe - (365 * yoe + yoe // 4 - yoe // 100)
+    mp = (5 * doy + 2) // 153
+    d = doy - (153 * mp + 2) // 5 + 1
+    if mp < 10:
+        m = mp + 3
+    else:
+        m = mp - 9
+    if m <= 2:
+        y += 1
+    return y, m, d
+
+
 # TIME&DATE ( -- nsec nmin nhour nday nmonth nyear )
 def prim_TIME_AND_DATE(inner, cur, ip):
-    raise NotImplementedError
+    """Current UTC time, decomposed."""
+    from rpython.rlib.rtime import time
+    t = int(time())
+    days = t // 86400
+    rem = t - days * 86400
+    year, month, day = _civil_from_days(days)
+    inner.push_ds_int(rem % 60)
+    inner.push_ds_int((rem // 60) % 60)
+    inner.push_ds_int(rem // 3600)
+    inner.push_ds_int(day)
+    inner.push_ds_int(month)
+    inner.push_ds_int(year)
+    return ip
 
 
 # ARGC ( -- n )
