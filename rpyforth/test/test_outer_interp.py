@@ -366,7 +366,7 @@ def test_nested_do_loops():
 def test_leave_in_loop():
     inner = run(": EARLY 10 0 DO I DUP 5 = IF LEAVE THEN LOOP ; EARLY")
     results = []
-    while inner.ds_ptr_ints > 0:
+    while inner.ds_int_size() > 0:
         results.append(inner.pop_ds_int())
     assert results == [5, 4, 3, 2, 1, 0]
 
@@ -891,7 +891,7 @@ def test_abort_quote_false():
     # False flag should not abort
     outer.interpret_line('0 ABORT" This should not print"')
     # Stack should still have values
-    assert inner.ds_ptr_ints == 3
+    assert inner.ds_int_size() == 3
 
 def test_abort_quote_true():
     """Test ABORT\" with true condition - should abort"""
@@ -902,7 +902,7 @@ def test_abort_quote_true():
     # True flag should abort and clear stack
     outer.interpret_line('-1 ABORT" Error occurred"')
     # Stack should be cleared
-    assert inner.ds_ptr_ints == 0
+    assert inner.ds_int_size() == 0
 
 
 # ============================================
@@ -1266,3 +1266,111 @@ def test_argv_out_of_range():
     outer.interpret_line("1 ARGV")
     assert inner.pop_ds_int() == 0
     assert inner.pop_ds_int() == 0
+
+
+# ---------------------------------------------------------------------------
+# Value-word inlining: a reference to a VARIABLE/CONSTANT/CREATE word inside a
+# colon definition should compile to an inline literal push, not a nested-thread
+# call. Calls show up in the JIT trace as cs_threads/cs_ips array traffic plus
+# two guard_value ops per reference (the dominant cost in the `ary` shootout
+# inner loop); inlining the constant push removes that overhead entirely.
+# ---------------------------------------------------------------------------
+
+def _compile(*lines):
+    inner = InnerInterpreter()
+    outer = OuterInterpreter(inner)
+    for line in lines:
+        outer.interpret_line(line)
+    return inner, outer
+
+
+def test_variable_reference_is_inlined():
+    inner, outer = _compile("VARIABLE X", ": GETX X ;")
+    thread = outer.dict["GETX"].thread
+    x_word = outer.dict["X"]
+    # The X reference must NOT compile to a call to the X word.
+    assert x_word not in thread.code
+    # It must compile to an inline literal push of X's address.
+    assert thread.code[0] is outer.wLIT
+    outer.interpret_line("X")
+    assert thread.lits[0].intval == inner.pop_ds_int()
+
+
+def test_constant_reference_is_inlined():
+    inner, outer = _compile("100 CONSTANT C", ": GETC C ;")
+    thread = outer.dict["GETC"].thread
+    assert outer.dict["C"] not in thread.code
+    assert thread.code[0] is outer.wLIT
+    assert thread.lits[0].intval == 100
+
+
+def test_inlined_value_words_preserve_semantics():
+    assert run_and_pop("VARIABLE X 123 X !  : GETX X @ ;  GETX") == 123
+    assert run_and_pop("100 CONSTANT C  : DBL C C + ;  DBL") == 200
+    assert run_and_pop("VARIABLE Y VARIABLE Z  : DIFF Z Y - ;  DIFF") == CELL_SIZE_BYTES
+
+
+def test_inlining_does_not_break_tick_or_body():
+    # Inlining direct references must not remove the word from the dictionary,
+    # so ' (tick) and >BODY still resolve the value-word.
+    inner, outer = _compile("VARIABLE X", ": GETX X ;")
+    outer.interpret_line("' X >BODY   GETX")
+    getx_addr = inner.pop_ds_int()
+    body_addr = inner.pop_ds_int()
+    assert getx_addr == body_addr
+
+
+# ---------------------------------------------------------------------------
+# Leaf-colon-word inlining: a reference to a *small straight-line* colon word
+# (no branches/loops/early-EXIT) is spliced inline at its call site instead of
+# emitting a nested-thread call. A call costs cs_threads/cs_ips array
+# read+write+null-store plus two guard_value ops in the JIT trace -- the
+# dominant remaining cost of the `heap` shootout inner loop (a@/a!/set-rra/...).
+# Words containing control flow are NOT inlined (their branch targets are
+# absolute indices into their own thread and cannot be relocated).
+# ---------------------------------------------------------------------------
+
+def test_leaf_colon_word_is_inlined():
+    inner, outer = _compile(
+        "VARIABLE B  0 B !",
+        ": geta  B @ 1 + ;",          # straight-line: LIT b, @, LIT 1, +, EXIT
+        ": useit  geta geta ;",
+    )
+    geta = outer.dict["GETA"]
+    thread = outer.dict["USEIT"].thread
+    # geta must NOT be called -- neither as a code word nor a TAILCALL literal.
+    assert geta not in thread.code
+    assert not any(getattr(l, "word", None) is geta for l in thread.lits)
+    # Only the trailing EXIT remains; the body is spliced straight-line.
+    assert thread.code[-1] is outer.wEXIT
+
+
+def test_inlined_leaf_word_semantics():
+    assert run_and_pop("VARIABLE B 5 B !  : geta B @ 1 + ;  : useit geta geta + ;  useit") == 12
+
+
+def test_transitive_inlining():
+    # c inlines b which inlined a -- all straight-line.
+    assert run_and_pop("VARIABLE B 3 B !  : a B @ ;  : b a 1 + ;  : c b 2 * ;  c") == 8
+
+
+def test_control_flow_word_not_inlined_but_correct():
+    # classify contains IF/ELSE (branch words). It must NOT be inline-spliced
+    # (which would corrupt its absolute branch targets), and must still work.
+    assert run_and_pop(": classify dup 0 < if drop -1 else drop 1 then ;  : u -5 classify ;  u") == -1
+    assert run_and_pop(": classify dup 0 < if drop -1 else drop 1 then ;  : u 5 classify ;  u") == 1
+
+
+def test_loop_word_not_miscompiled_when_referenced():
+    # sumto has a DO loop; referencing it twice must not splice its loop body
+    # (whose (LOOP) target is an absolute index into sumto's own thread).
+    src = (": sumto  0 swap 0 do i + loop ;  "
+           ": twice  5 sumto  5 sumto + ;  twice")
+    assert run_and_pop(src) == 20      # sum(0..4)=10, twice=20
+
+
+def test_inlining_grows_code_buffer_beyond_128():
+    # A small leaf referenced many times must grow the compile buffer past 128.
+    leaf = ": leaf 1 2 3 4 5 drop drop drop drop ;"   # nets one value (1)
+    src = leaf + " : big " + (" ".join(["leaf"] * 20)) + " ;  big"
+    assert run_and_pop(src) == 1

@@ -32,12 +32,40 @@ class Word(object):
         return "<Word %s>" % (self.name)
 
 
+MAX_THREADS = 65536
+
+
+class ThreadRegistry(object):
+    """Maps a dense int id -> CodeThread. The call stack stores a thread's id
+    (an int, no GC write barrier) instead of its pointer; pop recovers the object
+    from here. The table is a fixed-size, write-once-per-slot immutable array, so
+    the JIT folds threads[const_id] to a constant rather than emitting a real
+    pointer load on every return. A prebuilt singleton."""
+
+    _immutable_fields_ = ["threads[*]"]
+
+    def __init__(self):
+        self.threads = [None] * MAX_THREADS
+        self.count = 0
+
+    def register(self, thread):
+        tid = self.count
+        assert tid < MAX_THREADS
+        self.threads[tid] = thread
+        self.count = tid + 1
+        return tid
+
+
+THREAD_REGISTRY = ThreadRegistry()
+
+
 class CodeThread(object):
-    _immutable_fields_ = ["code[*]", "lits[*]"]
+    _immutable_fields_ = ["code[*]", "lits[*]", "tid"]
 
     def __init__(self, code, lits):
         self.code = code # code (list of Words)
         self.lits = lits # literal values used by code[i]
+        self.tid = THREAD_REGISTRY.register(self)
 
 
 class W_Object(object):

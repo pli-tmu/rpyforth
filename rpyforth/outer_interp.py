@@ -4,10 +4,14 @@ from rpyforth.primitives import install_primitives
 from rpyforth.util import to_upper, split_whitespace
 
 from rpython.rlib.rfile import create_stdio
+from rpython.rlib.streamio import open_file_as_stream
 from rpython.rlib.jit import elidable, unroll_safe, promote
 
 INTERPRET = 0
 COMPILE   = 1
+
+# Max callee body length (excluding trailing EXIT) spliced inline at a call site.
+MAX_INLINE_BODY = 32
 
 # Control stack entry kinds
 CTRL_IF   = 0
@@ -15,6 +19,8 @@ CTRL_ELSE = 1
 CTRL_DO   = 2
 CTRL_BEGIN = 3
 CTRL_WHILE = 4
+CTRL_CASE = 5
+CTRL_OF   = 6
 
 class CtrlEntry(object):
     """Control stack entry for compilation-time control structures.
@@ -27,7 +33,7 @@ class CtrlEntry(object):
         self.leave_addrs = []  # list of LEAVE positions to patch (for DO loops)
 
 class OuterInterpreter(object):
-    _immutable_fields_ = ['wBR', 'w0BR', 'wLIT', 'wEXIT', 'wDO', 'wLOOP', 'wPLUSLOOP', 'wLEAVE', 'wTYPE', 'wUNLOOP', 'wABORTQUOTE']
+    _immutable_fields_ = ['wBR', 'w0BR', 'wLIT', 'wEXIT', 'wDO', 'wQDO', 'wLOOP', 'wPLUSLOOP', 'wLEAVE', 'wTYPE', 'wUNLOOP', 'wABORTQUOTE']
 
     def __init__(self, inner):
         self.inner = inner
@@ -58,12 +64,39 @@ class OuterInterpreter(object):
         self.wLIT = self.dict["LIT"]
         self.wEXIT = self.dict["EXIT"]
         self.wDO = self.dict["(DO)"]
+        self.wQDO = self.dict["(?DO)"]
         self.wLOOP = self.dict["(LOOP)"]
         self.wPLUSLOOP = self.dict["(+LOOP)"]
         self.wUNLOOP = self.dict["UNLOOP"]
         self.wLEAVE = self.dict["LEAVE"]
         self.wTYPE = self.dict["TYPE"]
         self.wABORTQUOTE = self.dict['(ABORT")']
+
+        # Cell address backing each VALUE name (for TO to locate its storage).
+        self.value_addrs = {}
+
+        # Slot id backing each DEFER name (for IS to locate its binding).
+        self.defer_ids = {}
+
+        # Search order (A5). Wordlist 0 is the FORTH-WORDLIST -- the base dict
+        # installed above, so ordinary lookups keep hitting self.dict directly.
+        # A wordlist is just a name->Word dict; wordlist_ids indexes them.
+        # search_order lists wordlist ids searched front-first; current_wl is
+        # where new definitions land. While the order is the lone default list
+        # (order_is_default), lookups stay on the single-dict fast path.
+        self.forth_wl = self.dict
+        self.wordlists = [self.dict]
+        self.search_order = [0]
+        self.current_wl = 0
+        self.order_is_default = True
+
+        # True while compiling a :NONAME definition (push xt instead of naming it).
+        self.noname_mode = False
+
+        # [IF]/[ELSE]/[THEN] conditional-compilation skip state (spans lines).
+        self.cond_skipping = False
+        self.cond_skip_depth = 0
+        self.cond_skip_to_else = False
 
         # Define LITERAL as an immediate word (for POSTPONE to find it)
         self._define_literal_word()
@@ -77,7 +110,8 @@ class OuterInterpreter(object):
         self.lit_ptr = 0
 
     def push_code(self, w):
-        assert self.cc_ptr < len(self.current_code)
+        if self.cc_ptr >= len(self.current_code):
+            self.current_code = self.current_code + [None] * len(self.current_code)
         self.current_code[self.cc_ptr] = w
         self.cc_ptr += 1
 
@@ -87,7 +121,8 @@ class OuterInterpreter(object):
         return self.current_code[self.cc_ptr]
 
     def push_lit(self, w):
-        assert self.lit_ptr < len(self.current_lits)
+        if self.lit_ptr >= len(self.current_lits):
+            self.current_lits = self.current_lits + [None] * len(self.current_lits)
         self.current_lits[self.lit_ptr] = w
         self.lit_ptr += 1
 
@@ -373,7 +408,7 @@ class OuterInterpreter(object):
             return -1
         name, i = self._read_tok(toks, i)
         # Check which stack has data and pop from it
-        if self.inner.ds_ptr_ints > 0:
+        if self.inner.ds_int_size() > 0:
             # Unboxed integer
             intval = self.inner.pop_ds_int()
             val = W_IntObject(intval)
@@ -390,6 +425,70 @@ class OuterInterpreter(object):
         self._define_simple_word(name, val)
         return i
 
+    def _naligned(self, addr, align):
+        if align <= 1:
+            return addr
+        return (addr + align - 1) & ~(align - 1)
+
+    def _handle_field(self, toks, i):
+        """FIELD ( align1 offset1 align size "name" -- align2 offset2 ). Defines
+        name as ( addr -- addr+field-offset ) and advances the running offset."""
+        toks_len = len(toks)
+        if i >= toks_len:
+            print "FIELD requires a name"
+            return -1
+        name, i = self._read_tok(toks, i)
+        if self.inner.ds_int_size() < 4:
+            print "FIELD: stack underflow"
+            return -1
+        size = self.inner.pop_ds_int()
+        align = self.inner.pop_ds_int()
+        offset1 = self.inner.pop_ds_int()
+        align1 = self.inner.pop_ds_int()
+        field_offset = self._naligned(offset1, align)
+        # name execution: ( addr -- addr + field_offset )
+        code = [self.wLIT, self.forth_wl["+"], self.wEXIT]
+        lits = [W_IntObject(field_offset), ZERO, ZERO]
+        self.define_colon(name, CodeThread(code, lits))
+        self.inner.push_ds_int(align1)
+        self.inner.push_ds_int(field_offset + size)
+        return i
+
+    def _handle_end_struct(self, toks, i):
+        """END-STRUCT ( align size "name" -- ). Defines name to push ( align size )."""
+        toks_len = len(toks)
+        if i >= toks_len:
+            print "END-STRUCT requires a name"
+            return -1
+        name, i = self._read_tok(toks, i)
+        if self.inner.ds_int_size() < 2:
+            print "END-STRUCT: stack underflow"
+            return -1
+        size = self.inner.pop_ds_int()
+        align = self.inner.pop_ds_int()
+        size = self._naligned(size, align)
+        code = [self.wLIT, self.wLIT, self.wEXIT]
+        lits = [W_IntObject(align), W_IntObject(size), ZERO]
+        self.define_colon(name, CodeThread(code, lits))
+        return i
+
+    def _handle_2constant(self, toks, i):
+        """Handle 2CONSTANT ( x1 x2 "name" -- ): name pushes x1 x2."""
+        toks_len = len(toks)
+        if i >= toks_len:
+            print "2CONSTANT requires a name"
+            return -1
+        name, i = self._read_tok(toks, i)
+        if self.inner.ds_int_size() < 2:
+            print "2CONSTANT: stack underflow"
+            return -1
+        x2 = self.inner.pop_ds_int()
+        x1 = self.inner.pop_ds_int()
+        code = [self.wLIT, self.wLIT, self.wEXIT]
+        lits = [W_IntObject(x1), W_IntObject(x2), ZERO]
+        self.define_colon(name, CodeThread(code, lits))
+        return i
+
     def _handle_create(self, toks, i):
         """Handle CREATE."""
         toks_len = len(toks)
@@ -399,6 +498,108 @@ class OuterInterpreter(object):
         name, i = self._read_tok(toks, i)
         addr = self.inner.here
         self._define_simple_word(name, W_IntObject(addr))
+        return i
+
+    def _handle_value(self, toks, i):
+        """Handle VALUE: a cell-backed mutable constant. The word fetches its cell
+        (LIT addr @); TO stores into the cell."""
+        toks_len = len(toks)
+        if i >= toks_len:
+            print "VALUE requires a name"
+            return -1
+        name, i = self._read_tok(toks, i)
+        if self.inner.ds_int_size() <= 0:
+            print "VALUE: stack underflow"
+            return -1
+        intval = self.inner.pop_ds_int()
+        addr = self.inner.here
+        self.inner.here += self.inner.cell_size_bytes
+        self.inner.cell_store(addr, intval)
+        self.value_addrs[to_upper(name)] = addr
+        code = [self.wLIT, self.forth_wl["@"], self.wEXIT]
+        lits = [W_IntObject(addr), ZERO, ZERO]
+        self.define_colon(name, CodeThread(code, lits))
+        return i
+
+    def _handle_to(self, toks, i):
+        """Handle TO (interpret mode): store the top value into the named VALUE."""
+        toks_len = len(toks)
+        if i >= toks_len:
+            print "TO requires a name"
+            return -1
+        name, i = self._read_tok(toks, i)
+        key = to_upper(name)
+        if key not in self.value_addrs:
+            print "TO: not a VALUE"
+            return -1
+        if self.inner.ds_int_size() <= 0:
+            print "TO: stack underflow"
+            return -1
+        self.inner.cell_store(self.value_addrs[key], self.inner.pop_ds_int())
+        return i
+
+    def _include_file(self, path):
+        """Read a Forth source file and interpret it line by line, preserving the
+        caller's source-scan state across the nested interpretation."""
+        f = open_file_as_stream(path)
+        content = f.readall()
+        f.close()
+        saved_buf = self.source_buffer
+        saved_idx = self.source_index
+        saved_cnt = self.string_token_count
+        for line in content.split('\n'):
+            self.interpret_line(line)
+        self.source_buffer = saved_buf
+        self.source_index = saved_idx
+        self.string_token_count = saved_cnt
+
+    def _handle_include(self, toks, i):
+        """Handle INCLUDE / REQUIRE: the filename is the next token."""
+        toks_len = len(toks)
+        if i >= toks_len:
+            print "INCLUDE requires a filename"
+            return -1
+        name, i = self._read_tok(toks, i)
+        self._include_file(name)
+        return i
+
+    def _handle_included(self):
+        """Handle INCLUDED / REQUIRED ( c-addr u -- ): the filename is a string."""
+        self.inner.pop_ds_int()           # length (unused: the cell holds the string)
+        c_addr = self.inner.pop_ds_int()
+        w = self.inner.buf[c_addr]
+        assert isinstance(w, W_StringObject)
+        self._include_file(w.strval)
+
+    def _handle_defer(self, toks, i):
+        """Handle DEFER: define a word that executes a later-bound xt."""
+        toks_len = len(toks)
+        if i >= toks_len:
+            print "DEFER requires a name"
+            return -1
+        name, i = self._read_tok(toks, i)
+        slot = len(self.inner.deferred_words)
+        self.inner.deferred_words.append(None)
+        self.defer_ids[to_upper(name)] = slot
+        code = [self.wLIT, self.forth_wl["(DEFER)"], self.wEXIT]
+        lits = [W_IntObject(slot), ZERO, ZERO]
+        self.define_colon(name, CodeThread(code, lits))
+        return i
+
+    def _handle_is(self, toks, i):
+        """Handle IS (interpret mode): bind the xt on the stack to a DEFER word."""
+        toks_len = len(toks)
+        if i >= toks_len:
+            print "IS requires a name"
+            return -1
+        name, i = self._read_tok(toks, i)
+        key = to_upper(name)
+        if key not in self.defer_ids:
+            print "IS: not a DEFER"
+            return -1
+        xt = self.inner.pop_ds()
+        assert isinstance(xt, W_WordObject)
+        self.inner.deferred_words[self.defer_ids[key]] = xt.word
         return i
 
     # Control structure compilation helpers
@@ -442,6 +643,16 @@ class OuterInterpreter(object):
         self._emit_word(self.wDO)
         do_body_start = self.cc_ptr
         self.ctrl.append(CtrlEntry(CTRL_DO, do_body_start))
+
+    def _compile_qdo(self):
+        """Compile ?DO. Like DO, but emits a forward branch (patched to the loop
+        end by LOOP/+LOOP) taken at runtime when limit == start."""
+        qdo_addr = self.cc_ptr
+        self._emit_with_target(self.wQDO, 0)
+        do_body_start = self.cc_ptr
+        entry = CtrlEntry(CTRL_DO, do_body_start)
+        entry.leave_addrs.append(qdo_addr)
+        self.ctrl.append(entry)
 
     def _compile_loop(self):
         """Compile LOOP."""
@@ -545,6 +756,49 @@ class OuterInterpreter(object):
         print "LEAVE without DO"
         return False
 
+    def _compile_case(self):
+        """Compile CASE. The entry collects each ENDOF's forward branch, all
+        patched past the selector DROP at ENDCASE."""
+        self.ctrl.append(CtrlEntry(CTRL_CASE, 0))
+
+    def _compile_of(self):
+        """Compile OF: OVER = 0BRANCH<next-clause> DROP."""
+        if not self.ctrl or self.ctrl[len(self.ctrl) - 1].kind != CTRL_CASE:
+            print "OF without CASE"
+            return False
+        self._emit_word(self.forth_wl["OVER"])
+        self._emit_word(self.forth_wl["="])
+        of_addr = self.cc_ptr
+        self._emit_with_target(self.w0BR, 0)
+        self._emit_word(self.forth_wl["DROP"])
+        self.ctrl.append(CtrlEntry(CTRL_OF, of_addr))
+        return True
+
+    def _compile_endof(self):
+        """Compile ENDOF: BRANCH<endcase>; patch the OF 0BRANCH to the next clause."""
+        if not self.ctrl or self.ctrl[len(self.ctrl) - 1].kind != CTRL_OF:
+            print "ENDOF without OF"
+            return False
+        of_entry = self.ctrl.pop()
+        endof_addr = self.cc_ptr
+        self._emit_with_target(self.wBR, 0)
+        self.ctrl[len(self.ctrl) - 1].leave_addrs.append(endof_addr)
+        self._patch_here(of_entry.index)
+        return True
+
+    def _compile_endcase(self):
+        """Compile ENDCASE: DROP the selector, then patch every ENDOF branch past it."""
+        if not self.ctrl or self.ctrl[len(self.ctrl) - 1].kind != CTRL_CASE:
+            print "ENDCASE without CASE"
+            return False
+        entry = self.ctrl.pop()
+        self._emit_word(self.forth_wl["DROP"])
+        end = self.cc_ptr
+        for endof_addr in entry.leave_addrs:
+            self.current_lits[endof_addr] = W_IntObject(end)
+        return True
+        return False
+
     def _compile_char(self, toks, i):
         """Compile [CHAR]."""
         toks_len = len(toks)
@@ -572,6 +826,77 @@ class OuterInterpreter(object):
         else:
             print "UNKNOWN: " + t
 
+    def _value_word_literal(self, w):
+        """Return the literal x if w is a value-word (body LIT x ; EXIT), else None.
+
+        Lets a VARIABLE/CONSTANT/CREATE reference compile to an immediate push
+        instead of a call. The word stays in the dictionary, so ' / >BODY /
+        EXECUTE are unaffected."""
+        if w.prim is not None:
+            return None
+        if w.immediate:
+            return None
+        if w.does_ip != -1:          # CREATE ... DOES> has custom runtime behavior
+            return None
+        thread = w.thread
+        if thread is None:
+            return None
+        code = thread.code
+        if len(code) != 2:
+            return None
+        if code[0] is not self.wLIT:
+            return None
+        if code[1] is not self.wEXIT:
+            return None
+        return thread.lits[0]
+
+    def _inlinable_colon_body(self, w):
+        """Return w's CodeThread if it is a small straight-line colon word that can
+        be spliced inline, else None.
+
+        Straight-line = ends in EXIT and contains none of the ip-altering words
+        (BRANCH, 0BRANCH, (DO), (LOOP), (+LOOP), LEAVE, UNLOOP, interior EXIT,
+        TAILCALL). The branch/loop ones encode an absolute target into their own
+        thread and cannot be relocated; everything else is position independent."""
+        if w.prim is not None:
+            return None
+        if w.immediate:
+            return None
+        if w.does_ip != -1:            # CREATE ... DOES> has custom runtime behavior
+            return None
+        thread = w.thread
+        if thread is None:
+            return None
+        code = thread.code
+        n = len(code)
+        if n < 2:
+            return None
+        if code[n - 1] is not self.wEXIT:  # tail-call-optimized words end in TAILCALL
+            return None
+        body_len = n - 1
+        if body_len > MAX_INLINE_BODY:
+            return None
+        i = 0
+        while i < body_len:
+            cw = code[i]
+            if (cw is self.wEXIT or cw is self.wBR or cw is self.w0BR or
+                    cw is self.wDO or cw is self.wQDO or cw is self.wLOOP or
+                    cw is self.wPLUSLOOP or cw is self.wLEAVE or cw is self.wUNLOOP):
+                return None
+            i += 1
+        return thread
+
+    def _emit_inline(self, thread):
+        """Splice a callee body (all but its trailing EXIT) into the current def."""
+        code = thread.code
+        lits = thread.lits
+        body_len = len(code) - 1
+        i = 0
+        while i < body_len:
+            self.push_code(code[i])
+            self.push_lit(lits[i])
+            i += 1
+
     def _compile_word_or_literal(self, w, t):
         """Compile word or literal in COMPILE mode."""
         if w is not None:
@@ -581,7 +906,15 @@ class OuterInterpreter(object):
                 # LITERAL and FLITERAL have primitives that pop from the stack and emit literals
                 self.inner.execute_word_now(w)
             else:
-                self._emit_word(w)
+                lit = self._value_word_literal(w)
+                if lit is not None:
+                    self._emit_lit(lit)
+                else:
+                    body = self._inlinable_colon_body(w)
+                    if body is not None:
+                        self._emit_inline(body)
+                    else:
+                        self._emit_word(w)
         elif self._is_float(t):
             self._emit_lit(W_FloatObject(self._to_float(t)))
         elif self._is_number(t):
@@ -590,6 +923,135 @@ class OuterInterpreter(object):
             print "UNKNOWN: " + t
 
     # System word handlers
+
+    def _lookup(self, name_upper):
+        """Resolve a name to a Word through the search order. On the default
+        single-wordlist order this is exactly self.dict.get (the fast path)."""
+        if self.order_is_default:
+            return self.dict.get(name_upper, None)
+        for idx in range(len(self.search_order)):
+            wl = self.wordlists[self.search_order[idx]]
+            w = wl.get(name_upper, None)
+            if w is not None:
+                return w
+        return None
+
+    def _recompute_order_default(self):
+        self.order_is_default = (
+            len(self.search_order) == 1
+            and self.search_order[0] == 0
+            and self.current_wl == 0
+        )
+
+    def _set_current_wl(self, wl_id):
+        self.current_wl = wl_id
+        self.dict = self.wordlists[wl_id]
+        self._recompute_order_default()
+
+    # WORDLIST ( -- wid )
+    def _handle_wordlist(self):
+        wid = len(self.wordlists)
+        self.wordlists.append({})
+        self.inner.push_ds_int(wid)
+
+    # GET-CURRENT ( -- wid )
+    def _handle_get_current(self):
+        self.inner.push_ds_int(self.current_wl)
+
+    # SET-CURRENT ( wid -- )
+    def _handle_set_current(self):
+        wid = self.inner.pop_ds_int()
+        if 0 <= wid < len(self.wordlists):
+            self._set_current_wl(wid)
+
+    # FORTH-WORDLIST ( -- wid )
+    def _handle_forth_wordlist(self):
+        self.inner.push_ds_int(0)
+
+    # DEFINITIONS ( -- ) make the top of the search order the current wordlist
+    def _handle_definitions(self):
+        if len(self.search_order) > 0:
+            self._set_current_wl(self.search_order[0])
+
+    # FORTH ( -- ) replace the top of the search order with FORTH-WORDLIST
+    def _handle_forth(self):
+        if len(self.search_order) == 0:
+            self.search_order = [0]
+        else:
+            self.search_order[0] = 0
+        self._recompute_order_default()
+
+    # ONLY ( -- ) minimal search order (just FORTH here)
+    def _handle_only(self):
+        self.search_order = [0]
+        self._recompute_order_default()
+
+    # ALSO ( -- ) duplicate the top of the search order
+    def _handle_also(self):
+        if len(self.search_order) > 0:
+            self.search_order.insert(0, self.search_order[0])
+        else:
+            self.search_order = [0]
+        self._recompute_order_default()
+
+    # >ORDER ( wid -- ) push wid onto the top of the search order (gforth)
+    def _handle_to_order(self):
+        wid = self.inner.pop_ds_int()
+        if 0 <= wid < len(self.wordlists):
+            self.search_order.insert(0, wid)
+            self._recompute_order_default()
+
+    # PREVIOUS ( -- ) drop the top of the search order
+    def _handle_previous(self):
+        if len(self.search_order) > 1:
+            del self.search_order[0]
+        self._recompute_order_default()
+
+    # GET-ORDER ( -- wid_n ... wid_1 n )
+    def _handle_get_order(self):
+        # push bottom-first so wid_1 (top) ends up just under the count
+        n = len(self.search_order)
+        for k in range(n - 1, -1, -1):
+            self.inner.push_ds_int(self.search_order[k])
+        self.inner.push_ds_int(n)
+
+    # SET-ORDER ( wid_n ... wid_1 n -- )
+    def _handle_set_order(self):
+        n = self.inner.pop_ds_int()
+        if n < 0:
+            # standard: restore the implementation default
+            self.search_order = [0]
+            self._recompute_order_default()
+            return
+        order = [0] * n
+        for k in range(n):
+            order[k] = self.inner.pop_ds_int()
+        self.search_order = order
+        self._recompute_order_default()
+
+    # SEARCH-WORDLIST ( c-addr u wid -- 0 | xt 1 | xt -1 )
+    def _handle_search_wordlist(self):
+        wid = self.inner.pop_ds_int()
+        self.inner.pop_ds_int()            # length (name held whole in the buf slot)
+        c_addr = self.inner.pop_ds_int()
+        buf_entry = self.inner.buf[c_addr]
+        if buf_entry is None or not isinstance(buf_entry, W_StringObject):
+            self.inner.push_ds_int(0)
+            return
+        name_upper = to_upper(buf_entry.strval)
+        if 0 <= wid < len(self.wordlists):
+            wl = self.wordlists[wid]
+            w = wl.get(name_upper, None)
+        else:
+            w = None
+        if w is None:
+            self.inner.push_ds_int(0)
+            return
+        self.inner.push_ds(W_WordObject(w))
+        if w.immediate:
+            self.inner.push_ds_int(1)
+        else:
+            self.inner.push_ds_int(-1)
 
     # FIND ( c-addr u -- c-addr 0 | xt 1 | xt -1 )
     def _handle_find(self):
@@ -608,8 +1070,8 @@ class OuterInterpreter(object):
             return
 
         name_upper = to_upper(name)
-        if name_upper in self.dict:
-            word = self.dict[name_upper]
+        word = self._lookup(name_upper)
+        if word is not None:
             xt = W_WordObject(word)
             self.inner.push_ds(xt)
             if word.immediate:
@@ -642,8 +1104,8 @@ class OuterInterpreter(object):
             return i
         name, i = self._read_tok(toks, i)
         name_upper = to_upper(name)
-        if name_upper in self.dict:
-            word = self.dict[name_upper]
+        word = self._lookup(name_upper)
+        if word is not None:
             xt = W_WordObject(word)
             self.inner.push_ds(xt)
         else:
@@ -838,7 +1300,7 @@ class OuterInterpreter(object):
 
         if flag != 0:
             print "ABORT:", abort_msg
-            self.inner.ds_ptr_ints = 0
+            self.inner.clear_ds_int()
             self.inner.ds_ptr_floats = 0
             self.inner.ds_ptr_locals = 0
             self.inner.rs_ptr = 0
@@ -882,8 +1344,60 @@ class OuterInterpreter(object):
                 return True, i, True
             return True, result, False
 
+        if tkey == "2CONSTANT":
+            result = self._handle_2constant(toks, i)
+            if result < 0:
+                return True, i, True
+            return True, result, False
+
+        if tkey == "FIELD":
+            result = self._handle_field(toks, i)
+            if result < 0:
+                return True, i, True
+            return True, result, False
+
+        if tkey == "END-STRUCT":
+            result = self._handle_end_struct(toks, i)
+            if result < 0:
+                return True, i, True
+            return True, result, False
+
         if tkey == "CREATE":
             result = self._handle_create(toks, i)
+            if result < 0:
+                return True, i, True
+            return True, result, False
+
+        if tkey == "VALUE":
+            result = self._handle_value(toks, i)
+            if result < 0:
+                return True, i, True
+            return True, result, False
+
+        if tkey == "TO":
+            result = self._handle_to(toks, i)
+            if result < 0:
+                return True, i, True
+            return True, result, False
+
+        if tkey == "INCLUDE" or tkey == "REQUIRE":
+            result = self._handle_include(toks, i)
+            if result < 0:
+                return True, i, True
+            return True, result, False
+
+        if tkey == "INCLUDED" or tkey == "REQUIRED":
+            self._handle_included()
+            return True, i, False
+
+        if tkey == "DEFER":
+            result = self._handle_defer(toks, i)
+            if result < 0:
+                return True, i, True
+            return True, result, False
+
+        if tkey == "IS":
+            result = self._handle_is(toks, i)
             if result < 0:
                 return True, i, True
             return True, result, False
@@ -956,6 +1470,47 @@ class OuterInterpreter(object):
             self._handle_environment_query()
             return True, i, False
 
+        # Search order / wordlists (A5)
+        if tkey == "WORDLIST":
+            self._handle_wordlist()
+            return True, i, False
+        if tkey == "GET-CURRENT":
+            self._handle_get_current()
+            return True, i, False
+        if tkey == "SET-CURRENT":
+            self._handle_set_current()
+            return True, i, False
+        if tkey == "FORTH-WORDLIST":
+            self._handle_forth_wordlist()
+            return True, i, False
+        if tkey == "DEFINITIONS":
+            self._handle_definitions()
+            return True, i, False
+        if tkey == "FORTH":
+            self._handle_forth()
+            return True, i, False
+        if tkey == "ONLY":
+            self._handle_only()
+            return True, i, False
+        if tkey == "ALSO":
+            self._handle_also()
+            return True, i, False
+        if tkey == "PREVIOUS":
+            self._handle_previous()
+            return True, i, False
+        if tkey == ">ORDER":
+            self._handle_to_order()
+            return True, i, False
+        if tkey == "GET-ORDER":
+            self._handle_get_order()
+            return True, i, False
+        if tkey == "SET-ORDER":
+            self._handle_set_order()
+            return True, i, False
+        if tkey == "SEARCH-WORDLIST":
+            self._handle_search_wordlist()
+            return True, i, False
+
         return False, i, False
 
     def _dispatch_compile(self, tkey, toks, i, toks_len):
@@ -976,6 +1531,38 @@ class OuterInterpreter(object):
 
         if tkey == "DO":
             self._compile_do()
+            return True, i, False
+
+        if tkey == "?DO":
+            self._compile_qdo()
+            return True, i, False
+
+        if tkey == "TO":
+            if i >= toks_len:
+                print "TO requires a name"
+                return True, i, True
+            name = toks[i]
+            i += 1
+            key = to_upper(name)
+            if key not in self.value_addrs:
+                print "TO: not a VALUE"
+                return True, i, True
+            self._emit_lit(W_IntObject(self.value_addrs[key]))
+            self._emit_word(self.forth_wl["!"])
+            return True, i, False
+
+        if tkey == "IS":
+            if i >= toks_len:
+                print "IS requires a name"
+                return True, i, True
+            name = toks[i]
+            i += 1
+            key = to_upper(name)
+            if key not in self.defer_ids:
+                print "IS: not a DEFER"
+                return True, i, True
+            self._emit_lit(W_IntObject(self.defer_ids[key]))
+            self._emit_word(self.forth_wl["(IS!)"])
             return True, i, False
 
         if tkey == "LOOP":
@@ -1014,6 +1601,25 @@ class OuterInterpreter(object):
 
         if tkey == "LEAVE":
             if not self._compile_leave():
+                return True, i, True
+            return True, i, False
+
+        if tkey == "CASE":
+            self._compile_case()
+            return True, i, False
+
+        if tkey == "OF":
+            if not self._compile_of():
+                return True, i, True
+            return True, i, False
+
+        if tkey == "ENDOF":
+            if not self._compile_endof():
+                return True, i, True
+            return True, i, False
+
+        if tkey == "ENDCASE":
+            if not self._compile_endcase():
                 return True, i, True
             return True, i, False
 
@@ -1058,13 +1664,13 @@ class OuterInterpreter(object):
                 return True, i, True
             name, i = self._read_tok(toks, i)
             name_upper = to_upper(name)
-            if name_upper in self.dict:
-                word = self.dict[name_upper]
+            word = self._lookup(name_upper)
+            if word is not None:
                 if word.immediate:
                     self._emit_word(word)
                 else:
                     self._emit_lit(W_WordObject(word))
-                    self._emit_word(self.dict["EXECUTE"])
+                    self._emit_word(self.forth_wl["EXECUTE"])
             else:
                 print "POSTPONE: word not found:", name
             return True, i, False
@@ -1075,8 +1681,8 @@ class OuterInterpreter(object):
                 return True, i, True
             name, i = self._read_tok(toks, i)
             name_upper = to_upper(name)
-            if name_upper in self.dict:
-                word = self.dict[name_upper]
+            word = self._lookup(name_upper)
+            if word is not None:
                 self._emit_lit(W_WordObject(word))
             else:
                 print "['] word not found:", name
@@ -1114,6 +1720,46 @@ class OuterInterpreter(object):
         while i < toks_len:
             t, i = self._read_tok(toks, i)
 
+            # Conditional compilation. While skipping, only [IF]/[ELSE]/[THEN]
+            # adjust nesting -- everything else (including : ; definitions) is
+            # dropped. This runs before any other handling and spans lines.
+            ckey = to_upper(t)
+            if self.cond_skipping:
+                if ckey == "[IF]":
+                    self.cond_skip_depth += 1
+                elif ckey == "[ELSE]":
+                    if self.cond_skip_depth == 0 and self.cond_skip_to_else:
+                        self.cond_skipping = False
+                elif ckey == "[THEN]":
+                    if self.cond_skip_depth == 0:
+                        self.cond_skipping = False
+                    else:
+                        self.cond_skip_depth -= 1
+                continue
+            if ckey == "[IF]":
+                if self.inner.pop_ds_int() == 0:
+                    self.cond_skipping = True
+                    self.cond_skip_depth = 0
+                    self.cond_skip_to_else = True
+                continue
+            if ckey == "[ELSE]":
+                self.cond_skipping = True
+                self.cond_skip_depth = 0
+                self.cond_skip_to_else = False
+                continue
+            if ckey == "[THEN]":
+                continue
+            if ckey == "[DEFINED]" or ckey == "[UNDEFINED]":
+                nm, i = self._read_tok(toks, i)
+                present = self._lookup(to_upper(nm)) is not None
+                if ckey == "[UNDEFINED]":
+                    present = not present
+                if present:
+                    self.inner.push_ds_int(-1)
+                else:
+                    self.inner.push_ds_int(0)
+                continue
+
             # Handle string literals (case-sensitive)
             if t == 'S"':
                 i = self._handle_s_quote(toks, i)
@@ -1135,6 +1781,7 @@ class OuterInterpreter(object):
                     return
                 self.state = COMPILE
                 self.current_name, i = self._read_tok(toks, i)
+                self.noname_mode = to_upper(self.current_name) == "NONAME"
                 self.reset_code()
                 continue
 
@@ -1162,8 +1809,12 @@ class OuterInterpreter(object):
                         return
                     continue
 
-            # Default: look up word in dictionary and execute/compile
-            w = self.dict.get(tkey, None)
+            # Default: look up word in dictionary and execute/compile.
+            # order_is_default keeps the common case on the single-dict fast path.
+            if self.order_is_default:
+                w = self.dict.get(tkey, None)
+            else:
+                w = self._lookup(tkey)
             w = promote(w)
             if self.state == INTERPRET:
                 self._execute_or_push(w, t)
@@ -1195,12 +1846,16 @@ class OuterInterpreter(object):
         lits = [self.current_lits[idx] for idx in range(self.lit_ptr)]
         thread = CodeThread(code, lits)
 
-        name_upper = to_upper(self.current_name)
-        if name_upper in self.dict:
-            existing_word = self.dict[name_upper]
-            existing_word.thread = thread
+        if self.noname_mode:
+            self.inner.push_ds(W_WordObject(Word("", thread=thread)))
+            self.noname_mode = False
         else:
-            self.define_colon(self.current_name, thread)
+            name_upper = to_upper(self.current_name)
+            if name_upper in self.dict:
+                existing_word = self.dict[name_upper]
+                existing_word.thread = thread
+            else:
+                self.define_colon(self.current_name, thread)
 
         self.state = INTERPRET
         self.current_name = ''

@@ -1,5 +1,5 @@
 from rpython.rlib.rfile import create_stdio
-from rpython.rlib.jit import promote, unroll_safe, dont_look_inside
+from rpython.rlib.jit import promote, unroll_safe, dont_look_inside, hint
 from rpython.rlib.rfloat import formatd
 
 from rpyforth.objects import (
@@ -19,8 +19,16 @@ from rpyforth.objects import (
     SMALL_INT_MIN,
     SMALL_INT_MAX,
 )
-from rpyforth.inner_interp import jitdriver, HEAP_SIZE_BYTES
+from rpyforth.inner_interp import jitdriver, HEAP_SIZE_BYTES, USE_STACK_FRAGMENT
+from rpyforth.metastack_int import snapshot_cache, restore_cache
 from rpyforth.util import digit_to_char
+
+
+class ForthException(Exception):
+    """Raised by THROW with a non-zero code; caught by the nearest CATCH."""
+
+    def __init__(self, code):
+        self.code = code
 
 
 # Internal helpers -----------------------------------------------------------
@@ -266,7 +274,7 @@ def prim_MIN(inner, cur, ip):
 # DEPTH ( -- +n )
 def prim_DEPTH(inner, cur, ip):
     """GForth core 2012: +n is the number of single-cell values contained in the data stack."""
-    inner.push_ds_int(inner.ds_ptr_ints)
+    inner.push_ds_int(inner.ds_int_size())
     return ip
 
 
@@ -871,8 +879,22 @@ def prim_DO_RUNTIME(inner, cur, ip):
     start = inner.pop_ds_int()
     limit = inner.pop_ds_int()
     # Push to dedicated loop stack (raw integers, no boxing!)
-    inner.push_rs(limit)
-    inner.push_rs(start)
+    inner.push_loop(limit, start)
+    return ip
+
+
+# (?DO) ( limit start -- )
+def prim_QDO_RUNTIME(inner, cur, ip):
+    """Runtime for ?DO: like (DO), but skip the loop body when limit == start
+    (branching to the patched loop end, with no loop parameters pushed)."""
+    start = inner.pop_ds_int()
+    limit = inner.pop_ds_int()
+    if limit == start:
+        target = cur.lits[ip - 1]
+        assert isinstance(target, W_IntObject)
+        ip = target.intval
+    else:
+        inner.push_loop(limit, start)
     return ip
 
 
@@ -1326,10 +1348,11 @@ def prim_ABORT_QUOTE_RUNTIME(inner, cur, ip):
         stdout.write(msg)
         stdout.write("\n")
         # Clear stacks
-        inner.ds_ptr_ints = 0
+        inner.reset_ds_int()
         inner.ds_ptr_floats = 0
         inner.ds_ptr_locals = 0
         inner.rs_ptr = 0
+        inner.lc_depth = 0  # Also clear the loop-control stack
         inner.cs_ptr = 0  # Also clear call stack
         # Signal abort by returning EXIT_SENTINEL
         from rpyforth.inner_interp import EXIT_SENTINEL
@@ -1514,6 +1537,58 @@ def prim_EXECUTE(inner, cur, ip):
     return ip
 
 
+# (DEFER) ( id -- ) -- execute the word bound to deferred slot id.
+def prim_DEFER_EXEC(inner, cur, ip):
+    idx = inner.pop_ds_int()
+    word = inner.deferred_words[idx]
+    if word is None:
+        print "uninitialized DEFER"
+        return ip
+    inner.execute_word_now(word)
+    return ip
+
+
+# (IS!) ( xt id -- ) -- bind xt to deferred slot id (compiled by IS).
+def prim_IS_STORE(inner, cur, ip):
+    idx = inner.pop_ds_int()
+    xt = inner.pop_ds()
+    assert isinstance(xt, W_WordObject)
+    inner.deferred_words[idx] = xt.word
+    return ip
+
+
+# COMPARE ( c-addr1 u1 c-addr2 u2 -- n ) -- lexicographic string comparison.
+def prim_COMPARE(inner, cur, ip):
+    inner.pop_ds_int()                 # u2
+    a2 = inner.pop_ds_int()
+    inner.pop_ds_int()                 # u1
+    a1 = inner.pop_ds_int()
+    s1 = inner.buf[a1]
+    s2 = inner.buf[a2]
+    assert isinstance(s1, W_StringObject)
+    assert isinstance(s2, W_StringObject)
+    if s1.strval < s2.strval:
+        inner.push_ds_int(-1)
+    elif s1.strval > s2.strval:
+        inner.push_ds_int(1)
+    else:
+        inner.push_ds_int(0)
+    return ip
+
+
+# DEFER! ( xt xt-deferred -- ) -- bind xt as the action of a deferred word. The
+# slot id lives in the deferred word's body (LIT id (DEFER) EXIT).
+def prim_DEFER_STORE(inner, cur, ip):
+    xt_def = inner.pop_ds()
+    xt = inner.pop_ds()
+    assert isinstance(xt_def, W_WordObject)
+    assert isinstance(xt, W_WordObject)
+    slot_w = xt_def.word.thread.lits[0]
+    assert isinstance(slot_w, W_IntObject)
+    inner.deferred_words[slot_w.intval] = xt.word
+    return ip
+
+
 # >BODY ( xt -- a-addr )
 def prim_TOBODY(inner, cur, ip):
     """GForth core 2012: return the parameter field address corresponding to xt."""
@@ -1571,6 +1646,34 @@ def prim_MOVE(inner, cur, ip):
             values[i] = inner.char_fetch(addr1 + i)
         for i in range(u):
             inner.char_store(addr2 + i, values[i])
+    return ip
+
+
+# CMOVE ( c-addr1 c-addr2 u -- )
+@unroll_safe
+def prim_CMOVE(inner, cur, ip):
+    """GForth string 2012: copy u chars from c-addr1 to c-addr2, low address
+    first (so an overlapping move propagates the leading bytes upward)."""
+    u = inner.pop_ds_int()
+    addr2 = inner.pop_ds_int()
+    addr1 = inner.pop_ds_int()
+    for i in range(u):
+        inner.char_store(addr2 + i, inner.char_fetch(addr1 + i))
+    return ip
+
+
+# CMOVE> ( c-addr1 c-addr2 u -- )
+@unroll_safe
+def prim_CMOVE_UP(inner, cur, ip):
+    """GForth string 2012: copy u chars from c-addr1 to c-addr2, high address
+    first, so a move toward a higher overlapping address preserves the source."""
+    u = inner.pop_ds_int()
+    addr2 = inner.pop_ds_int()
+    addr1 = inner.pop_ds_int()
+    i = u - 1
+    while i >= 0:
+        inner.char_store(addr2 + i, inner.char_fetch(addr1 + i))
+        i -= 1
     return ip
 
 
@@ -1854,6 +1957,291 @@ def prim_FLOATPLUS(inner, cur, ip):
     return ip
 
 
+# File access -------------------------------------------------------------
+#
+# fam encoding (private to these words; the standard leaves it implementation
+# defined): bit 0/1 select the read/write access, bit 2 is the BIN flag. The
+# BIN flag is ignored on POSIX (all files are binary) but must round-trip.
+FAM_RO = 0
+FAM_WO = 1
+FAM_RW = 2
+FAM_BIN = 4
+
+
+def _read_cstr(inner, addr, u):
+    """Return the u-char string at c-addr. Handles both representations: a
+    filename produced by S" lives as a single W_StringObject in inner.buf,
+    while a byte buffer built with C!/CMOVE lives in char memory."""
+    entry = None
+    if 0 <= addr < len(inner.buf):
+        entry = inner.buf[addr]
+    if entry is not None and isinstance(entry, W_StringObject):
+        s = entry.strval
+        if len(s) > u:
+            return s[:u]
+        return s
+    chars = []
+    for i in range(u):
+        chars.append(chr(inner.char_fetch(addr + i)))
+    return "".join(chars)
+
+
+def _open_flags(fam):
+    import os
+    access = fam & 3
+    if access == FAM_WO:
+        return os.O_WRONLY
+    elif access == FAM_RW:
+        return os.O_RDWR
+    else:
+        return os.O_RDONLY
+
+
+# R/O ( -- fam )
+def prim_R_O(inner, cur, ip):
+    inner.push_ds_int(FAM_RO)
+    return ip
+
+
+# W/O ( -- fam )
+def prim_W_O(inner, cur, ip):
+    inner.push_ds_int(FAM_WO)
+    return ip
+
+
+# R/W ( -- fam )
+def prim_R_W(inner, cur, ip):
+    inner.push_ds_int(FAM_RW)
+    return ip
+
+
+# BIN ( fam1 -- fam2 )
+def prim_BIN(inner, cur, ip):
+    fam = inner.pop_ds_int()
+    inner.push_ds_int(fam | FAM_BIN)
+    return ip
+
+
+# STDIN / STDOUT / STDERR ( -- fileid )
+def prim_STDIN(inner, cur, ip):
+    inner.push_ds_int(0)
+    return ip
+
+
+def prim_STDOUT(inner, cur, ip):
+    inner.push_ds_int(1)
+    return ip
+
+
+def prim_STDERR(inner, cur, ip):
+    inner.push_ds_int(2)
+    return ip
+
+
+# OPEN-FILE ( c-addr u fam -- fileid ior )
+@dont_look_inside
+def prim_OPEN_FILE(inner, cur, ip):
+    import os
+    fam = inner.pop_ds_int()
+    u = inner.pop_ds_int()
+    addr = inner.pop_ds_int()
+    name = _read_cstr(inner, addr, u)
+    try:
+        fd = os.open(name, _open_flags(fam), 0666)
+    except OSError as e:
+        inner.push_ds_int(0)
+        inner.push_ds_int(e.errno)
+        return ip
+    inner.push_ds_int(fd)
+    inner.push_ds_int(0)
+    return ip
+
+
+# CREATE-FILE ( c-addr u fam -- fileid ior )
+@dont_look_inside
+def prim_CREATE_FILE(inner, cur, ip):
+    import os
+    fam = inner.pop_ds_int()
+    u = inner.pop_ds_int()
+    addr = inner.pop_ds_int()
+    name = _read_cstr(inner, addr, u)
+    flags = _open_flags(fam) | os.O_CREAT | os.O_TRUNC
+    try:
+        fd = os.open(name, flags, 0666)
+    except OSError as e:
+        inner.push_ds_int(0)
+        inner.push_ds_int(e.errno)
+        return ip
+    inner.push_ds_int(fd)
+    inner.push_ds_int(0)
+    return ip
+
+
+# CLOSE-FILE ( fileid -- ior )
+@dont_look_inside
+def prim_CLOSE_FILE(inner, cur, ip):
+    import os
+    fd = inner.pop_ds_int()
+    try:
+        os.close(fd)
+    except OSError as e:
+        inner.push_ds_int(e.errno)
+        return ip
+    inner.push_ds_int(0)
+    return ip
+
+
+# READ-FILE ( c-addr u1 fileid -- u2 ior )
+@dont_look_inside
+def prim_READ_FILE(inner, cur, ip):
+    import os
+    fd = inner.pop_ds_int()
+    u1 = inner.pop_ds_int()
+    addr = inner.pop_ds_int()
+    try:
+        data = os.read(fd, u1)
+    except OSError as e:
+        inner.push_ds_int(0)
+        inner.push_ds_int(e.errno)
+        return ip
+    n = len(data)
+    for i in range(n):
+        inner.char_store(addr + i, ord(data[i]))
+    inner.push_ds_int(n)
+    inner.push_ds_int(0)
+    return ip
+
+
+# READ-LINE ( c-addr u1 fileid -- u2 flag ior )
+@dont_look_inside
+def prim_READ_LINE(inner, cur, ip):
+    import os
+    fd = inner.pop_ds_int()
+    u1 = inner.pop_ds_int()
+    addr = inner.pop_ds_int()
+    n = 0
+    got_any = False
+    try:
+        while n < u1:
+            ch = os.read(fd, 1)
+            if len(ch) == 0:
+                break
+            got_any = True
+            c = ch[0]
+            if c == '\n':
+                inner.push_ds_int(n)
+                inner.push_ds_int(-1)
+                inner.push_ds_int(0)
+                return ip
+            if c != '\r':
+                inner.char_store(addr + n, ord(c))
+                n += 1
+    except OSError as e:
+        inner.push_ds_int(n)
+        inner.push_ds_int(-1)
+        inner.push_ds_int(e.errno)
+        return ip
+    inner.push_ds_int(n)
+    if got_any:
+        inner.push_ds_int(-1)
+    else:
+        inner.push_ds_int(0)
+    inner.push_ds_int(0)
+    return ip
+
+
+# WRITE-FILE ( c-addr u fileid -- ior )
+@dont_look_inside
+def prim_WRITE_FILE(inner, cur, ip):
+    import os
+    fd = inner.pop_ds_int()
+    u = inner.pop_ds_int()
+    addr = inner.pop_ds_int()
+    data = _read_cstr(inner, addr, u)
+    try:
+        os.write(fd, data)
+    except OSError as e:
+        inner.push_ds_int(e.errno)
+        return ip
+    inner.push_ds_int(0)
+    return ip
+
+
+# WRITE-LINE ( c-addr u fileid -- ior )
+@dont_look_inside
+def prim_WRITE_LINE(inner, cur, ip):
+    import os
+    fd = inner.pop_ds_int()
+    u = inner.pop_ds_int()
+    addr = inner.pop_ds_int()
+    data = _read_cstr(inner, addr, u)
+    try:
+        os.write(fd, data)
+        os.write(fd, "\n")
+    except OSError as e:
+        inner.push_ds_int(e.errno)
+        return ip
+    inner.push_ds_int(0)
+    return ip
+
+
+# FILE-POSITION ( fileid -- ud ior )
+@dont_look_inside
+def prim_FILE_POSITION(inner, cur, ip):
+    import os
+    fd = inner.pop_ds_int()
+    try:
+        pos = os.lseek(fd, 0, 1)   # SEEK_CUR
+    except OSError as e:
+        inner.push_ds_int(0)
+        inner.push_ds_int(0)
+        inner.push_ds_int(e.errno)
+        return ip
+    BIT_MASK = (1 << LONG_BIT) - 1
+    inner.push_ds_int(pos & BIT_MASK)
+    inner.push_ds_int(pos >> LONG_BIT)
+    inner.push_ds_int(0)
+    return ip
+
+
+# REPOSITION-FILE ( ud fileid -- ior )
+@dont_look_inside
+def prim_REPOSITION_FILE(inner, cur, ip):
+    import os
+    fd = inner.pop_ds_int()
+    hi = inner.pop_ds_int()
+    lo = inner.pop_ds_int()
+    BIT_MASK = (1 << LONG_BIT) - 1
+    pos = (lo & BIT_MASK) + (hi << LONG_BIT)
+    try:
+        os.lseek(fd, pos, 0)   # SEEK_SET
+    except OSError as e:
+        inner.push_ds_int(e.errno)
+        return ip
+    inner.push_ds_int(0)
+    return ip
+
+
+# FILE-SIZE ( fileid -- ud ior )
+@dont_look_inside
+def prim_FILE_SIZE(inner, cur, ip):
+    import os
+    fd = inner.pop_ds_int()
+    try:
+        st = os.fstat(fd)
+        size = st.st_size
+    except OSError as e:
+        inner.push_ds_int(0)
+        inner.push_ds_int(0)
+        inner.push_ds_int(e.errno)
+        return ip
+    BIT_MASK = (1 << LONG_BIT) - 1
+    inner.push_ds_int(size & BIT_MASK)
+    inner.push_ds_int(size >> LONG_BIT)
+    inner.push_ds_int(0)
+    return ip
+
+
 # ALLOCATE ( u -- a-addr ior )
 def prim_ALLOCATE(inner, cur, ip):
     """Allocate u bytes of memory, return address and 0 (success) or non-zero (failure)."""
@@ -1882,12 +2270,44 @@ def prim_FREE(inner, cur, ip):
 
 # THROW ( k*x n -- k*x | i*x n )
 def prim_THROW(inner, cur, ip):
-    """Throw exception. If n is 0, do nothing. Otherwise, abort with message."""
+    """Throw an exception with code n; n=0 is a no-op. Unwinds to the nearest CATCH."""
     n = inner.pop_ds_int()
     if n != 0:
-        print "THROW: exception", n
-        import os
-        os._exit(1)
+        raise ForthException(n)
+    return ip
+
+
+# CATCH ( i*x xt -- j*x 0 | i*x n ) -- execute xt, returning 0 normally or the
+# THROW code n with the stack depth restored to just before xt ran.
+def prim_CATCH(inner, cur, ip):
+    xt = inner.pop_ds()
+    assert isinstance(xt, W_WordObject)
+    if USE_STACK_FRAGMENT:
+        snap = snapshot_cache(inner)
+    else:
+        snap = None
+    s_dsi = inner.ds_ptr_ints
+    s_dsf = inner.ds_ptr_floats
+    s_dsl = inner.ds_ptr_locals
+    s_rs = inner.rs_ptr
+    s_li = inner.li
+    s_lc = inner.lc_depth
+    s_cs = inner.cs_ptr
+    try:
+        inner.execute_word_now(xt.word)
+    except ForthException as e:
+        if USE_STACK_FRAGMENT:
+            restore_cache(inner, snap)
+        inner.ds_ptr_ints = s_dsi
+        inner.ds_ptr_floats = s_dsf
+        inner.ds_ptr_locals = s_dsl
+        inner.rs_ptr = s_rs
+        inner.li = s_li
+        inner.lc_depth = s_lc
+        inner.cs_ptr = s_cs
+        inner.push_ds_int(e.code)
+        return ip
+    inner.push_ds_int(0)
     return ip
 
 
@@ -2330,7 +2750,7 @@ def prim_CPUTIME(inner, cur, ip):
 def prim_LITERAL(inner, cur, ip):
     """Compile a literal. At run-time, push the value onto the stack."""
     # Pop value from stack
-    if inner.ds_ptr_ints > 0:
+    if inner.ds_int_size() > 0:
         intval = inner.pop_ds_int()
         outer = inner.outer
         if outer is not None:
@@ -2389,6 +2809,8 @@ def install_primitives(outer):
     outer.define_prim("BL", prim_BL)
     outer.define_prim("FILL", prim_FILL)
     outer.define_prim("MOVE", prim_MOVE)
+    outer.define_prim("CMOVE", prim_CMOVE)
+    outer.define_prim("CMOVE>", prim_CMOVE_UP)
 
     outer.define_prim("2*", prim_2STAR)
     outer.define_prim("2/", prim_2SLASH)
@@ -2480,6 +2902,7 @@ def install_primitives(outer):
     outer.define_prim("0BRANCH", prim_0BRANCH)
     outer.define_prim("BRANCH", prim_BRANCH)
     outer.define_prim("(DO)", prim_DO_RUNTIME)
+    outer.define_prim("(?DO)", prim_QDO_RUNTIME)
     outer.define_prim("(LOOP)", prim_LOOP_RUNTIME)
     outer.define_prim("(+LOOP)", prim_PLUSLOOP_RUNTIME)
     outer.define_prim("UNLOOP", prim_UNLOOP)
@@ -2569,6 +2992,10 @@ def install_primitives(outer):
 
     # dictionary
     outer.define_prim("EXECUTE", prim_EXECUTE)
+    outer.define_prim("(DEFER)", prim_DEFER_EXEC)
+    outer.define_prim("(IS!)", prim_IS_STORE)
+    outer.define_prim("DEFER!", prim_DEFER_STORE)
+    outer.define_prim("COMPARE", prim_COMPARE)
     outer.define_prim(">BODY", prim_TOBODY)
 
     # data space
@@ -2587,8 +3014,28 @@ def install_primitives(outer):
     outer.define_prim("ALLOCATE", prim_ALLOCATE)
     outer.define_prim("FREE", prim_FREE)
 
+    # file access
+    outer.define_prim("R/O", prim_R_O)
+    outer.define_prim("W/O", prim_W_O)
+    outer.define_prim("R/W", prim_R_W)
+    outer.define_prim("BIN", prim_BIN)
+    outer.define_prim("STDIN", prim_STDIN)
+    outer.define_prim("STDOUT", prim_STDOUT)
+    outer.define_prim("STDERR", prim_STDERR)
+    outer.define_prim("OPEN-FILE", prim_OPEN_FILE)
+    outer.define_prim("CREATE-FILE", prim_CREATE_FILE)
+    outer.define_prim("CLOSE-FILE", prim_CLOSE_FILE)
+    outer.define_prim("READ-FILE", prim_READ_FILE)
+    outer.define_prim("READ-LINE", prim_READ_LINE)
+    outer.define_prim("WRITE-FILE", prim_WRITE_FILE)
+    outer.define_prim("WRITE-LINE", prim_WRITE_LINE)
+    outer.define_prim("FILE-POSITION", prim_FILE_POSITION)
+    outer.define_prim("REPOSITION-FILE", prim_REPOSITION_FILE)
+    outer.define_prim("FILE-SIZE", prim_FILE_SIZE)
+
     # exception handling
     outer.define_prim("THROW", prim_THROW)
+    outer.define_prim("CATCH", prim_CATCH)
 
     # system
     outer.define_prim("BYE", prim_BYE)

@@ -3,6 +3,8 @@ import sys
 
 from rpyforth.inner_interp import InnerInterpreter, Bye
 from rpyforth.outer_interp import OuterInterpreter
+from rpyforth.metastack import DataStackOverflow
+from rpyforth.prelude import load_prelude
 
 from rpython.rlib import jit
 from rpython.rlib.streamio import open_file_as_stream
@@ -25,19 +27,24 @@ def entry_point(argv):
     jit.set_user_param(None, "trace_limit=200000")
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
+    load_prelude(outer)
     path = argv[1]
     args = []
     if len(argv) > 2:
         args = argv[2:]
     inner.argv = args
     f = open_file_as_stream(path)
+    err = 0
     try:
         for line in f.readall().split('\n'):
             outer.interpret_line(line)
     except Bye:
         pass
+    except DataStackOverflow:
+        print("data stack overflow")
+        err = 1
     f.close()
-    return 0
+    return err
 
 def target(driver, args):
     driver.exe_name = os.environ.get("RPYFORTH_EXE_NAME", "rpyforth-%(backend)s")
