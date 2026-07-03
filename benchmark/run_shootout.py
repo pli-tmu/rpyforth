@@ -167,6 +167,25 @@ def capture_environment(pin: Optional[int]) -> str:
     return f"env: {cpu} | governor {gov} | load1 {load1} | {pin_s}"
 
 
+def git_revision(repo_root: Path) -> str:
+    """Short git revision of the tree, with a -dirty suffix when there are
+    uncommitted changes, so benchmark outputs are traceable to a commit."""
+    def _git(cmd: List[str]) -> str:
+        return subprocess.check_output(
+            ["git"] + cmd, cwd=str(repo_root), stderr=subprocess.DEVNULL
+        ).decode().strip()
+    try:
+        rev = _git(["rev-parse", "--short", "HEAD"])
+    except (subprocess.CalledProcessError, OSError):
+        return "unknown"
+    try:
+        if _git(["status", "--porcelain"]):
+            rev += "-dirty"
+    except (subprocess.CalledProcessError, OSError):
+        pass
+    return rev
+
+
 def discover_benchmarks(root: Path) -> List[Path]:
     """Return all .fs files under shootout/, sorted."""
     shootout_dir = root / "shootout"
@@ -1044,12 +1063,14 @@ def main(argv: Optional[List[str]] = None) -> int:
             return 1
         wrapper = ["taskset", "-c", str(args.pin)]
 
-    env_line = capture_environment(args.pin)
-
     repo_root = Path(__file__).resolve().parent.parent
     plan = build_run_plan(args)
+    revision = git_revision(repo_root)
 
-    output_dir = args.output if args.output.is_absolute() else repo_root / args.output
+    env_line = capture_environment(args.pin) + f" | commit {revision}"
+
+    base_output = args.output if args.output.is_absolute() else repo_root / args.output
+    output_dir = base_output / revision
     jitlog_dir = args.jitlog_dir if args.jitlog_dir.is_absolute() else repo_root / args.jitlog_dir
 
     if args.analyze_only:
@@ -1176,7 +1197,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
         chart_path = args.chart if args.chart.is_absolute() else repo_root / args.chart
         try:
-            generate_bar_chart(chart_path, results, plan)
+            generate_bar_chart(chart_path, results, plan, caption=f"commit {revision}")
             print(f"Bar chart written to {chart_path}")
         except RuntimeError as exc:
             print(f"Error: {exc}", file=sys.stderr)
@@ -1187,7 +1208,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
         curve_path = args.curve_chart if args.curve_chart.is_absolute() else repo_root / args.curve_chart
         try:
-            generate_curve_chart(curve_path, results, plan)
+            generate_curve_chart(curve_path, results, plan, caption=f"commit {revision}")
             print(f"Warm-up curve chart written to {curve_path}")
         except RuntimeError as exc:
             print(f"Error: {exc}", file=sys.stderr)

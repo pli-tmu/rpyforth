@@ -201,6 +201,7 @@ def generate_bar_chart(
     out_path: Path,
     results: List[BenchmarkResult],
     plan: RunPlan,
+    caption: Optional[str] = None,
 ) -> None:
     """Write a single-image (PNG/PDF) bar chart comparing all configurations."""
     try:
@@ -225,7 +226,9 @@ def generate_bar_chart(
     draw_grouped_elapsed(ax_abs, names, data, plan, colors, logx=True)
     labels = ", ".join(plan.label_for(c) for c in config_ids)
     fig.suptitle(f"Shootout benchmarks: {labels}", fontsize=13)
-    fig.tight_layout(rect=(0, 0, 1, 0.97))
+    fig.tight_layout(rect=(0, 0.02, 1, 0.97))
+    if caption:
+        fig.text(0.99, 0.005, caption, ha="right", va="bottom", fontsize=8, color="0.5")
     fig.savefig(str(out_path), dpi=120)
     plt.close(fig)
 
@@ -264,7 +267,7 @@ def draw_curve(ax, program, runs_by_config, plan, colors, logy: bool = True) -> 
         m = min(len(c) for c in runs)
         cols = [[c[i] for c in runs] for i in range(m)]
         med = [statistics.median(col) for col in cols]
-        iters = list(range(m))
+        iters = list(range(1, m + 1))
         ax.plot(iters, med, marker="o", markersize=3, linewidth=1.2,
                 color=color, label=plan.label_for(config))
         if len(runs) > 1:
@@ -273,9 +276,11 @@ def draw_curve(ax, program, runs_by_config, plan, colors, logy: bool = True) -> 
             ax.fill_between(iters, lo, hi, color=color, alpha=0.18, linewidth=0)
         ss = steady_state(med)
         if ss:
-            ax.axhline(ss, color=color, linestyle=":", linewidth=1, alpha=0.6)
+            ax.axhline(ss, color="0.35", linestyle=(0, (1, 1)), linewidth=2.0,
+                       alpha=0.95, zorder=5)
     if logy:
         ax.set_yscale("log")
+    ax.set_xlim(left=0.5)
     ax.set_title(program.replace("curve/", ""))
     ax.set_xlabel("Iteration")
     ax.set_ylabel("Time / iteration (us%s)" % (", log" if logy else ""))
@@ -288,6 +293,7 @@ def generate_curve_chart(
     results: List[BenchmarkResult],
     plan: RunPlan,
     logy: bool = True,
+    caption: Optional[str] = None,
 ) -> None:
     """Write a single-image (PNG/PDF) grid of warm-up curves, one per benchmark."""
     try:
@@ -320,9 +326,12 @@ def generate_curve_chart(
     for idx in range(len(programs), rows * cols):
         flat[idx].set_visible(False)
     fig.suptitle(
-        "Warm-up curves: time per iteration (dotted = steady state)", fontsize=13
+        "Warm-up curves: time per iteration "
+        "(bold gray dotted line = steady state)", fontsize=13
     )
-    fig.tight_layout(rect=(0, 0, 1, 0.97))
+    fig.tight_layout(rect=(0, 0.02, 1, 0.97))
+    if caption:
+        fig.text(0.99, 0.005, caption, ha="right", va="bottom", fontsize=8, color="0.5")
     fig.savefig(str(out_path), dpi=120)
     plt.close(fig)
 
