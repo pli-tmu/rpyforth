@@ -1,4 +1,4 @@
-from rpyforth.objects import W_StringObject, CELL_SIZE_BYTES, W_IntObject, W_FloatObject, W_WordObject
+from rpyforth.objects import W_StringObject, CELL_SIZE_BYTES, W_IntObject, W_FloatObject, W_WordObject, word_from_wid
 from rpyforth.outer_interp import OuterInterpreter
 from rpyforth.inner_interp import InnerInterpreter
 
@@ -583,8 +583,8 @@ def test_find():
     outer.interpret_line('S" DUP"')
     outer.interpret_line("FIND")
     flag = inner.pop_ds_int()
-    xt = inner.pop_ds()
-    assert xt.word.name == "DUP"
+    xt = inner.pop_ds_int()
+    assert word_from_wid(xt).name == "DUP"
     assert flag == 1
 
 def test_find_not_found():
@@ -605,9 +605,9 @@ def test_execute():
     outer.interpret_line('S" DUP"')
     outer.interpret_line("FIND")
     flag = inner.pop_ds_int()
-    xt = inner.pop_ds()
+    xt = inner.pop_ds_int()
     inner.push_ds_int(42)
-    inner.push_ds(xt)
+    inner.push_ds_int(xt)
     outer.interpret_line("EXECUTE")
     val2 = inner.pop_ds_int()
     val1 = inner.pop_ds_int()
@@ -622,8 +622,8 @@ def test_to_body():
     outer.interpret_line('S" MYVAR"')
     outer.interpret_line("FIND")
     flag = inner.pop_ds_int()
-    xt = inner.pop_ds()
-    inner.push_ds(xt)
+    xt = inner.pop_ds_int()
+    inner.push_ds_int(xt)
     outer.interpret_line(">BODY")
     body_addr = inner.pop_ds_int()
     outer.interpret_line("MYVAR")
@@ -645,16 +645,15 @@ def test_source():
     assert u == len(test_line)
 
 def test_to_in():
-    """Test >IN - returns address of parse position variable"""
+    """>IN returns the address of the runtime parse cursor (a token index).
+    After the interpreter has consumed the >IN token itself, the cursor is 1."""
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
     outer.interpret_line(">IN")
     addr = inner.pop_ds_int()
-    # The address should contain the parse position
     pos = inner.cell_fetch(addr)
     assert isinstance(pos, W_IntObject)
-    # Initial position should be 0
-    assert pos.intval == 0
+    assert pos.intval == 1
 
 # Special Tests
 
@@ -663,9 +662,8 @@ def test_tick():
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
     outer.interpret_line("' DUP")
-    xt = inner.pop_ds()
-    assert isinstance(xt, W_WordObject)
-    assert xt.word.name == "DUP"
+    xt = inner.pop_ds_int()
+    assert word_from_wid(xt).name == "DUP"
 
 def test_paren_comment():
     """Test ( (paren) - comment word"""
@@ -683,9 +681,9 @@ def test_tick_execute():
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
     outer.interpret_line("' DUP")
-    xt = inner.pop_ds()
+    xt = inner.pop_ds_int()
     inner.push_ds_int(42)
-    inner.push_ds(xt)
+    inner.push_ds_int(xt)
     outer.interpret_line("EXECUTE")
     val2 = inner.pop_ds_int()
     val1 = inner.pop_ds_int()
@@ -756,21 +754,19 @@ def test_count():
     """Test COUNT - convert counted string to addr/len"""
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
-    # Create a counted string manually
-    # Store length 3 at HERE
-    outer.interpret_line("HERE  3 ,")
+    # Create a counted string manually: length byte then the characters, all
+    # written with C, (COUNT reads the length as a char/byte, per gforth).
+    outer.interpret_line("HERE  3 C,")
     addr = inner.pop_ds_int()
-    # Store characters 'A', 'B', 'C'
     outer.interpret_line("65 C,  66 C,  67 C,")
-    # Now use COUNT on the counted string address
     inner.push_ds_int(addr)
     outer.interpret_line("COUNT")
     u = inner.pop_ds_int()
     caddr2 = inner.pop_ds_int()
     # Length should be 3
     assert u == 3
-    # caddr2 should be addr + cell_size (skipping the count cell)
-    assert caddr2 == addr + CELL_SIZE_BYTES
+    # caddr2 should be addr + 1 char (skipping the length byte)
+    assert caddr2 == addr + 1
 
 def test_word():
     """Test WORD - parse word delimited by character"""
@@ -780,10 +776,9 @@ def test_word():
     # Use separate calls to avoid "World" being executed
     outer.interpret_line("32 WORD Hello")
     caddr = inner.pop_ds_int()
-    # caddr points to counted string
-    # Fetch the length
-    length = inner.cell_fetch(caddr)
-    assert length.intval == 5  # "Hello"
+    # caddr points to a counted string in character (byte) space
+    length = inner.char_fetch(caddr)
+    assert length == 5  # "Hello"
 
 def test_word_count():
     """Test WORD with COUNT"""
@@ -806,8 +801,11 @@ def test_PNO():
         outer.interpret_line(line)
         return inner.pop_ds()
     assert run_and_pop("DECIMAL  12345 0 <# #S #>").strval == '12345'
-    assert run_and_pop("HEX      255 0   <# #S #>").strval == 'FF'
-    assert run_and_pop("BINARY   5 0     <# #S #>").strval == '101'
+    # In HEX base the literal 255 is hex 0x255, printed back as "255" (matches
+    # gforth). Use a decimal magnitude to exercise hex digit output.
+    assert run_and_pop("HEX      0FF 0   <# #S #>").strval == 'FF'
+    # 5 is not a binary digit; take the magnitude in decimal, then format binary.
+    assert run_and_pop("DECIMAL 5 0  BINARY  <# #S #>").strval == '101'
 
 
 def test_sign_negative():
@@ -1021,9 +1019,8 @@ def test_bracket_tick():
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
     outer.interpret_line(": TEST ['] DUP ; TEST")
-    xt = inner.pop_ds()
-    assert isinstance(xt, W_WordObject)
-    assert xt.word.name == "DUP"
+    xt = inner.pop_ds_int()
+    assert word_from_wid(xt).name == "DUP"
 
 # Number Conversion Tests
 

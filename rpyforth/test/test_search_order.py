@@ -42,7 +42,7 @@ def test_wordlist_and_search_wordlist():
     outer.interpret_line('S" PRIV" MY-WL SEARCH-WORDLIST')
     found = inner.pop_ds_int()
     assert found != 0     # 1 or -1: found, xt beneath
-    inner.pop_ds()        # drop xt
+    inner.pop_ds_int()    # drop xt (an integer wid)
 
 
 def test_also_previous_restore_order():

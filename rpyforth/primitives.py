@@ -21,6 +21,7 @@ from rpyforth.objects import (
     _small_int_cache,
     SMALL_INT_MIN,
     SMALL_INT_MAX,
+    word_from_wid,
 )
 from rpyforth.inner_interp import (
     jitdriver,
@@ -349,6 +350,18 @@ def prim_D_MINUS(inner, cur, ip):
     result_hi = (result >> LONG_BIT) & BIT_MASK
     inner.push_ds_int(result_lo)
     inner.push_ds_int(result_hi)
+    return ip
+
+
+# D2/ ( d -- d/2 ) -- arithmetic right shift of a double by one bit.
+def prim_D2SLASH(inner, cur, ip):
+    d_hi = inner.pop_ds_int()
+    d_lo = inner.pop_ds_int()
+    BIT_MASK = (1 << LONG_BIT) - 1
+    d = d_lo + (d_hi << LONG_BIT)
+    result = d >> 1
+    inner.push_ds_int(result & BIT_MASK)
+    inner.push_ds_int((result >> LONG_BIT) & BIT_MASK)
     return ip
 
 
@@ -1542,10 +1555,8 @@ def _call_word_inline(inner, cur, ip, word):
 
 # EXECUTE ( xt -- )
 def prim_EXECUTE(inner, cur, ip):
-    """GForth core 2012: execute the execution token xt."""
-    xt = inner.pop_ds()
-    assert isinstance(xt, W_WordObject)
-    word = xt.word
+    """GForth core 2012: execute the execution token xt (an integer wid)."""
+    word = word_from_wid(inner.pop_ds_int())
     if word.thread is not None:
         return _call_word_inline(inner, cur, ip, word)
     inner.execute_word_now(word)
@@ -1568,9 +1579,7 @@ def prim_DEFER_EXEC(inner, cur, ip):
 # (IS!) ( xt id -- ) -- bind xt to deferred slot id (compiled by IS).
 def prim_IS_STORE(inner, cur, ip):
     idx = inner.pop_ds_int()
-    xt = inner.pop_ds()
-    assert isinstance(xt, W_WordObject)
-    inner.deferred_words[idx] = xt.word
+    inner.deferred_words[idx] = word_from_wid(inner.pop_ds_int())
     return ip
 
 
@@ -1596,22 +1605,80 @@ def prim_COMPARE(inner, cur, ip):
 # DEFER! ( xt xt-deferred -- ) -- bind xt as the action of a deferred word. The
 # slot id lives in the deferred word's body (LIT id (DEFER) EXIT).
 def prim_DEFER_STORE(inner, cur, ip):
-    xt_def = inner.pop_ds()
-    xt = inner.pop_ds()
-    assert isinstance(xt_def, W_WordObject)
-    assert isinstance(xt, W_WordObject)
-    slot_w = xt_def.word.thread.lits[0]
+    xt_def = word_from_wid(inner.pop_ds_int())
+    xt = word_from_wid(inner.pop_ds_int())
+    slot_w = xt_def.thread.lits[0]
     assert isinstance(slot_w, W_IntObject)
-    inner.deferred_words[slot_w.intval] = xt.word
+    inner.deferred_words[slot_w.intval] = xt
     return ip
+
+
+# CONSTANT ( x "<name>" -- ) -- runtime defining word. Executable inside a colon
+# body (e.g. r: in cd16sim), it names the next input token as a constant.
+def prim_CONSTANT(inner, cur, ip):
+    inner.outer.runtime_constant()
+    return ip
+
+
+# VARIABLE ( "<name>" -- ) -- runtime defining word.
+def prim_VARIABLE(inner, cur, ip):
+    inner.outer.runtime_variable()
+    return ip
+
+
+# CREATE ( "<name>" -- ) -- runtime defining word. When the enclosing definition
+# had a DOES>, its body (carried on cur.does_word) becomes the child's action.
+def prim_CREATE(inner, cur, ip):
+    inner.outer.runtime_create(cur.does_word)
+    return ip
+
+
+# DEFER ( "<name>" -- ) -- runtime defining word.
+def prim_DEFER(inner, cur, ip):
+    inner.outer.runtime_defer()
+    return ip
+
+
+# ' ( "<name>" -- xt ) -- tick, executable inside a colon body.
+def prim_TICK(inner, cur, ip):
+    inner.outer.runtime_tick()
+    return ip
+
+
+# COUNT ( c-addr1 -- c-addr2 u ) -- read the length byte of a counted string.
+def prim_COUNT(inner, cur, ip):
+    c_addr1 = inner.pop_ds_int()
+    inner.push_ds_int(c_addr1 + 1)
+    inner.push_ds_int(inner.char_fetch(c_addr1))
+    return ip
+
+
+# EVALUATE ( c-addr u -- ) -- interpret the string; usable inside a colon body.
+def prim_EVALUATE(inner, cur, ip):
+    inner.outer._handle_evaluate()
+    return ip
+
+
+# >IN ( -- a-addr ) -- address of the runtime parse cursor (a token index).
+def prim_TO_IN(inner, cur, ip):
+    inner.push_ds_int(inner.outer.to_in_addr)
+    return ip
+
+
+# ABORT ( -- ) -- clear the stacks and unwind to the top level.
+def prim_ABORT(inner, cur, ip):
+    inner.reset_ds_int()
+    inner.ds_ptr_floats = 0
+    inner.ds_ptr_locals = 0
+    inner.rs_ptr = 0
+    inner.lc_depth = 0
+    raise ForthException(-1)
 
 
 # >BODY ( xt -- a-addr )
 def prim_TOBODY(inner, cur, ip):
     """GForth core 2012: return the parameter field address corresponding to xt."""
-    xt = inner.pop_ds()
-    assert isinstance(xt, W_WordObject)
-    word = xt.word
+    word = word_from_wid(inner.pop_ds_int())
     # For words created with CREATE, VARIABLE, CONSTANT, etc.,
     # the body is in the first literal of the code thread
     if word.thread is not None and len(word.thread.lits) > 0:
@@ -1795,11 +1862,11 @@ def prim_COMMA(inner, cur, ip):
 
 # C, ( char -- )
 def prim_C_COMMA(inner, cur, ip):
-    """GForth core 2012: reserve one character of data space and store char in it."""
+    """GForth core 2012: reserve one character of data space and store char in it.
+    Stores into character (byte) space so C@ / COUNT read it back consistently."""
     char = inner.pop_ds_int()
-    # For simplicity, we'll use cell_store but only increment by 1 byte
     addr = inner.here
-    inner.cell_store(addr, char)
+    inner.char_store(addr, char)
     inner.here += 1
     return ip
 
@@ -2311,9 +2378,7 @@ CATCH_EPILOGUE_THREAD = CodeThread([CATCH_EPILOGUE_WORD], [ZERO])
 # a normal in-loop call (through the epilogue trampoline), so the whole
 # mechanism stays inside the trace; THROW unwinds in execute_thread.
 def prim_CATCH(inner, cur, ip):
-    xt = inner.pop_ds()
-    assert isinstance(xt, W_WordObject)
-    word = xt.word
+    word = word_from_wid(inner.pop_ds_int())
     if word.thread is None:
         return _catch_primitive_xt(inner, cur, ip, word)
     inner.catch_push_frame(cur, ip)
@@ -3040,6 +3105,18 @@ def install_primitives(outer):
 
     # dictionary
     outer.define_prim("EXECUTE", prim_EXECUTE)
+    outer.define_prim("CONSTANT", prim_CONSTANT)
+    outer.define_prim("FCONSTANT", prim_CONSTANT)
+    outer.define_prim("VARIABLE", prim_VARIABLE)
+    outer.define_prim("FVARIABLE", prim_VARIABLE)
+    outer.define_prim("CREATE", prim_CREATE)
+    outer.define_prim("DEFER", prim_DEFER)
+    outer.define_prim("'", prim_TICK)
+    outer.define_prim(">IN", prim_TO_IN)
+    outer.define_prim("EVALUATE", prim_EVALUATE)
+    outer.define_prim("COUNT", prim_COUNT)
+    outer.define_prim("D2/", prim_D2SLASH)
+    outer.define_prim("ABORT", prim_ABORT)
     outer.define_prim("(DEFER)", prim_DEFER_EXEC)
     outer.define_prim("(IS!)", prim_IS_STORE)
     outer.define_prim("DEFER!", prim_DEFER_STORE)

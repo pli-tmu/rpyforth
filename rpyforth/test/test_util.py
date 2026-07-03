@@ -48,3 +48,12 @@ def test_split_whitespace_no_false_positives():
 
     # Parentheses in the middle of a token shouldn't trigger comment
     assert split_whitespace("test(value)") == ["test(value)"]
+
+
+def test_split_colon_words_kept_whole():
+    # Words that merely contain ':' (e.g. cd16sim's r: in: w: ev:) are single
+    # tokens; ':' / ';' are only their own tokens when whitespace-delimited.
+    assert split_whitespace(": r: registers @ CONSTANT ;") == \
+        [":", "r:", "registers", "@", "CONSTANT", ";"]
+    assert split_whitespace("' undef in: reset") == ["'", "undef", "in:", "reset"]
+    assert split_whitespace("2^n 1- mask &sa") == ["2^n", "1-", "mask", "&sa"]

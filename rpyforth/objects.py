@@ -14,6 +14,33 @@ class ForthException(Exception):
         self.code = code
 
 
+class WordRegistry(object):
+    """Maps a dense int id -> Word so an execution token can be a plain integer
+    on the data stack. Write-once-per-slot; a prebuilt singleton."""
+
+    _immutable_fields_ = ["words"]
+
+    def __init__(self):
+        self.words = [None] * MAX_WORDS
+        self.count = 0
+
+    def register(self, w):
+        wid = self.count
+        assert wid < MAX_WORDS
+        self.words[wid] = w
+        self.count = wid + 1
+        return wid
+
+
+MAX_WORDS = 262144
+WORD_REGISTRY = WordRegistry()
+
+
+@elidable
+def word_from_wid(wid):
+    return WORD_REGISTRY.words[wid]
+
+
 class Word(object):
     """
     Dictionary entry for a Forth word.
@@ -26,6 +53,10 @@ class Word(object):
         self.immediate = immediate # bool (mutable for IMMEDIATE)
         self.thread = thread # code thread (mutable for RECURSIVE)
         self.does_ip = -1  # DOES> instruction pointer (-1 means not set)
+        # Integer execution token: a stable id so an xt can live on the (integer)
+        # data stack and be stored/fetched with ! @ , like any cell. WORD_REGISTRY
+        # maps it back to this Word for EXECUTE.
+        self.wid = WORD_REGISTRY.register(self)
         # Single-instruction thread wrapping this word, built on first use by
         # execute_word_now and reused so each EXECUTE/CATCH does not allocate a
         # fresh thread (and register id) on every call.
@@ -77,6 +108,7 @@ class CodeThread(object):
         self.code = code # code (list of Words)
         self.lits = lits # literal values used by code[i]
         self.tid = THREAD_REGISTRY.register(self)
+        self.does_word = None
 
 
 class W_Object(object):

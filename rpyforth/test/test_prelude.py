@@ -129,3 +129,17 @@ def test_compare():
     assert pop('S" abc" S" abd" COMPARE') == -1
     assert pop('S" abd" S" abc" COMPARE') == 1
     assert pop('S" ab" S" abc" COMPARE') == -1
+
+
+def test_bounds():
+    inner = run_with_prelude("10 5 BOUNDS")
+    hi = inner.pop_ds_int()
+    lo = inner.pop_ds_int()
+    assert lo == 15 and hi == 10
+
+
+def test_d2slash():
+    inner = run_with_prelude("20 0 D2/")
+    hi = inner.pop_ds_int()
+    lo = inner.pop_ds_int()
+    assert lo == 10 and hi == 0

@@ -68,12 +68,6 @@ def split_whitespace(line):
                 res.append(cur)
                 cur = ''
             continue
-        if ch == ':' or ch == ';':
-            if cur != '':
-                res.append(cur)
-                cur = ''
-            res.append(ch)
-            continue
         cur += ch
     if cur != '':
         res.append(cur)
