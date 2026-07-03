@@ -511,9 +511,11 @@ class InnerInterpreter(InterpBase, object):
         stdout.flush()
 
     def alloc_buf(self, content, size):
+        # Advance by one cell so data space stays cell-aligned for the words
+        # defined after an interpreted string literal.
         addr = self.here
         self.buf[addr] = W_StringObject(content[:size])
-        self.here += 1
+        self.here += CELL_SIZE_BYTES
         return addr
 
     def _ensure_addr(self, addr, span):
@@ -531,12 +533,12 @@ class InnerInterpreter(InterpBase, object):
         return self.heap.cell_fetch(addr)
 
     def cell_2store(self, addr, x1_int, x2_int):
-        assert 0 <= addr < HEAP_CELL_COUNT - self.cell_size_bytes
+        assert 0 <= addr < HEAP_SIZE_BYTES - self.cell_size_bytes
         self.cell_store(addr, x1_int)
         self.cell_store(addr + self.cell_size_bytes, x2_int)
 
     def cell_2fetch(self, addr):
-        assert 0 <= addr < HEAP_CELL_COUNT - self.cell_size_bytes
+        assert 0 <= addr < HEAP_SIZE_BYTES - self.cell_size_bytes
         x1 = make_int(self.cell_fetch_int(addr))
         x2 = make_int(self.cell_fetch_int(addr + self.cell_size_bytes))
         return x1, x2

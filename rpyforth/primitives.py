@@ -1280,7 +1280,7 @@ def prim_ACCEPT(inner, cur, ip):
     # Store characters at addr
     final_len = len(line)
     for j in range(final_len):
-        inner.cell_store(addr+j, ord(line[j]))
+        inner.char_store(addr+j, ord(line[j]))
 
     inner.push_ds_int(final_len)
     return ip
@@ -1697,38 +1697,22 @@ def prim_TOBODY(inner, cur, ip):
 # System Operations
 
 # FILL ( c-addr u char -- )
-@unroll_safe
 def prim_FILL(inner, cur, ip):
     """GForth core 2012: fill u bytes of memory starting at c-addr with char."""
     char = inner.pop_ds_int()
     u = inner.pop_ds_int()
     addr = inner.pop_ds_int()
-
-    # Optimized: use unboxed char_store (no W_IntObject allocation)
-    for i in range(u):
-        inner.char_store(addr + i, char)
+    inner.heap.fill_bytes(addr, u, char)
     return ip
 
 
 # MOVE ( addr1 addr2 u -- )
-@unroll_safe
 def prim_MOVE(inner, cur, ip):
-    """GForth core 2012: copy u bytes from addr1 to addr2."""
+    """GForth core 2012: copy u bytes from addr1 to addr2 (overlap-safe)."""
     u = inner.pop_ds_int()
     addr2 = inner.pop_ds_int()
     addr1 = inner.pop_ds_int()
-
-    # Use cell memory when the source was written via ! ; otherwise char bytes
-    if inner.heap.cell_tagged(addr1):
-        for i in range(u):
-            inner.cell_store(addr2 + i, inner.cell_fetch_int(addr1 + i))
-    else:
-        # Character memory path (optimized for byte operations)
-        values = [0] * u
-        for i in range(u):
-            values[i] = inner.char_fetch(addr1 + i)
-        for i in range(u):
-            inner.char_store(addr2 + i, values[i])
+    inner.heap.move_bytes(addr1, addr2, u)
     return ip
 
 
@@ -2798,7 +2782,7 @@ def prim_ARGV(inner, cur, ip):
         length = len(s)
         addr = inner.here
         for i in range(length):
-            inner.cell_store(addr + i, ord(s[i]))
+            inner.char_store(addr + i, ord(s[i]))
         inner.here += length
         inner.push_ds_int(addr)
         inner.push_ds_int(length)

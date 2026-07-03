@@ -14,8 +14,8 @@ def test_cell_fetch_int_unwritten_returns_zero():
 
 def test_cell_fetch_unwritten_returns_ZERO_object():
     inner = make_interp()
-    assert inner.cell_fetch(0) is ZERO
-    assert inner.cell_fetch(42) is ZERO
+    assert inner.cell_fetch(0).getvalue() == 0
+    assert inner.cell_fetch(42).getvalue() == 0
 
 
 def test_char_fetch_unwritten_returns_zero():

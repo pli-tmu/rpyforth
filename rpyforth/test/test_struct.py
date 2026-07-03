@@ -24,18 +24,18 @@ def test_struct_field_offsets():
     outer.interpret_line("0 .a")
     assert inner.pop_ds_int() == 0
     outer.interpret_line("0 .b")
-    assert inner.pop_ds_int() == 1  # CELL_SIZE_BYTES == 1
+    assert inner.pop_ds_int() == 8  # one cell (CELL_SIZE_BYTES == 8)
 
 
 def test_struct_size():
     inner, outer = make()
     outer.interpret_line("struct  cell% field .x  cell% field .y  end-struct pt%")
     outer.interpret_line("pt% %size")
-    assert inner.pop_ds_int() == 2  # two cells, 1 byte each
+    assert inner.pop_ds_int() == 16  # two 8-byte cells
 
 
 def test_percent_allot_reserves_size():
     inner, outer = make()
     outer.interpret_line("struct  cell% field .x  cell% field .y  end-struct pt%")
     outer.interpret_line("HERE  pt% %allot  HERE SWAP -")
-    assert inner.pop_ds_int() == 2  # advanced HERE by %size bytes
+    assert inner.pop_ds_int() == 16  # advanced HERE by %size bytes

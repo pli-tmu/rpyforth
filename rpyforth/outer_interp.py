@@ -63,8 +63,8 @@ class OuterInterpreter(object):
         # it never collides with here-managed user allocations (which grow from
         # 0). Fixed, not here-allocated, so tests that use low addresses (0, 4)
         # are undisturbed.
-        from rpyforth.heap import HEAP_CELL_COUNT
-        self.to_in_addr = HEAP_CELL_COUNT - 1
+        from rpyforth.heap import HEAP_SIZE_BYTES
+        self.to_in_addr = HEAP_SIZE_BYTES - 8
         inner.cell_store(self.to_in_addr, 0)
 
         # Position of a DOES> body within the definition currently compiling
@@ -1380,9 +1380,7 @@ class OuterInterpreter(object):
         # Process each character
         chars_processed = 0
         for j in range(length):
-            ch_obj = self.inner.cell_fetch(addr + j)
-            assert isinstance(ch_obj, W_IntObject)
-            ch = chr(ch_obj.intval)
+            ch = chr(self.inner.char_fetch(addr + j))
 
             # Convert character to digit value
             digit = -1

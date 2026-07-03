@@ -373,5 +373,5 @@ def make_int(val):
     return W_IntObject(val)
 
 # data space characteristics
-CELL_SIZE_BYTES = 1 #LONG_BIT // 8
+CELL_SIZE_BYTES = 8  # byte-addressed heap with 64-bit little-endian cells
 CELL_SIZE = W_IntObject(CELL_SIZE_BYTES)
