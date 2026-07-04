@@ -3011,37 +3011,15 @@ def prim_UTIME(inner, cur, ip):
 
 # CPUTIME ( -- duser dsystem )
 def prim_CPUTIME(inner, cur, ip):
-    """Report CPU times in microseconds. duser is user-level CPU time, dsystem is system-level CPU time."""
-    # Try to get process times if available
-    try:
-        import os
-        # os.times() returns (user, system, children_user, children_system, elapsed)
-        times = os.times()
-        user_secs = times[0]
-        sys_secs = times[1]
-    except:
-        # Fallback: use elapsed time for user, 0 for system
-        from rpython.rlib.rtime import time
-        user_secs = time()
-        sys_secs = 0.0
-
-    # Convert to microseconds
-    user_usecs = int(user_secs * 1000000.0)
-    sys_usecs = int(sys_secs * 1000000.0)
-
+    from rpython.rlib.rtime import clock
+    user_usecs = int(clock() * 1000000.0)
     BIT_MASK = (1 << LONG_BIT) - 1
-
-    # Push duser (low, high)
     user_low = user_usecs & BIT_MASK
     user_high = user_usecs >> LONG_BIT
     inner.push_ds_int(user_low)
     inner.push_ds_int(user_high)
-
-    # Push dsystem (low, high)
-    sys_low = sys_usecs & BIT_MASK
-    sys_high = sys_usecs >> LONG_BIT
-    inner.push_ds_int(sys_low)
-    inner.push_ds_int(sys_high)
+    inner.push_ds_int(0)
+    inner.push_ds_int(0)
     return ip
 
 
