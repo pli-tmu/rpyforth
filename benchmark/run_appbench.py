@@ -51,7 +51,8 @@ class ProgramSpec:
     workdir: Path
     prelude: str
     body: str
-    supported_engines: List[str] = field(default_factory=list)
+    supported_engines: List[str]
+    rpy_jit_args: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -158,6 +159,9 @@ def build_program_registry() -> List[ProgramSpec]:
         prelude="",
         body="include fcp-1.31-64.f\nbench\nbye",
         supported_engines=[ENGINE_GFORTH, ENGINE_GFORTH_FAST, ENGINE_RPYFORTH],
+        # fcp trace-thrashes with default bridge eagerness (deep search
+        # recursion); cd16sim regresses with this flag, so it is per-program.
+        rpy_jit_args=["--jit", "trace_eagerness=1000"],
     )
 
     lexex = ProgramSpec(
@@ -196,10 +200,7 @@ def build_rpyforth_cmd(binary: Path, spec: ProgramSpec, tmpdir: Path) -> List[st
     wrapper_path = tmpdir / f"{spec.name}_rpy_wrapper.fs"
     wrapper_path.write_text(forth_expr, encoding="utf-8")
 
-    # Large applications trace-thrash with the default bridge eagerness (the
-    # gforth side gets its own tuning via -m 16M); this is a runtime knob,
-    # not a code change.
-    cmd = [str(binary), "--jit", "trace_eagerness=1000", str(wrapper_path)]
+    cmd = [str(binary)] + list(spec.rpy_jit_args) + [str(wrapper_path)]
     return cmd
 
 
