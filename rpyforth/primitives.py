@@ -1,6 +1,7 @@
 from rpython.rlib.rfile import create_stdio
 from rpython.rlib.jit import promote, unroll_safe, dont_look_inside, hint
 from rpython.rlib.rfloat import formatd
+from rpython.rlib.rarithmetic import intmask, r_uint
 
 from rpyforth.objects import (
     BINARY,
@@ -1084,49 +1085,54 @@ def prim_LESSNUM(inner, cur, ip):
     return ip
 
 
+def _ud_divmod_base(lo, hi, base):
+    """Divide the unsigned double (lo, hi) by base; return (qlo, qhi, digit).
+    128-by-64 long division done in 32-bit halves so every intermediate fits
+    an unsigned machine word."""
+    ulo = r_uint(lo)
+    uhi = r_uint(hi)
+    ubase = r_uint(base)
+    qhi = uhi / ubase
+    r = uhi % ubase
+    t1 = (r << 32) | (ulo >> 32)
+    q1 = t1 / ubase
+    r1 = t1 % ubase
+    t2 = (r1 << 32) | (ulo & r_uint(0xFFFFFFFF))
+    q2 = t2 / ubase
+    r2 = t2 % ubase
+    qlo = (q1 << 32) | q2
+    return intmask(qlo), intmask(qhi), intmask(r2)
+
+
 # # ( ud1 -- ud2 )
 def prim_NUMSIGN(inner, cur, ip):
     """GForth core 2012: extract one digit during pictured numeric output."""
     if not inner._pno_active:
         inner.print_str(W_StringObject("# outside <# #>"))
         return ip
-    x = inner.pop_ds_int()
-    base = inner.base
-    q = x // base
-    r = x % base
-    inner._pno_buf.insert(0, digit_to_char(r))
-    inner.push_ds_int(q)
+    hi = inner.pop_ds_int()
+    lo = inner.pop_ds_int()
+    qlo, qhi, digit = _ud_divmod_base(lo, hi, inner.base)
+    inner._pno_buf.insert(0, digit_to_char(digit))
+    inner.push_ds_int(qlo)
+    inner.push_ds_int(qhi)
     return ip
 
 
-# #S ( ud -- ud )
-@unroll_safe
+# #S ( ud -- 0 0 )
 def prim_NUMSIGN_S(inner, cur, ip):
     """GForth core 2012: convert all remaining digits during pictured numeric output."""
     if not inner._pno_active:
         inner.print_str(W_StringObject("#S outside <# #>"))
         return ip
-
-    # Pop double-cell number (d.lo d.hi) where d.hi is on top
     hi = inner.pop_ds_int()
     lo = inner.pop_ds_int()
-
-    # For simplified implementation, use the low-order cell
-    # (assumes the number fits in single cell)
-
     base = inner.base
-    # Convert all remaining digits
-    if lo == 0:
-        # At least one digit for zero
-        inner._pno_buf.insert(0, digit_to_char(0))
-    else:
-        while lo > 0:
-            q = lo // base
-            r = lo % base
-            inner._pno_buf.insert(0, digit_to_char(r))
-            lo = q
-
-    # Push double-cell zero (0 0)
+    while True:
+        lo, hi, digit = _ud_divmod_base(lo, hi, base)
+        inner._pno_buf.insert(0, digit_to_char(digit))
+        if lo == 0 and hi == 0:
+            break
     inner.push_ds_int(0)
     inner.push_ds_int(0)
     return ip
@@ -1151,8 +1157,7 @@ def prim_SIGN(inner, cur, ip):
         return ip
     n = inner.pop_ds_int()
     if n < 0:
-        # Append to put the sign at the end (left side of the final string)
-        inner._pno_buf.append('-')
+        inner._pno_buf.insert(0, '-')
     return ip
 
 
@@ -1162,7 +1167,8 @@ def prim_NUMGREATER(inner, cur, ip):
     if not inner._pno_active:
         inner.print_str(W_StringObject("#> outside <# #>"))
         return ip
-    _ = inner.pop_ds_int()
+    inner.pop_ds_int()
+    inner.pop_ds_int()
     s = "".join(inner._pno_buf)
     inner._pno_active = False
     inner.push_ds(W_StringObject(s))
