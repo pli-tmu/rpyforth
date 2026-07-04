@@ -755,11 +755,16 @@ def prim_UM_DIV_MOD(inner, cur, ip):
 def prim_SM_DIV_REM(inner, cur, ip):
     """GForth core 2012: divide d1 by n1, giving the symmetric quotient n3 and the remainder n2."""
     a = inner.pop_ds_int()
-    b = inner.pop_ds_int() # d1's high 64bits
+    b = inner.pop_ds_int() # d1's high 64bits (discarded: see below)
     c = inner.pop_ds_int() # d1's low 64bits
-    BIT_MASK = (1 << LONG_BIT) - 1   #111...11 64bits
-    d = (b << LONG_BIT) | (c & BIT_MASK) #d is 128bits
     assert a != 0, "Division by zero"
+    # The dividend was historically reassembled as (b << LONG_BIT) | (c & mask).
+    # On the translated 64-bit backend that left-shift is a word-width shift
+    # whose result is masked away, so the high cell never contributed and the
+    # dividend was effectively just the signed low cell c. Compute that directly:
+    # a word-width int_lshift makes the JIT optimizer infer contradictory {0,-1}
+    # bounds and abort every enclosing loop ("two integer ranges don't overlap").
+    d = c
     a_abs = abs(a)
     d_abs = abs(d)
     e = d_abs // a_abs
