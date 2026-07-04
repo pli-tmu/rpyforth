@@ -931,11 +931,10 @@ def prim_QDO_RUNTIME(inner, cur, ip):
 # (LOOP) ( -- ) ( R: limit counter -- limit counter+1 | )
 def prim_LOOP_RUNTIME(inner, cur, ip):
     # Use dedicated integer loop stack - no object allocation!
-    # The limit is NOT promoted: variable-limit loops (e.g. scanning a move
-    # list bounded by a runtime address) would specialize a trace per limit
-    # value and abort as unclosable when the limit changes.
+    # Counted DO..LOOP limits are almost always literals: promoting folds the
+    # exit compare in nested loops (nestedloop/matrix are ~40% faster with it).
     counter_val = inner.peek_loop_counter(0)
-    limit_val = inner.peek_loop_limit(0)
+    limit_val = promote(inner.peek_loop_limit(0))
     new_counter_val = counter_val + 1
 
     if new_counter_val < limit_val:
@@ -958,8 +957,9 @@ def prim_PLUSLOOP_RUNTIME(inner, cur, ip):
     inc_val = inner.pop_ds_int()
 
     # Use dedicated integer loop stack - no object allocation!
-    # The limit is not promoted (see prim_LOOP_RUNTIME): +LOOP limits are
-    # routinely runtime addresses, one guard_value per value is pathological.
+    # +LOOP limits are routinely runtime addresses (list scans): promoting
+    # them specializes a trace per limit value, which storms bridges on
+    # megamorphic scans (fcp), so the limit stays a plain value here.
     counter_val = inner.peek_loop_counter(0)
     limit_val = inner.peek_loop_limit(0)
     new_counter_val = counter_val + inc_val
