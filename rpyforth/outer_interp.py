@@ -2238,7 +2238,12 @@ class OuterInterpreter(object):
                 self._execute_or_push(w, t)
                 i = self.inner.cell_fetch_int(self.to_in_addr)
             elif self.state == COMPILE:
+                # Immediate words executed during compilation may parse too
+                # (brainless's [DEF?] runs BL WORD FIND) -- keep the runtime
+                # parse cursor in sync here as well.
+                self.inner.cell_store(self.to_in_addr, i)
                 self._compile_word_or_literal(w, t)
+                i = self.inner.cell_fetch_int(self.to_in_addr)
             else:
                 assert 0, "unreachable state"
 

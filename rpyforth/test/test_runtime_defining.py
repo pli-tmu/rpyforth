@@ -163,3 +163,16 @@ def test_runtime_immediate_child_is_immediate():
 def test_recurse_still_works():
     inner = run(": fact dup 1 > if dup 1 - recurse * then ; 5 fact")
     assert inner.pop_ds_int() == 120
+
+
+def test_parsing_immediate_word_during_compilation():
+    # brainless's [DEF?] pattern: an IMMEDIATE word running BL WORD FIND while
+    # another definition is being compiled must see the correct next token.
+    from rpyforth.outer_interp import OuterInterpreter
+    from rpyforth.inner_interp import InnerInterpreter
+    inner = InnerInterpreter()
+    outer = OuterInterpreter(inner)
+    outer.interpret_line(": [DEF?] BL WORD FIND NIP ; IMMEDIATE")
+    outer.interpret_line(": probe [DEF?] dup [IF] 222 [ELSE] 111 [THEN] ;")
+    outer.interpret_line("probe")
+    assert inner.pop_ds_int() == 222
