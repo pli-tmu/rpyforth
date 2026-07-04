@@ -69,13 +69,13 @@ def test_paren_comment_spanning_lines():
 
 
 def test_paren_comment_nested_across_lines():
+    # ANS ( does not nest: one open comment regardless of inner '(' -- the
+    # first ')' closes it, even on a later line.
     res, depth = remove_comments_stateful("( outer ( inner", 0)
     assert res == ""
-    assert depth == 2
-    res, depth = remove_comments_stateful("still )", depth)
     assert depth == 1
-    res, depth = remove_comments_stateful(") done", depth)
-    assert res == " done"
+    res, depth = remove_comments_stateful("still ) done", depth)
+    assert res.split() == ["done"]
     assert depth == 0
 
 
@@ -95,3 +95,20 @@ def test_split_colon_words_kept_whole():
         [":", "r:", "registers", "@", "CONSTANT", ";"]
     assert split_whitespace("' undef in: reset") == ["'", "undef", "in:", "reset"]
     assert split_whitespace("2^n 1- mask &sa") == ["2^n", "1-", "mask", "&sa"]
+
+
+def test_paren_comment_does_not_nest():
+    # ANS ( parses up to the FIRST ')': an inner '(' does not nest (gforth).
+    from rpyforth.util import remove_comments_stateful
+    out, depth = remove_comments_stateful("a ( x ( y ) b", 0)
+    assert depth == 0
+    assert out.split() == ["a", "b"]
+
+
+def test_paren_comment_resume_does_not_nest():
+    from rpyforth.util import remove_comments_stateful
+    out, depth = remove_comments_stateful("still ( inside", 1)
+    assert depth == 1
+    out, depth = remove_comments_stateful("done ) code", 1)
+    assert depth == 0
+    assert out.split() == ["code"]

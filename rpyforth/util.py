@@ -32,11 +32,10 @@ def remove_comments_stateful(line, depth):
     # (tracking nesting) until the matching ')' closes it, then fall through to
     # normal processing of the remainder.
     if depth > 0:
+        # ANS ( does not nest: the first ')' closes the comment.
         while i < n and depth > 0:
-            if line[i] == '(':
-                depth += 1
-            elif line[i] == ')':
-                depth -= 1
+            if line[i] == ')':
+                depth = 0
             i += 1
         if depth > 0:
             return result, depth
@@ -58,14 +57,12 @@ def remove_comments_stateful(line, depth):
             before_ok = i == 0 or line[i-1] in ' \t\n\r\v\f'
             after_ok = i + 1 >= n or line[i+1] in ' \t\n\r\v\f'
             if before_ok and after_ok:
-                # Find matching ) with nesting support
+                # ANS ( does not nest: scan to the first ')'.
                 i += 1
                 depth = 1
                 while i < n and depth > 0:
-                    if line[i] == '(':
-                        depth += 1
-                    elif line[i] == ')':
-                        depth -= 1
+                    if line[i] == ')':
+                        depth = 0
                     i += 1
                 if depth > 0:
                     # Unterminated on this line: the comment continues onto the
