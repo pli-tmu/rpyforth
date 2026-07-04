@@ -42,6 +42,7 @@ def entry_point(argv):
     except Bye:
         pass
     except Abort:
+        inner.reset_after_abort()
         err = 1
     except DataStackOverflow:
         print("data stack overflow")

@@ -172,7 +172,7 @@ class InnerInterpreter(InterpBase, object):
         self.cell_size_bytes = CELL_SIZE_BYTES
 
         # for string
-        self.buf = [None] * HEAP_SIZE_BYTES
+        self.buf = [None] * (HEAP_SIZE_BYTES >> 3)
         self.here = 0
 
         self.base = 10
@@ -249,6 +249,17 @@ class InnerInterpreter(InterpBase, object):
     def is_call_stack_empty(self):
         """Check if call stack is empty."""
         return self.cs_ptr == 0
+
+    def reset_after_abort(self):
+        """Clear every machine stack. Runs at the Abort catch site, outside
+        any portal, so compiled frames never see half-cleared state."""
+        self.reset_ds_int()
+        self.ds_ptr_floats = 0
+        self.ds_ptr_locals = 0
+        self.rs_ptr = 0
+        self.lc_depth = 0
+        self.cs_ptr = 0
+        self.catch_ptr = 0
 
     @unroll_safe
     def catch_push_frame(self, thread, ip):
@@ -510,14 +521,26 @@ class InnerInterpreter(InterpBase, object):
         stdout.write(s.to_string())
         stdout.flush()
 
+    def buf_get(self, addr):
+        """Boxed string parked at a cell-aligned data-space address, or None."""
+        i = addr >> 3
+        if 0 <= i < len(self.buf):
+            return self.buf[i]
+        return None
+
+    def buf_set(self, addr, w_str):
+        i = addr >> 3
+        assert 0 <= i < len(self.buf)
+        self.buf[i] = w_str
+
     def alloc_buf(self, content, size):
-        # The string lives both as a boxed object (legacy consumers index
-        # inner.buf) and as real bytes in data space, so char-level words
+        # The string lives both as a boxed object (legacy consumers use
+        # buf_get) and as real bytes in data space, so char-level words
         # (MOVE, COUNT, filename assembly) see the same characters. here
-        # stays cell-aligned.
-        addr = self.here
+        # is aligned first so each string owns a distinct buf slot.
+        addr = (self.here + CELL_SIZE_BYTES - 1) & ~(CELL_SIZE_BYTES - 1)
         assert size >= 0
-        self.buf[addr] = W_StringObject(content[:size])
+        self.buf_set(addr, W_StringObject(content[:size]))
         i = 0
         while i < size:
             self.char_store(addr + i, ord(content[i]))

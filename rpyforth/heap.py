@@ -7,7 +7,7 @@ from rpyforth.objects import W_FloatObject, make_int
 # C! / C@ and ! / @ reinterpret the same storage exactly like real Forth
 # memory: a cell is the 8 little-endian bytes at its address, and both views
 # compile to single raw loads/stores under the JIT.
-HEAP_SIZE_BYTES = 1 << 21
+HEAP_SIZE_BYTES = 1 << 23
 HEAP_CELL_COUNT = HEAP_SIZE_BYTES >> 3
 
 CELL_BYTES = 8

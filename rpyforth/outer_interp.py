@@ -49,6 +49,11 @@ class OuterInterpreter(object):
         # Input source tracking for SOURCE and >IN
         self.source_buffer = ''  # Current input line
         self.source_index = 0    # Current parse position (>IN)
+        # Line-buffered source of the file currently being INCLUDEd, so REFILL
+        # (executed from a colon body) can pull the next physical line and make
+        # it the current parse buffer. include_pos indexes the next unread line.
+        self.include_lines = []
+        self.include_pos = 0
         # Per-spelling occurrence counters for string tokens (S", .", C") on
         # the current line: each spelling scans for its own nth occurrence.
         self.string_token_counts = {}
@@ -73,6 +78,12 @@ class OuterInterpreter(object):
         # and inner.base in sync so `BASE @` / `BASE !` round-trip the radix.
         self.base_addr = HEAP_SIZE_BYTES - 16
         inner.cell_store(self.base_addr, inner.base)
+        # Dedicated fixed cell backing STATE. STATE ( -- a-addr ) refreshes this
+        # cell from self.state and pushes its address, so `STATE @` reads the
+        # live compilation state both when interpreting and from a colon body
+        # (the state-smart POSTPONE idiom in brainless environ.fs/utils.fs).
+        self.state_addr = HEAP_SIZE_BYTES - 24
+        inner.cell_store(self.state_addr, 0)
 
         # Position of a DOES> body within the definition currently compiling
         # (-1 = none). At finalize this body is sliced into a standalone thread
@@ -687,8 +698,17 @@ class OuterInterpreter(object):
         saved_cnt = self._copy_string_counts()
         saved_toks = self.toks
         saved_cur = self.inner.cell_fetch_int(self.to_in_addr)
-        for line in content.split('\n'):
+        saved_lines = self.include_lines
+        saved_pos = self.include_pos
+        self.include_lines = content.split('\n')
+        self.include_pos = 0
+        n = len(self.include_lines)
+        while self.include_pos < n:
+            line = self.include_lines[self.include_pos]
+            self.include_pos += 1
             self.interpret_line(line)
+        self.include_lines = saved_lines
+        self.include_pos = saved_pos
         self.source_buffer = saved_buf
         self.source_index = saved_idx
         self.string_token_counts = saved_cnt
@@ -709,7 +729,7 @@ class OuterInterpreter(object):
         """Handle INCLUDED / REQUIRED ( c-addr u -- ): the filename is a string."""
         self.inner.pop_ds_int()           # length (unused: the cell holds the string)
         c_addr = self.inner.pop_ds_int()
-        w = self.inner.buf[c_addr]
+        w = self.inner.buf_get(c_addr)
         assert isinstance(w, W_StringObject)
         self._include_file(w.strval)
 
@@ -981,11 +1001,7 @@ class OuterInterpreter(object):
         """Execute word or push number in INTERPRET mode."""
         base = self.inner.base
         if w is not None:
-            try:
-                self.inner.execute_word_now(w)
-            except Abort:
-                # ABORT" already cleared the stacks; resume interpretation.
-                pass
+            self.inner.execute_word_now(w)
         elif base == 10 and self._is_float(t):
             self.inner.push_ds_float(self._to_float(t))
         elif self._is_number_base(t, base):
@@ -1073,10 +1089,7 @@ class OuterInterpreter(object):
             if w.immediate:
                 # Immediate words (including LITERAL, FLITERAL) are executed immediately
                 # LITERAL and FLITERAL have primitives that pop from the stack and emit literals
-                try:
-                    self.inner.execute_word_now(w)
-                except Abort:
-                    pass
+                self.inner.execute_word_now(w)
             else:
                 lit = self._value_word_literal(w)
                 if lit is not None:
@@ -1206,7 +1219,7 @@ class OuterInterpreter(object):
         wid = self.inner.pop_ds_int()
         self.inner.pop_ds_int()            # length (name held whole in the buf slot)
         c_addr = self.inner.pop_ds_int()
-        buf_entry = self.inner.buf[c_addr]
+        buf_entry = self.inner.buf_get(c_addr)
         if buf_entry is None or not isinstance(buf_entry, W_StringObject):
             self.inner.push_ds_int(0)
             return
@@ -1229,7 +1242,7 @@ class OuterInterpreter(object):
         """Read a counted string ( length byte then chars ) at c_addr. If a buf
         slot holds a W_StringObject there (an S"-style whole-string address), use
         it; otherwise decode the char-memory counted string that BL WORD builds."""
-        buf_entry = self.inner.buf[c_addr]
+        buf_entry = self.inner.buf_get(c_addr)
         if isinstance(buf_entry, W_StringObject):
             return buf_entry.strval
         length = self.inner.char_fetch(c_addr)
@@ -1275,6 +1288,30 @@ class OuterInterpreter(object):
         tok = self.toks[idx]
         self.inner.cell_store(self.to_in_addr, idx + 1)
         return tok
+
+    def runtime_refill(self):
+        """REFILL ( -- flag ): consume the next physical line of the file being
+        INCLUDEd, make it the current parse buffer (resetting the parse cursor),
+        and push true. If there is no next line, push false. Words like squares:
+        use this to read table rows and parse names from them at run time."""
+        if self.include_pos < len(self.include_lines):
+            line = self.include_lines[self.include_pos]
+            self.include_pos += 1
+            self.source_buffer = line
+            self.source_index = 0
+            self.string_token_counts = {}
+            self.toks = split_whitespace(line)
+            self.inner.cell_store(self.to_in_addr, 0)
+            self.inner.push_ds_int(-1)
+        else:
+            self.inner.push_ds_int(0)
+
+    def runtime_postpone(self, word):
+        """Append word to the definition currently being compiled. Invoked by the
+        (POSTPONE) primitive that POSTPONE compiles for a non-immediate target,
+        so an immediate word built with POSTPONE defers the target instead of
+        executing it (e.g. hash! = POSTPONE ! must compile !, not run it)."""
+        self._emit_word(word)
 
     def _runtime_pop_value(self):
         """Pop one value off whichever data stack holds it, boxed for storage in
@@ -1470,16 +1507,43 @@ class OuterInterpreter(object):
 
     # STATE ( -- a-addr )
     def _handle_state(self):
-        addr = self.inner.here
+        self.runtime_state()
+
+    def runtime_state(self):
+        """STATE ( -- a-addr ): refresh the dedicated state cell from the live
+        compilation state and push its address. Works from interpret mode and
+        from a colon body (state-smart words compiled with POSTPONE)."""
         state_val = -1 if self.state == COMPILE else 0
-        self.inner.cell_store(addr, state_val)
-        self.inner.push_ds_int(addr)
+        self.inner.cell_store(self.state_addr, state_val)
+        self.inner.push_ds_int(self.state_addr)
+
+    def runtime_save_input(self):
+        """SAVE-INPUT ( -- xn..x1 n ): save enough of the input-source state to
+        allow RESTORE-INPUT to rewind. Here the only mutable position is the
+        token parse cursor (>IN), so we push it plus a count of 1. brainless
+        option-exists? saves, parses+finds the option name, then restores so the
+        name can be re-parsed by create-option."""
+        cur = self.inner.cell_fetch_int(self.to_in_addr)
+        self.inner.push_ds_int(cur)
+        self.inner.push_ds_int(1)
+
+    def runtime_restore_input(self):
+        """RESTORE-INPUT ( xn..x1 n -- flag ): restore the input position saved
+        by SAVE-INPUT and push false (success). If the saved spec is not the one
+        we produce (n != 1) push true (failure) leaving the cursor unchanged."""
+        n = self.inner.pop_ds_int()
+        if n != 1:
+            self.inner.push_ds_int(-1)
+            return
+        cur = self.inner.pop_ds_int()
+        self.inner.cell_store(self.to_in_addr, cur)
+        self.inner.push_ds_int(0)
 
     # EVALUATE ( c-addr u -- )
     def _handle_evaluate(self):
         length = self.inner.pop_ds_int()
         c_addr = self.inner.pop_ds_int()
-        buf_str = self.inner.buf[c_addr]
+        buf_str = self.inner.buf_get(c_addr)
         assert isinstance(buf_str, W_StringObject)
         saved_buf = self.source_buffer
         saved_cnt = self._copy_string_counts()
@@ -1538,8 +1602,8 @@ class OuterInterpreter(object):
         c_addr = self.inner.pop_ds_int()
 
         # Extract the query string from buffer
-        assert 0 <= c_addr < len(self.inner.buf)
-        buf_entry = self.inner.buf[c_addr]
+        buf_entry = self.inner.buf_get(c_addr)
+        assert isinstance(buf_entry, W_StringObject)
         strval = buf_entry.strval
         assert 0 <= u <= len(strval)
         query = strval[:u]
@@ -1947,6 +2011,10 @@ class OuterInterpreter(object):
             self.state = INTERPRET
             return True, i, False
 
+        if tkey == "STATE":
+            self._emit_word(self.forth_wl["(STATE)"])
+            return True, i, False
+
         if tkey == "POSTPONE":
             if i >= toks_len:
                 print "POSTPONE requires a following word"
@@ -1959,7 +2027,7 @@ class OuterInterpreter(object):
                     self._emit_word(word)
                 else:
                     self._emit_lit(W_IntObject(word.wid))
-                    self._emit_word(self.forth_wl["EXECUTE"])
+                    self._emit_word(self.forth_wl["(POSTPONE)"])
             else:
                 print "POSTPONE: word not found:", name
             return True, i, False
@@ -1990,6 +2058,16 @@ class OuterInterpreter(object):
     # main outer interpreter
     @unroll_safe
     def interpret_line(self, line):
+        try:
+            self._interpret_line_tokens(line)
+        except Abort:
+            # QUIT / ABORT" abandon the rest of the input line; interpretation
+            # resumes with the next line. The reset runs here, outside any
+            # portal, so compiled frames never unwind over half-cleared state.
+            self.inner.reset_after_abort()
+            self.state = INTERPRET
+
+    def _interpret_line_tokens(self, line):
         # Store the source line for SOURCE word
         self.source_buffer = line
         self.source_index = 0

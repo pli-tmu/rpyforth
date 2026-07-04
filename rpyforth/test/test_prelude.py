@@ -143,3 +143,11 @@ def test_d2slash():
     hi = inner.pop_ds_int()
     lo = inner.pop_ds_int()
     assert lo == 10 and hi == 0
+
+
+def test_perform():
+    # PERFORM ( addr -- )  performs @ EXECUTE: fetch xt from addr and run it
+    inner = run_with_prelude(
+        ": seven 7 ;  CREATE vec ' seven ,  vec PERFORM"
+    )
+    assert inner.pop_ds_int() == 7

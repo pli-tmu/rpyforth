@@ -297,10 +297,16 @@ def prim_RSHIFT(inner, cur, ip):
 
 # LSHIFT ( n1 u -- n2 )
 def prim_LSHIFT(inner, cur, ip):
-    """GForth core 2012: perform a logical left shift of u bit-places on n1, giving n2."""
+    """GForth core 2012: perform a logical left shift of u bit-places on n1, giving n2.
+    The result is wrapped to a signed cell so values with the top bits set (e.g.
+    random 48 LSHIFT in brainless hash codes) stay in range."""
+    from rpython.rlib.rarithmetic import intmask, r_uint
     a = inner.pop_ds_int()
     b = inner.pop_ds_int()
-    inner.push_ds_int(b << a)
+    if a >= LONG_BIT or a < 0:
+        inner.push_ds_int(0)
+    else:
+        inner.push_ds_int(intmask(r_uint(b) << a))
     return ip
 
 # S>D ( n -- d )
@@ -926,8 +932,11 @@ def prim_QDO_RUNTIME(inner, cur, ip):
 # (LOOP) ( -- ) ( R: limit counter -- limit counter+1 | )
 def prim_LOOP_RUNTIME(inner, cur, ip):
     # Use dedicated integer loop stack - no object allocation!
+    # The limit is NOT promoted: variable-limit loops (e.g. scanning a move
+    # list bounded by a runtime address) would specialize a trace per limit
+    # value and abort as unclosable when the limit changes.
     counter_val = inner.peek_loop_counter(0)
-    limit_val = promote(inner.peek_loop_limit(0))
+    limit_val = inner.peek_loop_limit(0)
     new_counter_val = counter_val + 1
 
     if new_counter_val < limit_val:
@@ -950,9 +959,10 @@ def prim_PLUSLOOP_RUNTIME(inner, cur, ip):
     inc_val = inner.pop_ds_int()
 
     # Use dedicated integer loop stack - no object allocation!
+    # The limit is not promoted (see prim_LOOP_RUNTIME): +LOOP limits are
+    # routinely runtime addresses, one guard_value per value is pathological.
     counter_val = inner.peek_loop_counter(0)
-    # Promote limit for JIT specialization (constant in most loops)
-    limit_val = promote(inner.peek_loop_limit(0))
+    limit_val = inner.peek_loop_limit(0)
     new_counter_val = counter_val + inc_val
 
     # Check if loop should continue based on crossing the boundary
@@ -1409,14 +1419,7 @@ def prim_ABORT_QUOTE_RUNTIME(inner, cur, ip):
         stdout.write("ABORT: ")
         stdout.write(msg)
         stdout.write("\n")
-        # Clear stacks
-        inner.reset_ds_int()
-        inner.ds_ptr_floats = 0
-        inner.ds_ptr_locals = 0
-        inner.rs_ptr = 0
-        inner.lc_depth = 0  # Also clear the loop-control stack
-        inner.cs_ptr = 0  # Also clear call stack
-        inner.catch_ptr = 0
+        # State clearing happens at the Abort catch site (see prim_QUIT).
         raise Abort
     return ip
 
@@ -1629,14 +1632,42 @@ def prim_IS_STORE(inner, cur, ip):
     return ip
 
 
+# (POSTPONE) ( wid -- ) -- append the word identified by wid to the definition
+# currently being compiled. Compiled by POSTPONE for a non-immediate target, so
+# that when the (immediate) enclosing word runs during compilation it defers the
+# target rather than executing it.
+def prim_POSTPONE(inner, cur, ip):
+    inner.outer.runtime_postpone(word_from_wid(inner.pop_ds_int()))
+    return ip
+
+
+# STATE ( -- a-addr ) -- push the address of the compilation-state cell. Runs
+# from a colon body so state-smart words (STATE @ IF ... POSTPONE ...) compile.
+def prim_STATE(inner, cur, ip):
+    inner.outer.runtime_state()
+    return ip
+
+
+# SAVE-INPUT ( -- xn..x1 n ) -- save the input-source position for RESTORE-INPUT.
+def prim_SAVE_INPUT(inner, cur, ip):
+    inner.outer.runtime_save_input()
+    return ip
+
+
+# RESTORE-INPUT ( xn..x1 n -- flag ) -- rewind to a saved input position.
+def prim_RESTORE_INPUT(inner, cur, ip):
+    inner.outer.runtime_restore_input()
+    return ip
+
+
 # COMPARE ( c-addr1 u1 c-addr2 u2 -- n ) -- lexicographic string comparison.
 def prim_COMPARE(inner, cur, ip):
     inner.pop_ds_int()                 # u2
     a2 = inner.pop_ds_int()
     inner.pop_ds_int()                 # u1
     a1 = inner.pop_ds_int()
-    s1 = inner.buf[a1]
-    s2 = inner.buf[a2]
+    s1 = inner.buf_get(a1)
+    s2 = inner.buf_get(a2)
     assert isinstance(s1, W_StringObject)
     assert isinstance(s2, W_StringObject)
     if s1.strval < s2.strval:
@@ -1713,6 +1744,14 @@ def prim_PARSE(inner, cur, ip):
     return ip
 
 
+# REFILL ( -- flag ) -- read the next line of the file being INCLUDEd into the
+# input buffer and push true, or push false at end of file. Executable inside a
+# colon body (brainless squares: reads a board-square table row by row).
+def prim_REFILL(inner, cur, ip):
+    inner.outer.runtime_refill()
+    return ip
+
+
 # MARKER ( "name" -- ) -- define a dictionary marker (no-op forget here).
 def prim_MARKER(inner, cur, ip):
     inner.outer.runtime_marker()
@@ -1722,14 +1761,11 @@ def prim_MARKER(inner, cur, ip):
 # QUIT ( -- ) -- abandon the current activity and return to the interpreter.
 # Executable inside a colon body (fcp's think aborts with QUIT). Clears the
 # stacks and unwinds via Abort, which the outer interpreter catches.
+@dont_look_inside
 def prim_QUIT(inner, cur, ip):
-    inner.reset_ds_int()
-    inner.ds_ptr_floats = 0
-    inner.ds_ptr_locals = 0
-    inner.rs_ptr = 0
-    inner.lc_depth = 0
-    inner.cs_ptr = 0
-    inner.catch_ptr = 0
+    # State clearing happens at the Abort catch site (outside the portal):
+    # zeroing the virtualizable stacks inside a compiled frame and then
+    # raising would unwind through frames whose bookkeeping is already gone.
     inner.outer.state = 0  # INTERPRET
     raise Abort
     return ip
@@ -2160,9 +2196,7 @@ def _read_cstr(inner, addr, u):
     """Return the u-char string at c-addr. Handles both representations: a
     filename produced by S" lives as a single W_StringObject in inner.buf,
     while a byte buffer built with C!/CMOVE lives in char memory."""
-    entry = None
-    if 0 <= addr < len(inner.buf):
-        entry = inner.buf[addr]
+    entry = inner.buf_get(addr)
     if entry is not None and isinstance(entry, W_StringObject):
         s = entry.strval
         if 0 <= u < len(s):
@@ -3253,6 +3287,7 @@ def install_primitives(outer):
     outer.define_prim("'", prim_TICK)
     outer.define_prim("WORD", prim_WORD)
     outer.define_prim("PARSE", prim_PARSE)
+    outer.define_prim("REFILL", prim_REFILL)
     outer.define_prim("MARKER", prim_MARKER)
     outer.define_prim("QUIT", prim_QUIT)
     outer.define_prim("FIND", prim_FIND)
@@ -3268,6 +3303,10 @@ def install_primitives(outer):
     outer.define_prim("ABORT", prim_ABORT)
     outer.define_prim("(DEFER)", prim_DEFER_EXEC)
     outer.define_prim("(IS!)", prim_IS_STORE)
+    outer.define_prim("(POSTPONE)", prim_POSTPONE)
+    outer.define_prim("(STATE)", prim_STATE)
+    outer.define_prim("SAVE-INPUT", prim_SAVE_INPUT)
+    outer.define_prim("RESTORE-INPUT", prim_RESTORE_INPUT)
     outer.define_prim("DEFER!", prim_DEFER_STORE)
     outer.define_prim("COMPARE", prim_COMPARE)
     outer.define_prim(">BODY", prim_TOBODY)

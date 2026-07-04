@@ -34,6 +34,7 @@ CREATE pad-buf 512 ALLOT
 : %align DROP NALIGNED DROP ;
 : %allot NIP ALLOT ;
 : BOUNDS OVER + SWAP ;
+: PERFORM @ EXECUTE ;
 """
 
 

@@ -141,6 +141,20 @@ def test_lshift():
     #assert run_and_pop("1 0xF LSHIFT") == 0x8000
 
 
+def test_lshift_wraps_to_signed_cell():
+    # Shifting into the sign bit wraps to a signed cell (not an unbounded long),
+    # so results can round-trip through a cell store (brainless hash codes).
+    assert run_and_pop("1 63 LSHIFT") == -9223372036854775808
+    # Shift count >= cell width yields 0.
+    assert run_and_pop("1 64 LSHIFT") == 0
+    # A high value that sets the top bits (65535 48 LSHIFT > 2**63) must wrap and
+    # still store/re-fetch identically -- this is the brainless hash-code path.
+    inner = run("CREATE c 8 ALLOT  65535 48 LSHIFT c !  c @")
+    stored = inner.pop_ds_int()
+    inner2 = run("65535 48 LSHIFT")
+    assert stored == inner2.pop_ds_int()
+
+
 def test_s_to_d():
     inner = run("1024 S>D")
     assert inner.pop_ds_int() == 0

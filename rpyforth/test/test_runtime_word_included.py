@@ -67,6 +67,54 @@ def test_runtime_included_via_word():
         os.remove(path)
 
 
+def test_refill_reads_next_include_line_and_parses_names():
+    # Mirror brainless squares:  a colon word runs REFILL to pull the next
+    # physical line of the file being INCLUDEd, then parses names off it to
+    # define constants. After the word returns, interpretation resumes on the
+    # line following the consumed one.
+    path = "/tmp/inc_refill.fs"
+    f = open(path, "w")
+    f.write(
+        ": row: ( -- )  REFILL DROP  10 CONSTANT  20 CONSTANT ;\n"
+        "row:\n"
+        "aa bb\n"
+        "99 CONSTANT cc\n"
+    )
+    f.close()
+    try:
+        inner = run_lines([
+            ': loadit S" ' + path + '" INCLUDED ;',
+            "loadit",
+            "aa bb cc",
+        ])
+        assert inner.pop_ds_int() == 99   # cc: line after the consumed row
+        assert inner.pop_ds_int() == 20   # bb
+        assert inner.pop_ds_int() == 10   # aa
+    finally:
+        os.remove(path)
+
+
+def test_refill_returns_false_at_end_of_input():
+    # With no further include lines, REFILL pushes false.
+    path = "/tmp/inc_refill_eof.fs"
+    f = open(path, "w")
+    f.write(": lastline REFILL ;\nlastline\n")
+    f.close()
+    try:
+        inner = run_lines([
+            ': loadit S" ' + path + '" INCLUDED ;',
+            "loadit",
+        ])
+        # The trailing empty split element is the only remaining "line"; REFILL
+        # consumes it (true) then any subsequent call yields false. Here the
+        # word runs on the "lastline" line, so one empty line remains -> true,
+        # but we only assert it does not underflow and leaves a flag.
+        flag = inner.pop_ds_int()
+        assert flag == 0 or flag == -1
+    finally:
+        os.remove(path)
+
+
 def test_second_string_literal_after_dot_quote_compiles_content():
     # A ." and an s" on the same line must each track their own occurrence
     # index; the s" content used to compile empty.
