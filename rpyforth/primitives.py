@@ -1648,6 +1648,15 @@ def prim_STATE(inner, cur, ip):
     return ip
 
 
+# (IMMEDIATE) ( -- ) -- mark the most recently defined word immediate. Compiled
+# by IMMEDIATE when it appears in a colon body, so a defining word can run
+# CREATE IMMEDIATE ... DOES> to build immediate child words at runtime (brainless
+# create-array / vector-table: / offset).
+def prim_IMMEDIATE(inner, cur, ip):
+    inner.outer.runtime_immediate()
+    return ip
+
+
 # SAVE-INPUT ( -- xn..x1 n ) -- save the input-source position for RESTORE-INPUT.
 def prim_SAVE_INPUT(inner, cur, ip):
     inner.outer.runtime_save_input()
@@ -3305,6 +3314,7 @@ def install_primitives(outer):
     outer.define_prim("(IS!)", prim_IS_STORE)
     outer.define_prim("(POSTPONE)", prim_POSTPONE)
     outer.define_prim("(STATE)", prim_STATE)
+    outer.define_prim("(IMMEDIATE)", prim_IMMEDIATE)
     outer.define_prim("SAVE-INPUT", prim_SAVE_INPUT)
     outer.define_prim("RESTORE-INPUT", prim_RESTORE_INPUT)
     outer.define_prim("DEFER!", prim_DEFER_STORE)

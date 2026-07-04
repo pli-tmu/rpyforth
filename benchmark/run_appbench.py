@@ -196,7 +196,10 @@ def build_rpyforth_cmd(binary: Path, spec: ProgramSpec, tmpdir: Path) -> List[st
     wrapper_path = tmpdir / f"{spec.name}_rpy_wrapper.fs"
     wrapper_path.write_text(forth_expr, encoding="utf-8")
 
-    cmd = [str(binary), str(wrapper_path)]
+    # Large applications trace-thrash with the default bridge eagerness (the
+    # gforth side gets its own tuning via -m 16M); this is a runtime knob,
+    # not a code change.
+    cmd = [str(binary), "--jit", "trace_eagerness=1000", str(wrapper_path)]
     return cmd
 
 

@@ -133,6 +133,33 @@ def test_redefinition_chain():
     assert inner.pop_ds_int() == 120
 
 
+def test_runtime_immediate_marks_child():
+    # IMMEDIATE run from inside a colon body (after CREATE) marks the freshly
+    # created child immediate. Assert directly on the dictionary flag.
+    inner = InnerInterpreter()
+    outer = OuterInterpreter(inner)
+    outer.interpret_line(": defimm  CREATE IMMEDIATE ;")
+    outer.interpret_line("defimm foo")
+    w = outer.dict["FOO"]
+    assert w.immediate is True
+
+
+def test_runtime_immediate_child_is_immediate():
+    # The child made by CREATE IMMEDIATE must be immediate: used inside a colon
+    # body it runs at compile time (STATE @ true -> compiles CELLS LITERAL +),
+    # so the resulting word indexes the array at runtime.
+    inner = run_lines([
+        ": create-array  CREATE IMMEDIATE"
+        "   DOES>  STATE @ IF POSTPONE CELLS POSTPONE LITERAL POSTPONE +"
+        "   ELSE SWAP CELLS + THEN ;",
+        "create-array board",
+        "board 11 , 22 , 33 ,",       # store into three cells at board+0..2
+        ": second  1 board @ ;",       # 1 board -> board+1cell ; @ fetches 22
+        "second",
+    ])
+    assert inner.pop_ds_int() == 22
+
+
 def test_recurse_still_works():
     inner = run(": fact dup 1 > if dup 1 - recurse * then ; 5 fact")
     assert inner.pop_ds_int() == 120

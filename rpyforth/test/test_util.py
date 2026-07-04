@@ -1,4 +1,5 @@
-from rpyforth.util import split_whitespace, remove_comments
+from rpyforth.util import (split_whitespace, remove_comments,
+                           remove_comments_stateful, split_whitespace_stateful)
 
 
 def test_remove_comments_backslash():
@@ -48,6 +49,43 @@ def test_split_whitespace_no_false_positives():
 
     # Parentheses in the middle of a token shouldn't trigger comment
     assert split_whitespace("test(value)") == ["test(value)"]
+
+
+def test_paren_comment_spanning_lines():
+    # An unterminated '(' comment leaves depth open for the next line.
+    res, depth = remove_comments_stateful("( this comment", 0)
+    assert res == ""
+    assert depth == 1
+
+    # A middle line entirely inside the comment produces no tokens, depth stays.
+    res, depth = remove_comments_stateful("spans multiple", depth)
+    assert res == ""
+    assert depth == 1
+
+    # The closing ')' ends the comment; the remainder is live code.
+    res, depth = remove_comments_stateful("lines ) 42", depth)
+    assert res == " 42"
+    assert depth == 0
+
+
+def test_paren_comment_nested_across_lines():
+    res, depth = remove_comments_stateful("( outer ( inner", 0)
+    assert res == ""
+    assert depth == 2
+    res, depth = remove_comments_stateful("still )", depth)
+    assert depth == 1
+    res, depth = remove_comments_stateful(") done", depth)
+    assert res == " done"
+    assert depth == 0
+
+
+def test_split_whitespace_stateful_multiline():
+    toks, depth = split_whitespace_stateful("code1 ( open", 0)
+    assert toks == ["code1"]
+    assert depth == 1
+    toks, depth = split_whitespace_stateful("close ) code2 ;", depth)
+    assert toks == ["code2", ";"]
+    assert depth == 0
 
 
 def test_split_colon_words_kept_whole():

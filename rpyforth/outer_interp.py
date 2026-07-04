@@ -3,7 +3,7 @@ from rpyforth.objects import (
     word_from_wid)
 from rpyforth.inner_interp import Abort
 from rpyforth.primitives import install_primitives
-from rpyforth.util import to_upper, split_whitespace
+from rpyforth.util import to_upper, split_whitespace, split_whitespace_stateful
 
 from rpython.rlib.rfile import create_stdio
 from rpython.rlib.streamio import open_file_as_stream
@@ -83,6 +83,10 @@ class OuterInterpreter(object):
         # live compilation state both when interpreting and from a colon body
         # (the state-smart POSTPONE idiom in brainless environ.fs/utils.fs).
         self.state_addr = HEAP_SIZE_BYTES - 24
+        # Fixed scratch buffer for WORD's counted string, below the reserved
+        # cells: WORD must not advance HERE (fcp measures dictionary growth
+        # with HERE deltas around book loading).
+        self.word_scratch_addr = HEAP_SIZE_BYTES - 280
         inner.cell_store(self.state_addr, 0)
 
         # Position of a DOES> body within the definition currently compiling
@@ -141,6 +145,11 @@ class OuterInterpreter(object):
         self.cond_skipping = False
         self.cond_skip_depth = 0
         self.cond_skip_to_else = False
+
+        # Open ( ) comment nesting carried across lines. An unterminated '('
+        # comment in an INCLUDEd file continues onto following lines (gforth
+        # behaviour); this counts how many are still open at line start.
+        self.paren_depth = 0
 
         # Define LITERAL as an immediate word (for POSTPONE to find it)
         self._define_literal_word()
@@ -700,6 +709,8 @@ class OuterInterpreter(object):
         saved_cur = self.inner.cell_fetch_int(self.to_in_addr)
         saved_lines = self.include_lines
         saved_pos = self.include_pos
+        saved_paren = self.paren_depth
+        self.paren_depth = 0
         self.include_lines = content.split('\n')
         self.include_pos = 0
         n = len(self.include_lines)
@@ -707,6 +718,7 @@ class OuterInterpreter(object):
             line = self.include_lines[self.include_pos]
             self.include_pos += 1
             self.interpret_line(line)
+        self.paren_depth = saved_paren
         self.include_lines = saved_lines
         self.include_pos = saved_pos
         self.source_buffer = saved_buf
@@ -1378,12 +1390,12 @@ class OuterInterpreter(object):
         self.inner.pop_ds_int()
         word_str = self.parse_next_token()
         length = len(word_str)
-        addr = self.inner.here
+        addr = self.word_scratch_addr
         self.inner.char_store(addr, length)
-        self.inner.here += 1
-        for ch in word_str:
-            self.inner.char_store(self.inner.here, ord(ch))
-            self.inner.here += 1
+        i = 0
+        while i < length:
+            self.inner.char_store(addr + 1 + i, ord(word_str[i]))
+            i += 1
         self.inner.push_ds_int(addr)
 
     def runtime_parse(self):
@@ -1493,15 +1505,14 @@ class OuterInterpreter(object):
             word_str, i = self._read_tok(toks, i)
 
         length = len(word_str)
-        addr = self.inner.here
+        addr = self.word_scratch_addr
         # Store as a counted string in character (byte) space so COUNT / C@ read
-        # it back consistently.
+        # it back consistently. The fixed scratch buffer keeps HERE untouched.
         self.inner.char_store(addr, length)
-        self.inner.here += 1
-        for ch in word_str:
-            ch_addr = self.inner.here
-            self.inner.char_store(ch_addr, ord(ch))
-            self.inner.here += 1
+        k = 0
+        while k < length:
+            self.inner.char_store(addr + 1 + k, ord(word_str[k]))
+            k += 1
         self.inner.push_ds_int(addr)
         return i
 
@@ -1712,6 +1723,13 @@ class OuterInterpreter(object):
     # IMMEDIATE ( -- )
     def _handle_immediate(self):
         """Mark the last defined word as immediate."""
+        self.runtime_immediate()
+
+    def runtime_immediate(self):
+        """Mark the most recently defined word immediate. Called both from the
+        interpret-mode lexical handler and from the (IMMEDIATE) primitive that
+        IMMEDIATE compiles into a colon body, so a defining word can run
+        CREATE IMMEDIATE ... DOES> to build immediate children at runtime."""
         if self.last_word is not None:
             self.last_word.immediate = True
         else:
@@ -1866,6 +1884,13 @@ class OuterInterpreter(object):
 
     def _dispatch_compile(self, tkey, toks, i, toks_len):
         """Dispatch compile-mode words. Returns (handled, new_i, should_return)."""
+        if tkey == "IMMEDIATE":
+            # IMMEDIATE inside a colon body (CREATE IMMEDIATE ... DOES>) compiles
+            # a call that marks the runtime-defined word immediate when the
+            # defining word executes.
+            self._emit_word(self.forth_wl["(IMMEDIATE)"])
+            return True, i, False
+
         if tkey == "IF":
             self._compile_if()
             return True, i, False
@@ -2073,7 +2098,7 @@ class OuterInterpreter(object):
         self.source_index = 0
         self.string_token_counts = {}
 
-        toks = split_whitespace(line)
+        toks, self.paren_depth = split_whitespace_stateful(line, self.paren_depth)
         toks_len = len(toks)
         self.toks = toks
         i = 0
