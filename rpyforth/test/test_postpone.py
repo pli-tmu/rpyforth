@@ -61,3 +61,37 @@ def test_state_smart_word_via_postpone():
         "t",
     ])
     assert inner2.pop_ds_int() == 30
+
+
+def test_postpone_if_then_early_exit():
+    # brainless tmovegen ?single-move: an IMMEDIATE word POSTPONEs IF/THEN, which
+    # are parser tokens rather than dictionary words. When it runs while compiling
+    # another word, the IF/THEN control structure must be spliced into that word.
+    inner = run([
+        ": stop-if  POSTPONE IF  POSTPONE EXIT  POSTPONE THEN ; IMMEDIATE",
+        # push 1, then (flag on top) maybe EXIT before dropping it and pushing 2.
+        ": t  ( flag -- n ) 1 SWAP stop-if DROP 2 ;",
+        "-1 t",   # flag true: EXIT with 1 left on the stack
+    ])
+    assert inner.pop_ds_int() == 1
+    inner2 = run([
+        ": stop-if  POSTPONE IF  POSTPONE EXIT  POSTPONE THEN ; IMMEDIATE",
+        ": t  ( flag -- n ) 1 SWAP stop-if DROP 2 ;",
+        "0 t",    # flag false: fall through, DROP the 1, push 2
+    ])
+    assert inner2.pop_ds_int() == 2
+
+
+def test_postpone_if_else_then():
+    inner = run([
+        ": choose  POSTPONE IF  1 POSTPONE LITERAL  POSTPONE ELSE  2 POSTPONE LITERAL  POSTPONE THEN ; IMMEDIATE",
+        ": t  ( flag -- n ) choose ;",
+        "-1 t",
+    ])
+    assert inner.pop_ds_int() == 1
+    inner2 = run([
+        ": choose  POSTPONE IF  1 POSTPONE LITERAL  POSTPONE ELSE  2 POSTPONE LITERAL  POSTPONE THEN ; IMMEDIATE",
+        ": t  ( flag -- n ) choose ;",
+        "0 t",
+    ])
+    assert inner2.pop_ds_int() == 2

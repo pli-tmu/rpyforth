@@ -303,6 +303,14 @@ def test_u_less():
     assert run_and_pop("0 18446744073709551615 U<") == -1  # True
     assert run_and_pop("-1 0 U<") == 0  # False
     assert run_and_pop("0 -1 U<") == -1 # True
+    # Negative first operand vs small positive: unsigned so -N is huge, never <.
+    # (brainless WITHIN hits this: OVER - >R - R> U< with a negative difference.)
+    assert run_and_pop("-46 8 U<") == 0
+    assert run_and_pop("8 -46 U<") == -1
+    # WITHIN built on U<: 45 is outside [91,99), must be false.
+    assert run_and_pop("45 91 99 WITHIN") == 0
+    assert run_and_pop("45 21 29 WITHIN") == 0
+    assert run_and_pop("95 91 99 WITHIN") == -1
 
 def test_u_dot():
     assert run_and_pop("10 10 U.") == 10

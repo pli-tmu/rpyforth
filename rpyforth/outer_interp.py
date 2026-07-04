@@ -24,6 +24,12 @@ CTRL_WHILE = 4
 CTRL_CASE = 5
 CTRL_OF   = 6
 
+# Control-structure kinds POSTPONE can defer (IF/ELSE/THEN are parser tokens, not
+# dictionary words, so POSTPONE routes them through runtime_compile_control).
+CONTROL_IF   = 0
+CONTROL_ELSE = 1
+CONTROL_THEN = 2
+
 class CtrlEntry(object):
     """Control stack entry for compilation-time control structures.
 
@@ -1325,6 +1331,30 @@ class OuterInterpreter(object):
         executing it (e.g. hash! = POSTPONE ! must compile !, not run it)."""
         self._emit_word(word)
 
+    def _control_postpone_kind(self, name_upper):
+        """Map a control parser-token name to its CONTROL_* kind for POSTPONE, or
+        -1 if it is not a POSTPONE-able control token."""
+        if name_upper == "IF":
+            return CONTROL_IF
+        if name_upper == "ELSE":
+            return CONTROL_ELSE
+        if name_upper == "THEN":
+            return CONTROL_THEN
+        return -1
+
+    def runtime_compile_control(self, kind):
+        """Run a control-structure compiler against the definition currently
+        being compiled. IF/ELSE/THEN are parser tokens rather than dictionary
+        words, so POSTPONE IF (brainless tmovegen's ?single-move) compiles a call
+        to this hook; when the enclosing immediate word runs at the outer word's
+        compile time, it splices the control structure there."""
+        if kind == CONTROL_IF:
+            self._compile_if()
+        elif kind == CONTROL_ELSE:
+            self._compile_else()
+        elif kind == CONTROL_THEN:
+            self._compile_then()
+
     def _runtime_pop_value(self):
         """Pop one value off whichever data stack holds it, boxed for storage in
         a defined word's literal (mirrors _handle_constant)."""
@@ -2046,6 +2076,11 @@ class OuterInterpreter(object):
                 return True, i, True
             name, i = self._read_tok(toks, i)
             name_upper = to_upper(name)
+            control_kind = self._control_postpone_kind(name_upper)
+            if control_kind >= 0:
+                self._emit_lit(W_IntObject(control_kind))
+                self._emit_word(self.forth_wl["(POSTPONE-CONTROL)"])
+                return True, i, False
             word = self._lookup(name_upper)
             if word is not None:
                 if word.immediate:
@@ -2275,8 +2310,22 @@ class OuterInterpreter(object):
         if self.does_ip_mark >= 0:
             mark = self.does_ip_mark
             assert mark >= 0
-            dcode = [code[idx] for idx in range(mark, len(code))]
-            dlits = [lits[idx] for idx in range(mark, len(lits))]
+            dlen = len(code) - mark
+            dcode = [None] * dlen
+            dlits = [ZERO] * dlen
+            j = 0
+            while j < dlen:
+                w = code[mark + j]
+                cl = lits[mark + j]
+                # Branch-target literals (and LEAVE's patched loop-end) are
+                # absolute indices into the parent code; rebase them onto the
+                # carved body.
+                if self._is_branch_target_word(w) or w is self.wLEAVE:
+                    assert isinstance(cl, W_IntObject)
+                    cl = W_IntObject(cl.intval - mark)
+                dcode[j] = w
+                dlits[j] = cl
+                j += 1
             does_thread = CodeThread(dcode, dlits)
             does_word = Word("", prim=None, immediate=False, thread=does_thread)
             self.does_ip_mark = -1

@@ -121,10 +121,7 @@ def prim_U_LESS(inner, cur, ip):
     """GForth core 2012: flag is true if and only if u1 is less than u2."""
     n2 = inner.pop_ds_int()
     n1 = inner.pop_ds_int()
-    BIT_MASK = (1 << LONG_BIT) - 1   #111...11 64bits
-    u1 = n1 & BIT_MASK
-    u2 = n2 & BIT_MASK
-    if u1 < u2:
+    if r_uint(n1) < r_uint(n2):
         inner.push_ds_int(-1)
     else:
         inner.push_ds_int(0)
@@ -791,11 +788,7 @@ def prim_ULESS(inner, cur, ip):
     """GForth core 2012: flag is true if and only if u1 is less than u2 (unsigned comparison)."""
     u2 = inner.pop_ds_int()
     u1 = inner.pop_ds_int()
-    # Treat values as unsigned for comparison
-    BIT_MASK = (1 << LONG_BIT) - 1
-    val1 = u1 & BIT_MASK
-    val2 = u2 & BIT_MASK
-    if val1 < val2:
+    if r_uint(u1) < r_uint(u2):
         inner.push_ds_int(-1)
     else:
         inner.push_ds_int(0)
@@ -1649,6 +1642,15 @@ def prim_IS_STORE(inner, cur, ip):
 # target rather than executing it.
 def prim_POSTPONE(inner, cur, ip):
     inner.outer.runtime_postpone(word_from_wid(inner.pop_ds_int()))
+    return ip
+
+
+# (POSTPONE-CONTROL) ( kind -- ) -- run a control-structure compiler (IF/ELSE/
+# THEN) against the definition currently being compiled. Compiled by POSTPONE
+# when its target is a control parser-token rather than a dictionary word
+# (brainless tmovegen ?single-move: POSTPONE IF ... POSTPONE THEN).
+def prim_POSTPONE_CONTROL(inner, cur, ip):
+    inner.outer.runtime_compile_control(inner.pop_ds_int())
     return ip
 
 
@@ -3302,6 +3304,7 @@ def install_primitives(outer):
     outer.define_prim("(DEFER)", prim_DEFER_EXEC)
     outer.define_prim("(IS!)", prim_IS_STORE)
     outer.define_prim("(POSTPONE)", prim_POSTPONE)
+    outer.define_prim("(POSTPONE-CONTROL)", prim_POSTPONE_CONTROL)
     outer.define_prim("(STATE)", prim_STATE)
     outer.define_prim("(IMMEDIATE)", prim_IMMEDIATE)
     outer.define_prim("SAVE-INPUT", prim_SAVE_INPUT)

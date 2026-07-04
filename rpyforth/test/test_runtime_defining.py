@@ -62,6 +62,49 @@ def test_does_mask_pattern():
     assert inner.pop_ds_int() == (4660 & 255)
 
 
+def test_does_body_with_branch_interpret():
+    # A DOES> body containing IF/ELSE/THEN is carved into its own thread. Its
+    # branch-target literals are absolute indices into the parent definition and
+    # must be relocated to the carved body, else the ELSE path jumps wrong.
+    inner = run_lines([
+        ": arr  CREATE CELLS ALLOT"
+        "   DOES> 0 IF DROP ELSE SWAP CELLS + THEN ;",
+        "120 arr bd",
+        "5 3 bd !",
+        "3 bd @",
+    ])
+    assert inner.pop_ds_int() == 5
+
+
+def test_does_body_state_smart_interpret_path():
+    # brainless's ARRAY: STATE-smart DOES>. Read at interpret time (STATE 0)
+    # takes the ELSE branch: SWAP CELLS + must yield the addressed cell.
+    inner = run_lines([
+        ": create-array  CREATE IMMEDIATE CELLS ALLOT"
+        "   DOES> STATE @ IF POSTPONE CELLS POSTPONE LITERAL POSTPONE +"
+        "   ELSE SWAP CELLS + THEN ;",
+        "120 create-array board",
+        "5 3 board !",
+        "7 4 board !",
+        "3 board @",
+        "4 board @",
+    ])
+    assert inner.pop_ds_int() == 7
+    assert inner.pop_ds_int() == 5
+
+
+def test_does_body_with_do_leave_loop():
+    # DO/LEAVE/LOOP inside a DOES> body: the LOOP branch-back target and the
+    # LEAVE loop-end target are both absolute parent indices needing rebasing.
+    inner = run_lines([
+        ": countup  CREATE CELLS ALLOT"
+        "   DOES> DROP 0 5 0 DO I 3 = IF LEAVE THEN I + LOOP ;",
+        "1 countup c",
+        "0 c",
+    ])
+    assert inner.pop_ds_int() == 0 + 1 + 2
+
+
 def test_in_pattern():
     inner = run_lines([
         ": in: ( xt <name> -- ) >in @ defer >in ! ' defer! ;",
@@ -149,12 +192,12 @@ def test_runtime_immediate_child_is_immediate():
     # body it runs at compile time (STATE @ true -> compiles CELLS LITERAL +),
     # so the resulting word indexes the array at runtime.
     inner = run_lines([
-        ": create-array  CREATE IMMEDIATE"
+        ": create-array  CREATE IMMEDIATE CELLS ALLOT"
         "   DOES>  STATE @ IF POSTPONE CELLS POSTPONE LITERAL POSTPONE +"
         "   ELSE SWAP CELLS + THEN ;",
-        "create-array board",
-        "board 11 , 22 , 33 ,",       # store into three cells at board+0..2
-        ": second  1 board @ ;",       # 1 board -> board+1cell ; @ fetches 22
+        "120 create-array board",
+        "11 0 board !  22 1 board !  33 2 board !",  # store into cells 0..2
+        ": second  1 board @ ;",       # compile path: 1 board -> board+1cell; @ -> 22
         "second",
     ])
     assert inner.pop_ds_int() == 22

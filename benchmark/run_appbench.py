@@ -159,9 +159,6 @@ def build_program_registry() -> List[ProgramSpec]:
         prelude="",
         body="include fcp-1.31-64.f\nbench\nbye",
         supported_engines=[ENGINE_GFORTH, ENGINE_GFORTH_FAST, ENGINE_RPYFORTH],
-        # fcp trace-thrashes with default bridge eagerness (deep search
-        # recursion); cd16sim regresses with this flag, so it is per-program.
-        rpy_jit_args=["--jit", "trace_eagerness=1000"],
     )
 
     lexex = ProgramSpec(
