@@ -284,10 +284,14 @@ def prim_DEPTH(inner, cur, ip):
 
 # RSHIFT ( n1 u -- n2 )
 def prim_RSHIFT(inner, cur, ip):
-    """GForth core 2012: perform a logical right shift of u bit-places on n1, giving n2."""
+    """GForth core 2012: logical (zero-fill) right shift of u bit-places."""
+    from rpython.rlib.rarithmetic import intmask, r_uint
     a = inner.pop_ds_int()
     b = inner.pop_ds_int()
-    inner.push_ds_int(b >> a)
+    if a >= LONG_BIT or a < 0:
+        inner.push_ds_int(0)
+    else:
+        inner.push_ds_int(intmask(r_uint(b) >> a))
     return ip
 
 

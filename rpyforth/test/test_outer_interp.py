@@ -1371,3 +1371,10 @@ def test_inlining_grows_code_buffer_beyond_128():
     leaf = ": leaf 1 2 3 4 5 drop drop drop drop ;"   # nets one value (1)
     src = leaf + " : big " + (" ".join(["leaf"] * 20)) + " ;  big"
     assert run_and_pop(src) == 1
+
+
+def test_rshift_is_logical():
+    # Forth RSHIFT is a logical (zero-fill) shift: all-ones shifted right once
+    # gives the largest positive cell, not -1.
+    assert run_and_pop("-1 1 RSHIFT") == 0x7FFFFFFFFFFFFFFF
+    assert run_and_pop("8 2 RSHIFT") == 2

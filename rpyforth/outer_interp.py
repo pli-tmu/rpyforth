@@ -1571,10 +1571,18 @@ class OuterInterpreter(object):
             self.inner.push_ds_int(255)  # max character value
             self.inner.push_ds_int(-1)
         elif query_upper == "MAX-N":
-            self.inner.push_ds_int(2147483647)  # max signed single
+            self.inner.push_ds_int((1 << 62) - 1 + (1 << 62))  # max signed cell
             self.inner.push_ds_int(-1)
         elif query_upper == "MAX-U":
             self.inner.push_ds_int(-1)  # max unsigned (all bits set)
+            self.inner.push_ds_int(-1)
+        elif query_upper == "MAX-D":
+            self.inner.push_ds_int(-1)  # max signed double: low cell
+            self.inner.push_ds_int((1 << 62) - 1 + (1 << 62))  # high cell
+            self.inner.push_ds_int(-1)
+        elif query_upper == "MAX-UD":
+            self.inner.push_ds_int(-1)  # max unsigned double: low cell
+            self.inner.push_ds_int(-1)  # high cell
             self.inner.push_ds_int(-1)
         elif query_upper == "RETURN-STACK-CELLS":
             self.inner.push_ds_int(64)  # return stack size
