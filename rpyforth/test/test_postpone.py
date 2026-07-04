@@ -48,6 +48,34 @@ def test_postpone_immediate_word_still_runs_at_enclosing_runtime():
     assert inner.pop_ds_int() == 5
 
 
+def test_postpone_control_flow_then():
+    # An immediate word may POSTPONE a control-flow word (THEN) so that running it
+    # while compiling replays the compile action (lexex ansify.fth: endif).
+    inner = run([
+        ": endif  POSTPONE then ; IMMEDIATE",
+        ": t  ( f -- )  IF 1 endif 2 ;",
+        "0 t",    # false: leaves just 2
+        "-1 t",   # true: leaves 1 then 2
+    ])
+    # stack after both calls (top last): 2 (from 0 t), 1 2 (from -1 t)
+    assert inner.pop_ds_int() == 2   # -1 t top
+    assert inner.pop_ds_int() == 1   # -1 t
+    assert inner.pop_ds_int() == 2   # 0 t
+
+
+def test_postpone_control_flow_begin_while_repeat():
+    # POSTPONE of BEGIN/WHILE/REPEAT composed into a user structure word.
+    inner = run([
+        ": my-begin  POSTPONE begin ; IMMEDIATE",
+        ": my-while  POSTPONE while ; IMMEDIATE",
+        ": my-repeat POSTPONE repeat ; IMMEDIATE",
+        # sum 1..n : ( n -- sum ) accumulate then count down
+        ": t  ( n -- sum )  0 swap my-begin dup my-while tuck + swap 1 - my-repeat drop ;",
+        "5 t",
+    ])
+    assert inner.pop_ds_int() == 15
+
+
 def test_state_smart_word_via_postpone():
     # A DOES>/STATE-smart idiom: compile a + when compiling, add when interpreting.
     inner = run([

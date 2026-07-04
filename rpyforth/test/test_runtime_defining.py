@@ -191,13 +191,16 @@ def test_runtime_immediate_child_is_immediate():
     # The child made by CREATE IMMEDIATE must be immediate: used inside a colon
     # body it runs at compile time (STATE @ true -> compiles CELLS LITERAL +),
     # so the resulting word indexes the array at runtime.
+    # ( n board -- board+n*cells ), matching gforth: the ELSE branch does
+    # SWAP CELLS +, so an index must be supplied. Storing needs 3 allotted cells.
     inner = run_lines([
-        ": create-array  CREATE IMMEDIATE CELLS ALLOT"
+        ": create-array  CREATE IMMEDIATE"
         "   DOES>  STATE @ IF POSTPONE CELLS POSTPONE LITERAL POSTPONE +"
         "   ELSE SWAP CELLS + THEN ;",
-        "120 create-array board",
-        "11 0 board !  22 1 board !  33 2 board !",  # store into cells 0..2
-        ": second  1 board @ ;",       # compile path: 1 board -> board+1cell; @ -> 22
+        "create-array board",
+        "3 cells allot",
+        "11 0 board ! 22 1 board ! 33 2 board !",   # board[0..2] = 11,22,33
+        ": second  1 board @ ;",       # 1 board -> board+1cell ; @ fetches 22
         "second",
     ])
     assert inner.pop_ds_int() == 22

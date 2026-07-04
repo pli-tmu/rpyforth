@@ -10,6 +10,33 @@ def run_lines(lines):
     return inner, outer
 
 
+def test_begin_double_while_repeat_then():
+    # ansify.fth xt-skip uses BEGIN .. WHILE .. WHILE .. REPEAT THEN: two forward
+    # exits sharing one BEGIN. REPEAT resolves the nearest WHILE and branches back;
+    # the trailing THEN resolves the first WHILE.
+    # skip-zeros: ( n -- n' ) while n>0 and n even, halve; stop at odd or zero.
+    inner, outer = run_lines([
+        ": skip-zeros ( n -- n' )"
+        "  BEGIN DUP WHILE"            # n != 0
+        "    DUP 1 AND 0= WHILE"       # n even
+        "    2/"                        # halve
+        "  REPEAT THEN ;",
+    ])
+    assert "SKIP-ZEROS" in outer.dict
+    inner, _ = run_lines([
+        ": skip-zeros ( n -- n' )"
+        "  BEGIN DUP WHILE DUP 1 AND 0= WHILE 2/ REPEAT THEN ;",
+        "8 skip-zeros",   # 8->4->2->1 (odd, exits via 2nd WHILE): 1
+    ])
+    assert inner.pop_ds_int() == 1
+    inner, _ = run_lines([
+        ": skip-zeros ( n -- n' )"
+        "  BEGIN DUP WHILE DUP 1 AND 0= WHILE 2/ REPEAT THEN ;",
+        "0 skip-zeros",   # 0 exits via 1st WHILE: 0
+    ])
+    assert inner.pop_ds_int() == 0
+
+
 def test_begin_while_until_then_defines():
     # fcp's >goodVar uses BEGIN ... WHILE ... UNTIL THEN: a loop with an early
     # WHILE exit (resolved by THEN) and an UNTIL back-branch to BEGIN.

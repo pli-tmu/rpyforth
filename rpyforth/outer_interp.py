@@ -24,11 +24,49 @@ CTRL_WHILE = 4
 CTRL_CASE = 5
 CTRL_OF   = 6
 
-# Control-structure kinds POSTPONE can defer (IF/ELSE/THEN are parser tokens, not
-# dictionary words, so POSTPONE routes them through runtime_compile_control).
-CONTROL_IF   = 0
-CONTROL_ELSE = 1
-CONTROL_THEN = 2
+# POSTPONE/[COMPILE] replay codes for the built-in immediate control-flow words.
+# These words are not stored in the dictionary (the tokenizer handles them in
+# compile mode), so POSTPONE cannot look them up. Instead it emits the matching
+# code below followed by the (CF) primitive, which re-runs the compile action
+# when the enclosing immediate word executes during compilation.
+CF_IF      = 0
+CF_ELSE    = 1
+CF_THEN    = 2
+CF_BEGIN   = 3
+CF_WHILE   = 4
+CF_REPEAT  = 5
+CF_AGAIN   = 6
+CF_UNTIL   = 7
+CF_DO      = 8
+CF_QDO     = 9
+CF_LOOP    = 10
+CF_PLUSLOOP = 11
+CF_LEAVE   = 12
+CF_CASE    = 13
+CF_OF      = 14
+CF_ENDOF   = 15
+CF_ENDCASE = 16
+
+# Map a control-flow token (uppercased) to its CF_* replay code, or -1.
+def cf_code_for(name_upper):
+    if name_upper == "IF":       return CF_IF
+    if name_upper == "ELSE":     return CF_ELSE
+    if name_upper == "THEN":     return CF_THEN
+    if name_upper == "BEGIN":    return CF_BEGIN
+    if name_upper == "WHILE":    return CF_WHILE
+    if name_upper == "REPEAT":   return CF_REPEAT
+    if name_upper == "AGAIN":    return CF_AGAIN
+    if name_upper == "UNTIL":    return CF_UNTIL
+    if name_upper == "DO":       return CF_DO
+    if name_upper == "?DO":      return CF_QDO
+    if name_upper == "LOOP":     return CF_LOOP
+    if name_upper == "+LOOP":    return CF_PLUSLOOP
+    if name_upper == "LEAVE":    return CF_LEAVE
+    if name_upper == "CASE":     return CF_CASE
+    if name_upper == "OF":       return CF_OF
+    if name_upper == "ENDOF":    return CF_ENDOF
+    if name_upper == "ENDCASE":  return CF_ENDCASE
+    return -1
 
 class CtrlEntry(object):
     """Control stack entry for compilation-time control structures.
@@ -39,6 +77,24 @@ class CtrlEntry(object):
         self.kind = kind    # int: CTRL_IF, CTRL_ELSE, or CTRL_DO
         self.index = index  # int: position in scurrent_code for patching
         self.leave_addrs = []  # list of LEAVE positions to patch (for DO loops)
+
+
+class CompContext(object):
+    """A saved compilation context, used to nest a runtime :NONAME definition
+    inside a word that is already being compiled (or interpreted)."""
+    def __init__(self, code, lits, cc_ptr, lit_ptr, ctrl, does_ip_mark,
+                 current_name, noname_mode, current_predefined, state):
+        self.code = code
+        self.lits = lits
+        self.cc_ptr = cc_ptr
+        self.lit_ptr = lit_ptr
+        self.ctrl = ctrl
+        self.does_ip_mark = does_ip_mark
+        self.current_name = current_name
+        self.noname_mode = noname_mode
+        self.current_predefined = current_predefined
+        self.state = state
+
 
 class OuterInterpreter(object):
     _immutable_fields_ = ['wBR', 'w0BR', 'wLIT', 'wEXIT', 'wDO', 'wQDO', 'wLOOP', 'wPLUSLOOP', 'wLEAVE', 'wTYPE', 'wUNLOOP', 'wABORTQUOTE']
@@ -109,6 +165,12 @@ class OuterInterpreter(object):
         self.reset_code()
 
         self.ctrl = []         # control stack at compilation
+
+        # Saved compilation contexts for runtime :NONAME (lexex setOutputFile runs
+        # ':noname ... postpone sliteral postpone ;' from inside a colon body). A
+        # word already being compiled can start a fresh nameless definition; the
+        # outer state is pushed here and restored when that definition closes.
+        self.comp_stack = []
 
         # install minimal core words into dictionary
         install_primitives(self)
@@ -855,34 +917,65 @@ class OuterInterpreter(object):
         begin_addr = self.cc_ptr
         self.ctrl.append(CtrlEntry(CTRL_BEGIN, begin_addr))
 
+    def _find_begin_index(self):
+        """Return the loop-back target of the nearest enclosing BEGIN on the
+        control stack (searching under any WHILE entries), or -1. Does not modify
+        the stack, so multiple WHILEs can share one BEGIN (BEGIN .. WHILE .. WHILE
+        .. REPEAT THEN, as in ansify.fth xt-skip)."""
+        idx = len(self.ctrl) - 1
+        while idx >= 0:
+            if self.ctrl[idx].kind == CTRL_BEGIN:
+                return self.ctrl[idx].index
+            idx -= 1
+        return -1
+
     def _compile_while(self):
-        """Compile WHILE."""
-        if not self.ctrl:
-            print "WHILE without BEGIN"
-            return False
-        entry = self.ctrl.pop()
-        if entry.kind != CTRL_BEGIN:
+        """Compile WHILE. Emits a forward conditional branch and leaves a WHILE
+        entry on the control stack (above the BEGIN, which stays put). REPEAT
+        resolves the nearest WHILE; any further WHILEs are resolved by THEN."""
+        if self._find_begin_index() < 0:
             print "WHILE without BEGIN"
             return False
         while_addr = self.cc_ptr
         self._emit_with_target(self.w0BR, 0)
-        self.ctrl.append(CtrlEntry(CTRL_BEGIN, entry.index))
         self.ctrl.append(CtrlEntry(CTRL_WHILE, while_addr))
         return True
 
     def _compile_repeat(self):
-        """Compile REPEAT."""
-        if len(self.ctrl) < 2:
-            print "REPEAT without BEGIN...WHILE"
-            return False
-        while_entry = self.ctrl.pop()
-        begin_entry = self.ctrl.pop()
-        if while_entry.kind != CTRL_WHILE or begin_entry.kind != CTRL_BEGIN:
+        """Compile REPEAT. Branch back to the enclosing BEGIN and resolve the
+        nearest WHILE. Extra WHILEs remain for a trailing THEN to resolve."""
+        if not self.ctrl or self.ctrl[len(self.ctrl) - 1].kind != CTRL_WHILE:
             print "REPEAT without proper BEGIN...WHILE"
             return False
-        self._emit_with_target(self.wBR, begin_entry.index)
+        while_entry = self.ctrl.pop()
+        begin_index = self._find_begin_index()
+        if begin_index < 0:
+            print "REPEAT without BEGIN...WHILE"
+            return False
+        self._emit_with_target(self.wBR, begin_index)
         self._patch_here(while_entry.index)
+        # The BEGIN is consumed by this REPEAT; drop it so a following THEN
+        # resolves the remaining WHILE(s), not the BEGIN.
+        self._drop_nearest_begin()
         return True
+
+    def _drop_nearest_begin(self):
+        """Remove the nearest BEGIN entry from the control stack (used by REPEAT
+        once it has branched back to it), preserving the WHILE entries above it."""
+        target = -1
+        idx = len(self.ctrl) - 1
+        while idx >= 0:
+            if self.ctrl[idx].kind == CTRL_BEGIN:
+                target = idx
+                break
+            idx -= 1
+        if target < 0:
+            return
+        new_ctrl = []
+        for k in range(len(self.ctrl)):
+            if k != target:
+                new_ctrl.append(self.ctrl[k])
+        self.ctrl = new_ctrl
 
     def _compile_plusloop(self):
         """Compile +LOOP."""
@@ -1331,29 +1424,90 @@ class OuterInterpreter(object):
         executing it (e.g. hash! = POSTPONE ! must compile !, not run it)."""
         self._emit_word(word)
 
-    def _control_postpone_kind(self, name_upper):
-        """Map a control parser-token name to its CONTROL_* kind for POSTPONE, or
-        -1 if it is not a POSTPONE-able control token."""
-        if name_upper == "IF":
-            return CONTROL_IF
-        if name_upper == "ELSE":
-            return CONTROL_ELSE
-        if name_upper == "THEN":
-            return CONTROL_THEN
-        return -1
-
-    def runtime_compile_control(self, kind):
-        """Run a control-structure compiler against the definition currently
-        being compiled. IF/ELSE/THEN are parser tokens rather than dictionary
-        words, so POSTPONE IF (brainless tmovegen's ?single-move) compiles a call
-        to this hook; when the enclosing immediate word runs at the outer word's
-        compile time, it splices the control structure there."""
-        if kind == CONTROL_IF:
+    def runtime_compile_cf(self, code):
+        """Replay a built-in control-flow compile action, invoked by the (CF)
+        primitive that POSTPONE/[COMPILE] emit for control-flow words (IF, THEN,
+        BEGIN ...). Runs when the enclosing immediate word executes during
+        compilation, so e.g. ': endif POSTPONE then ; immediate' resolves THEN's
+        forward branch in the definition currently being compiled."""
+        if code == CF_IF:
             self._compile_if()
-        elif kind == CONTROL_ELSE:
+        elif code == CF_ELSE:
             self._compile_else()
-        elif kind == CONTROL_THEN:
+        elif code == CF_THEN:
             self._compile_then()
+        elif code == CF_BEGIN:
+            self._compile_begin()
+        elif code == CF_WHILE:
+            self._compile_while()
+        elif code == CF_REPEAT:
+            self._compile_repeat()
+        elif code == CF_AGAIN:
+            self._compile_again()
+        elif code == CF_UNTIL:
+            self._compile_until()
+        elif code == CF_DO:
+            self._compile_do()
+        elif code == CF_QDO:
+            self._compile_qdo()
+        elif code == CF_LOOP:
+            self._compile_loop()
+        elif code == CF_PLUSLOOP:
+            self._compile_plusloop()
+        elif code == CF_LEAVE:
+            self._compile_leave()
+        elif code == CF_CASE:
+            self._compile_case()
+        elif code == CF_OF:
+            self._compile_of()
+        elif code == CF_ENDOF:
+            self._compile_endof()
+        elif code == CF_ENDCASE:
+            self._compile_endcase()
+
+    def runtime_begin_noname(self):
+        """:NONAME executed from a colon body: save the enclosing compilation
+        context and open a fresh nameless definition. Paired with runtime_end_
+        definition, which restores the saved context (lexex setOutputFile)."""
+        ctx = CompContext(
+            self.current_code, self.current_lits, self.cc_ptr, self.lit_ptr,
+            self.ctrl, self.does_ip_mark, self.current_name,
+            self.noname_mode, self.current_predefined, self.state)
+        self.comp_stack.append(ctx)
+        self.reset_code()
+        self.ctrl = []
+        self.does_ip_mark = -1
+        self.current_name = "NONAME"
+        self.noname_mode = True
+        self.current_predefined = False
+        self.state = COMPILE
+
+    def runtime_end_definition(self):
+        """; executed from a colon body (POSTPONE ;): finalize the definition
+        currently being compiled, then restore the enclosing compilation context
+        saved by runtime_begin_noname."""
+        self._finalize_definition()
+        if self.comp_stack:
+            ctx = self.comp_stack.pop()
+            self.current_code = ctx.code
+            self.current_lits = ctx.lits
+            self.cc_ptr = ctx.cc_ptr
+            self.lit_ptr = ctx.lit_ptr
+            self.ctrl = ctx.ctrl
+            self.does_ip_mark = ctx.does_ip_mark
+            self.current_name = ctx.current_name
+            self.noname_mode = ctx.noname_mode
+            self.current_predefined = ctx.current_predefined
+            self.state = ctx.state
+
+    def runtime_sliteral(self):
+        """SLITERAL ( c-addr u -- ) executed while compiling: append the string to
+        the definition currently being compiled so it pushes ( c-addr u ) at run
+        time (lexex setOutputFile builds a :NONAME that returns the file name)."""
+        size = self.inner.pop_ds_int()
+        c_addr = self.inner.pop_ds_int()
+        self._emit_lit(W_IntObject(c_addr))
+        self._emit_lit(W_IntObject(size))
 
     def _runtime_pop_value(self):
         """Pop one value off whichever data stack holds it, boxed for storage in
@@ -1479,6 +1633,62 @@ class OuterInterpreter(object):
     def runtime_base(self):
         """BASE executed from a colon body ( -- a-addr )."""
         self._handle_base()
+
+    def _raw_token_at_index(self, tok_index):
+        """Scan the raw source line for the whitespace-delimited token at
+        tok_index (0-based), ignoring the tokenizer's comment/string handling.
+        Returns the token text, or '' past the end. Used by PARSE-NAME so keywords
+        that are themselves tokenizer-special (lexex declares '(' , '."' , 's"' as
+        scanner keywords) are still read literally."""
+        line = self.source_buffer
+        n = len(line)
+        pos = 0
+        count = 0
+        while pos < n:
+            while pos < n and line[pos] in ' \t\n\r\v\f':
+                pos += 1
+            if pos >= n:
+                break
+            start = pos
+            while pos < n and line[pos] not in ' \t\n\r\v\f':
+                pos += 1
+            if count == tok_index:
+                assert 0 <= start <= pos
+                return line[start:pos]
+            count += 1
+        return ''
+
+    def runtime_parse_name(self):
+        """PARSE-NAME ( "<spaces>name" -- c-addr u ): parse the next whitespace-
+        delimited token from the input and return its address and length in data
+        space. Reads the raw source line (not the comment/string-stripped token
+        list) so tokenizer-special keywords ('(', '."', 's"') are read literally;
+        lexex symbol declares such words as scanner keywords."""
+        idx = self.inner.cell_fetch_int(self.to_in_addr)
+        name = self._raw_token_at_index(idx)
+        # Advance the token cursor past the token just consumed.
+        self.inner.cell_store(self.to_in_addr, idx + 1)
+        # If the consumed keyword is one the tokenizer treats as a paren comment
+        # opener ('(' or '.('), it wrongly bumped this line's paren depth, which
+        # would swallow every following line as comment. Clear it: PARSE-NAME just
+        # took that '(' as data (lexex declares '(' as a scanner keyword).
+        if '(' in name or ')' in name:
+            self.paren_depth = 0
+        size = len(name)
+        c_addr = self.inner.alloc_buf(name, size)
+        self.inner.push_ds_int(c_addr)
+        self.inner.push_ds_int(size)
+
+    def runtime_char(self):
+        """CHAR executed from a colon body: parse the next token from the input
+        and push the code of its first character. Compiled where CHAR appears in a
+        definition (lexex 'char' = char 'lit'), so it parses at run time rather
+        than at compile time."""
+        name = self.parse_next_token()
+        if len(name) > 0:
+            self.inner.push_ds_int(ord(name[0]))
+        else:
+            self.inner.push_ds_int(0)
 
     def runtime_tick(self):
         name = self.parse_next_token()
@@ -2076,10 +2286,18 @@ class OuterInterpreter(object):
                 return True, i, True
             name, i = self._read_tok(toks, i)
             name_upper = to_upper(name)
-            control_kind = self._control_postpone_kind(name_upper)
-            if control_kind >= 0:
-                self._emit_lit(W_IntObject(control_kind))
-                self._emit_word(self.forth_wl["(POSTPONE-CONTROL)"])
+            cf = cf_code_for(name_upper)
+            if cf >= 0:
+                # Built-in immediate control-flow word (not in the dictionary):
+                # emit a deferred replay of its compile action.
+                self._emit_lit(W_IntObject(cf))
+                self._emit_word(self.forth_wl["(CF)"])
+                return True, i, False
+            if name == ';':
+                # ; is an immediate defining word handled lexically, so it is not
+                # in the dictionary. POSTPONE ; emits the runtime (;) so the
+                # enclosing word closes a definition it opened with :NONAME.
+                self._emit_word(self.forth_wl["(;)"])
                 return True, i, False
             word = self._lookup(name_upper)
             if word is not None:
@@ -2194,9 +2412,12 @@ class OuterInterpreter(object):
                 i = self._handle_dot_paren(toks, i, t)
                 continue
 
-            if tup == "CHAR":
+            if tup == "CHAR" and self.state == INTERPRET:
                 s, i = self._read_tok(toks, i)
-                self.inner.push_ds_int(ord(s[0]))
+                if len(s) > 0:
+                    self.inner.push_ds_int(ord(s[0]))
+                else:
+                    self.inner.push_ds_int(0)
                 continue
 
             # :INLINE (fcp) defines an inlining word. Its true implementation
@@ -2216,6 +2437,13 @@ class OuterInterpreter(object):
                 self.does_ip_mark = -1
                 self.current_predefined = False
                 self.reset_code()
+                continue
+
+            # :NONAME inside a colon body compiles a call that opens a nameless
+            # definition at runtime (lexex setOutputFile). It is a regular
+            # non-immediate word, so in interpret mode it is handled lexically.
+            if self.state == COMPILE and to_upper(t) == ":NONAME":
+                self._emit_word(self.forth_wl["(:NONAME)"])
                 continue
 
             # Handle ':' / ':NONAME' / ';' lexically (not as immediate words).
@@ -2281,6 +2509,19 @@ class OuterInterpreter(object):
                 i = self.inner.cell_fetch_int(self.to_in_addr)
             else:
                 assert 0, "unreachable state"
+
+    def _rebase_branch_targets(self, dcode, dlits, mark):
+        """Subtract `mark` from the target literal of every branch/loop word in a
+        carved DOES> body, so absolute thread indices stay valid after slicing."""
+        for idx in range(len(dcode)):
+            w = dcode[idx]
+            if (w is self.wBR or w is self.w0BR or w is self.wLOOP
+                    or w is self.wPLUSLOOP or w is self.wQDO):
+                lit = dlits[idx]
+                if isinstance(lit, W_IntObject):
+                    new_target = lit.intval - mark
+                    assert new_target >= 0
+                    dlits[idx] = W_IntObject(new_target)
 
     def _finalize_definition(self):
         tail_call_applied = False

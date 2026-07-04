@@ -1715,12 +1715,79 @@ def prim_POSTPONE(inner, cur, ip):
     return ip
 
 
-# (POSTPONE-CONTROL) ( kind -- ) -- run a control-structure compiler (IF/ELSE/
-# THEN) against the definition currently being compiled. Compiled by POSTPONE
-# when its target is a control parser-token rather than a dictionary word
-# (brainless tmovegen ?single-move: POSTPONE IF ... POSTPONE THEN).
-def prim_POSTPONE_CONTROL(inner, cur, ip):
-    inner.outer.runtime_compile_control(inner.pop_ds_int())
+# (CF) ( code -- ) -- replay a built-in control-flow compile action (IF, THEN,
+# BEGIN ...). Compiled by POSTPONE/[COMPILE] of a control-flow word so that,
+# when the enclosing immediate word runs during compilation, the structure is
+# built in the definition currently being compiled (lexex ansify.fth: endif).
+def prim_COMPILE_CF(inner, cur, ip):
+    inner.outer.runtime_compile_cf(inner.pop_ds_int())
+    return ip
+
+
+# COMPILE, ( xt -- ) -- append the execution token to the definition currently
+# being compiled. Runs from an immediate word that metaprograms compilation
+# (lexex xmini_oof.fth: :: fetches a method xt and COMPILE,s it).
+def prim_COMPILE_COMMA(inner, cur, ip):
+    inner.outer.runtime_postpone(word_from_wid(inner.pop_ds_int()))
+    return ip
+
+
+# Search-order words as primitives so they also work compiled into colon bodies
+# (lexex lexarrays.fth: updateArrayName runs GET-CURRENT SEARCH-WORDLIST while
+# compiling). Each delegates to the outer interpreter's handler.
+def prim_GET_CURRENT(inner, cur, ip):
+    inner.outer._handle_get_current()
+    return ip
+
+
+def prim_SET_CURRENT(inner, cur, ip):
+    inner.outer._handle_set_current()
+    return ip
+
+
+def prim_SEARCH_WORDLIST(inner, cur, ip):
+    inner.outer._handle_search_wordlist()
+    return ip
+
+
+def prim_FORTH_WORDLIST(inner, cur, ip):
+    inner.outer._handle_forth_wordlist()
+    return ip
+
+
+# (:NONAME) ( -- ) -- open a nameless definition from within a running word.
+# Compiled where :NONAME appears in a colon body (lexex setOutputFile).
+def prim_BEGIN_NONAME(inner, cur, ip):
+    inner.outer.runtime_begin_noname()
+    return ip
+
+
+# (;) ( -- xt ) -- finish the definition currently being compiled and restore the
+# enclosing compilation context. Compiled by POSTPONE ; (lexex setOutputFile).
+def prim_END_DEF(inner, cur, ip):
+    inner.outer.runtime_end_definition()
+    return ip
+
+
+# SLITERAL ( c-addr u -- ) -- compile the string so the current definition pushes
+# ( c-addr u ) at runtime. Runs while compiling (lexex setOutputFile).
+def prim_SLITERAL(inner, cur, ip):
+    inner.outer.runtime_sliteral()
+    return ip
+
+
+# CHAR ( "<spaces>name" -- c ) -- parse the next token and push its first
+# character's code. Compiled where CHAR appears in a colon body so it parses at
+# run time (lexex 'char' = char 'lit').
+def prim_CHAR(inner, cur, ip):
+    inner.outer.runtime_char()
+    return ip
+
+
+# PARSE-NAME ( "<spaces>name" -- c-addr u ) -- parse the next token, returning its
+# address and length in data space (lexex symbol reads keywords with it).
+def prim_PARSE_NAME(inner, cur, ip):
+    inner.outer.runtime_parse_name()
     return ip
 
 
@@ -1910,6 +1977,14 @@ def prim_EVALUATE(inner, cur, ip):
 # >IN ( -- a-addr ) -- address of the runtime parse cursor (a token index).
 def prim_TO_IN(inner, cur, ip):
     inner.push_ds_int(inner.outer.to_in_addr)
+    return ip
+
+
+# SOURCE ( -- c-addr u ) -- push the address and length of the current input
+# buffer. A primitive (not just an interpret-mode token) so it also compiles into
+# colon bodies (lexex ansify.fth: parse-name = SOURCE >IN @ /string ...).
+def prim_SOURCE(inner, cur, ip):
+    inner.outer._handle_source()
     return ip
 
 
@@ -3367,6 +3442,7 @@ def install_primitives(outer):
     outer.define_prim("INCLUDED", prim_INCLUDED)
     outer.define_prim("REQUIRED", prim_INCLUDED)
     outer.define_prim(">IN", prim_TO_IN)
+    outer.define_prim("SOURCE", prim_SOURCE)
     outer.define_prim("EVALUATE", prim_EVALUATE)
     outer.define_prim("COUNT", prim_COUNT)
     outer.define_prim("D2/", prim_D2SLASH)
@@ -3374,7 +3450,19 @@ def install_primitives(outer):
     outer.define_prim("(DEFER)", prim_DEFER_EXEC)
     outer.define_prim("(IS!)", prim_IS_STORE)
     outer.define_prim("(POSTPONE)", prim_POSTPONE)
-    outer.define_prim("(POSTPONE-CONTROL)", prim_POSTPONE_CONTROL)
+    outer.define_prim("(CF)", prim_COMPILE_CF)
+    outer.define_prim("COMPILE,", prim_COMPILE_COMMA)
+    outer.define_prim("GET-CURRENT", prim_GET_CURRENT)
+    outer.define_prim("SET-CURRENT", prim_SET_CURRENT)
+    outer.define_prim("SEARCH-WORDLIST", prim_SEARCH_WORDLIST)
+    outer.define_prim("FORTH-WORDLIST", prim_FORTH_WORDLIST)
+    outer.define_prim("(:NONAME)", prim_BEGIN_NONAME)
+    outer.define_prim("(;)", prim_END_DEF)
+    # SLITERAL is immediate (a compiling word): POSTPONE SLITERAL emits it so it
+    # runs when the enclosing word runs, compiling the string then.
+    outer.define_prim("SLITERAL", prim_SLITERAL).immediate = True
+    outer.define_prim("CHAR", prim_CHAR)
+    outer.define_prim("PARSE-NAME", prim_PARSE_NAME)
     outer.define_prim("(STATE)", prim_STATE)
     outer.define_prim("(IMMEDIATE)", prim_IMMEDIATE)
     outer.define_prim("SAVE-INPUT", prim_SAVE_INPUT)
