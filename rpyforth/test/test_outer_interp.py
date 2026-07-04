@@ -189,9 +189,9 @@ def test_u_mul_star():
     assert inner.pop_ds_int() == 0
     inner = run("18446744073709551615 2 UM*")
     assert inner.pop_ds_int() == 1
-    assert inner.pop_ds_int() == 18446744073709551614
+    assert inner.pop_ds_int() == -2  # 0xFFFFFFFFFFFFFFFE as signed 64-bit
     inner = run("18446744073709551615 18446744073709551615 UM*")
-    assert inner.pop_ds_int() == 18446744073709551614
+    assert inner.pop_ds_int() == -2  # hi = 0xFFFFFFFFFFFFFFFE as signed 64-bit
     assert inner.pop_ds_int() == 1
 
 def test_and():

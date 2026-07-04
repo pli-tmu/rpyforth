@@ -327,16 +327,15 @@ def prim_D_PLUS(inner, cur, ip):
     d2_lo = inner.pop_ds_int()
     d1_hi = inner.pop_ds_int()
     d1_lo = inner.pop_ds_int()
-    BIT_MASK = (1 << LONG_BIT) - 1
-    # Combine into 128-bit values (using Python's arbitrary precision)
-    d1 = d1_lo + (d1_hi << LONG_BIT)
-    d2 = d2_lo + (d2_hi << LONG_BIT)
-    result = d1 + d2
-    # Split back into low and high cells
-    result_lo = result & BIT_MASK
-    result_hi = (result >> LONG_BIT) & BIT_MASK
-    inner.push_ds_int(result_lo)
-    inner.push_ds_int(result_hi)
+    # Treat low cells as unsigned; propagate carry into hi.
+    # Avoids word-width shifts (1 << LONG_BIT = 0 translated).
+    ulo1 = r_uint(d1_lo)
+    ulo2 = r_uint(d2_lo)
+    lo_sum = ulo1 + ulo2
+    carry = 1 if lo_sum < ulo1 else 0
+    hi_sum = intmask(d1_hi + d2_hi + carry)
+    inner.push_ds_int(intmask(lo_sum))
+    inner.push_ds_int(hi_sum)
     return ip
 
 
@@ -348,16 +347,15 @@ def prim_D_MINUS(inner, cur, ip):
     d2_lo = inner.pop_ds_int()
     d1_hi = inner.pop_ds_int()
     d1_lo = inner.pop_ds_int()
-    BIT_MASK = (1 << LONG_BIT) - 1
-    # Combine into 128-bit values (using Python's arbitrary precision)
-    d1 = d1_lo + (d1_hi << LONG_BIT)
-    d2 = d2_lo + (d2_hi << LONG_BIT)
-    result = d1 - d2
-    # Split back into low and high cells
-    result_lo = result & BIT_MASK
-    result_hi = (result >> LONG_BIT) & BIT_MASK
-    inner.push_ds_int(result_lo)
-    inner.push_ds_int(result_hi)
+    # Treat low cells as unsigned; propagate borrow into hi.
+    # Avoids word-width shifts (1 << LONG_BIT = 0 translated).
+    ulo1 = r_uint(d1_lo)
+    ulo2 = r_uint(d2_lo)
+    lo_diff = ulo1 - ulo2
+    borrow = 1 if ulo2 > ulo1 else 0
+    hi_diff = intmask(d1_hi - d2_hi - borrow)
+    inner.push_ds_int(intmask(lo_diff))
+    inner.push_ds_int(hi_diff)
     return ip
 
 
@@ -365,26 +363,56 @@ def prim_D_MINUS(inner, cur, ip):
 def prim_D2SLASH(inner, cur, ip):
     d_hi = inner.pop_ds_int()
     d_lo = inner.pop_ds_int()
-    BIT_MASK = (1 << LONG_BIT) - 1
-    d = d_lo + (d_hi << LONG_BIT)
-    result = d >> 1
-    inner.push_ds_int(result & BIT_MASK)
-    inner.push_ds_int((result >> LONG_BIT) & BIT_MASK)
+    # Arithmetic right-shift of a 128-bit double by one bit.
+    # hi shifts right arithmetically (sign-preserving); its LSB feeds into
+    # lo's MSB.  lo shifts right logically (unsigned) with the bit from hi.
+    # Avoids word-width shifts (1 << LONG_BIT = 0 translated).
+    new_hi = d_hi >> 1
+    # The LSB of hi fills the MSB of lo (bit LONG_BIT-1).
+    hi_lsb = r_uint(d_hi) & r_uint(1)
+    ulo = r_uint(d_lo)
+    new_lo = (ulo >> 1) | (hi_lsb << (LONG_BIT - 1))
+    inner.push_ds_int(intmask(new_lo))
+    inner.push_ds_int(new_hi)
     return ip
 
 
 # D. ( d -- )
 def prim_D_DOT(inner, cur, ip):
     """GForth double 2012: display d according to current BASE."""
-    from rpython.rlib.rfile import create_stdio
     # Stack: d.lo d.hi (d.hi on top)
     d_hi = inner.pop_ds_int()
     d_lo = inner.pop_ds_int()
-    # Combine into full value
-    d = d_lo + (d_hi << LONG_BIT)
+    # Build the 128-bit signed value from (lo unsigned, hi signed).
+    # Avoids word-width shifts; uses _ud_divmod_base for digit extraction.
+    negative = d_hi < 0
+    if negative:
+        # Negate the 128-bit value: ~lo + 1, ~hi + carry
+        ulo = ~r_uint(d_lo)
+        carry = 1 if ulo == r_uint(0) - r_uint(1) else 0
+        ulo = ulo + r_uint(1)
+        uhi = intmask(~d_hi + carry)
+    else:
+        ulo = r_uint(d_lo)
+        uhi = d_hi
+    # Convert unsigned (ulo, uhi) to decimal string.
+    buf = []
+    lo = intmask(ulo)
+    hi = uhi
+    if lo == 0 and hi == 0:
+        buf.append('0')
+    else:
+        while lo != 0 or hi != 0:
+            lo, hi, digit = _ud_divmod_base(lo, hi, 10)
+            buf.append(digit_to_char(digit))
+    if negative:
+        buf.append('-')
+    buf.reverse()
+    s = "".join(buf)
     stdin, stdout, stderr = create_stdio()
-    stdout.write(str(d))
+    stdout.write(s)
     stdout.write(' ')
+    stdout.flush()
     return ip
 
 
@@ -608,24 +636,16 @@ def prim_UMSLASHMOD(inner, cur, ip):
     ud_hi = inner.pop_ds_int()
     ud_lo = inner.pop_ds_int()
 
-    # For unsigned division, treat values as unsigned
-    # Reconstruct the double-cell unsigned value
-    BIT_MASK = (1 << LONG_BIT) - 1
-    lo = ud_lo & BIT_MASK
-    hi = ud_hi & BIT_MASK
-    dividend = (hi << LONG_BIT) | lo
-    divisor = u1 & BIT_MASK
-
-    if divisor == 0:
+    if u1 == 0:
         inner.push_ds_int(0)
         inner.push_ds_int(0)
         return ip
 
-    q = dividend // divisor
-    r = dividend % divisor
-
-    inner.push_ds_int(r)
-    inner.push_ds_int(q)
+    # Full 128-bit unsigned divide using _ud_divmod_base.
+    # Replaces word-width shifts (BIT_MASK=-1, hi<<LONG_BIT=0 translated).
+    qlo, qhi, rem = _ud_divmod_base(ud_lo, ud_hi, u1)
+    inner.push_ds_int(rem)
+    inner.push_ds_int(qlo)
     return ip
 
 
@@ -645,48 +665,68 @@ def prim_DEC(inner, cur, ip):
     return ip
 
 
-# M* ( n1 n2 -- d)
+# M* ( n1 n2 -- d )
 def prim_MUL_STAR(inner, cur, ip):
     """GForth core 2012: d is the signed product of n1 times n2."""
     a, b = inner.top2_ds_int()
-    c = a * b    #c is 128bits
-
-    BIT_MASK = (1 << LONG_BIT) - 1   #111...11 64bits
-    SIGN_BIT = 1 << (LONG_BIT - 1)  #100...00 64bits
-
-    low = c & BIT_MASK    # get c's low 64bits
-    #high 64bits: 0s, low 64bits: c's low 64bits,total 128bits
-
-    if low & SIGN_BIT:  # if highest of c's low bits is 1
-    #because highest bit of 128bits is 0, conversion is required
-
-        low = low - (1 << LONG_BIT)  # convert to negative number
-
-    high = c >> LONG_BIT # get c's high 64bits
-    #(ex,LONG_BIT = 4) if c = 0100 0000, high = 0000 0100 = c's high 4bits : if c = 1100 1000, high = 1111 1100 = c's high 4bits
-
-    inner.push_ds_int(low)
-    inner.push_ds_int(high)
-
+    # Compute the signed 128-bit product via unsigned 64-bit mulhi.
+    # Avoids word-width shifts and BIT_MASK=-1 translated.
+    # Sign-magnitude: compute |a|*|b| unsigned then adjust hi for sign.
+    ua = r_uint(a)
+    ub = r_uint(b)
+    HALF = r_uint(32)
+    LOMASK = r_uint(0xFFFFFFFF)
+    a_lo = ua & LOMASK
+    a_hi = ua >> HALF
+    b_lo = ub & LOMASK
+    b_hi = ub >> HALF
+    ll = a_lo * b_lo
+    lh = a_lo * b_hi
+    hl = a_hi * b_lo
+    hh = a_hi * b_hi
+    mid = lh + hl
+    lo = ll + (mid << HALF)
+    carry_mid = r_uint(1) if lo < ll else r_uint(0)
+    carry_lh = r_uint(1) if mid < lh else r_uint(0)
+    uhi = hh + (mid >> HALF) + (carry_lh << HALF) + carry_mid
+    # Adjust hi for the sign: if a is negative, subtract ub from hi.
+    # if b is negative, subtract ua from hi.  (Standard signed mulhi correction)
+    if a < 0:
+        uhi = uhi - ub
+    if b < 0:
+        uhi = uhi - ua
+    inner.push_ds_int(intmask(lo))
+    inner.push_ds_int(intmask(uhi))
     return ip
 
-# UM* ( n1 n2 -- d)
+# UM* ( u1 u2 -- ud )
 def prim_U_MUL_STAR(inner, cur, ip):
     """GForth core 2012: multiply u1 by u2, giving the unsigned double-cell product ud."""
     a, b = inner.top2_ds_int()
-    c = a * b    #c is 128bits
-
-    BIT_MASK = (1 << LONG_BIT) - 1   #111...11 64bits
-
-    low = c & BIT_MASK    # get c's low 64bits
-    #high 64bits: 0s, low 64bits: c's low 64bits,total 128bits
-
-    high = c >> LONG_BIT # get c's high 64bits
-    #(ex,LONG_BIT = 4) if c = 0100 0000, high = 0000 0100 = c's high 4bits : if c = 1100 1000, high = 1111 1100 = c's high 4bits
-
-    inner.push_ds_int(low)
-    inner.push_ds_int(high)
-
+    # Classic 32-bit-halves unsigned multiply (mulhi).  Avoids word-width shifts
+    # and produces a correct 128-bit unsigned product split into (lo, hi).
+    ua = r_uint(a)
+    ub = r_uint(b)
+    HALF = r_uint(32)
+    LOMASK = r_uint(0xFFFFFFFF)
+    a_lo = ua & LOMASK
+    a_hi = ua >> HALF
+    b_lo = ub & LOMASK
+    b_hi = ub >> HALF
+    ll = a_lo * b_lo
+    lh = a_lo * b_hi
+    hl = a_hi * b_lo
+    hh = a_hi * b_hi
+    # Combine: result_lo = ll + (lh + hl) << 32 (keeping lo 64 bits)
+    mid = lh + hl
+    lo = ll + (mid << HALF)
+    # Carry from lo: did the addition of (mid<<32) into ll overflow?
+    carry_mid = r_uint(1) if lo < ll else r_uint(0)
+    # Carry from mid: did lh+hl overflow 64 bits?
+    carry_lh = r_uint(1) if mid < lh else r_uint(0)
+    hi = hh + (mid >> HALF) + (carry_lh << HALF) + carry_mid
+    inner.push_ds_int(intmask(lo))
+    inner.push_ds_int(intmask(hi))
     return ip
 
 # AND ( x1 x2 -- x3 )
@@ -715,37 +755,54 @@ def prim_XOR(inner, cur, ip):
 # FM/MOD ( d1 n1 -- n2 n3 )
 def prim_FM_DIV_MOD(inner, cur, ip):
     """GForth core 2012: divide d1 by n1, giving the floored quotient n3 and the remainder n2."""
-    a = inner.pop_ds_int()
-    b = inner.pop_ds_int() # d1's high 64bits
-    c = inner.pop_ds_int() # d1's low 64bits
-    BIT_MASK = (1 << LONG_BIT) - 1   #111...11 64bits
-    d = (b << LONG_BIT) | (c & BIT_MASK) #d is 128bits
-    assert a != 0, "Division by zero"
-    e = d // a #e is 64bits
-    assert (e >> LONG_BIT) == 0 or (e >> LONG_BIT) == -1, "Overflow in fm/mod"
-    inner.push_ds_int(d % a)
-    inner.push_ds_int(e)
+    n1 = inner.pop_ds_int()
+    d_hi = inner.pop_ds_int()  # d1's high 64-bit cell (signed)
+    d_lo = inner.pop_ds_int()  # d1's low 64-bit cell
+    assert n1 != 0, "Division by zero"
+    # For the common case where d1 is a sign-extended single (hi = 0 or -1),
+    # fall through to exact single-cell arithmetic.  For genuine 128-bit
+    # dividends use the full algorithm.
+    # Determine the sign of d1: hi < 0 means d1 is negative.
+    d_negative = d_hi < 0
+    if d_negative:
+        # Negate the 128-bit value to get its absolute magnitude.
+        ulo = ~r_uint(d_lo)
+        carry = r_uint(1) if ulo == r_uint(0) - r_uint(1) else r_uint(0)
+        ulo = ulo + r_uint(1)
+        uhi = intmask(~d_hi + intmask(carry))
+    else:
+        ulo = r_uint(d_lo)
+        uhi = d_hi
+    n1_negative = n1 < 0
+    un1 = r_uint(-n1 if n1_negative else n1)
+    # 128-bit unsigned divide |d1| by |n1| using _ud_divmod_base structure.
+    qlo, qhi, rem_u = _ud_divmod_base(intmask(ulo), uhi, intmask(un1))
+    # rem_u is the unsigned remainder; sign follows d1.
+    rem = -rem_u if d_negative else rem_u
+    quot = -qlo if (d_negative ^ n1_negative) else qlo
+    # Floored: if remainder != 0 and sign(d1) != sign(n1), adjust.
+    if rem != 0 and (d_negative ^ n1_negative):
+        quot = quot - 1
+        rem = rem + n1
+    inner.push_ds_int(rem)
+    inner.push_ds_int(quot)
     return ip
 
 # UM/MOD ( ud u1 -- u2 u3 )
 def prim_UM_DIV_MOD(inner, cur, ip):
     """GForth core 2012: divide ud by u1, giving the quotient u3 and the remainder u2."""
-    a = inner.pop_ds_int()
-    b = inner.pop_ds_int() # ud's high 64bits
-    c = inner.pop_ds_int() # ud's low 64bits
-    BIT_MASK = (1 << LONG_BIT) - 1   #111...11 64bits
-    SIGN_BIT = 1 << (LONG_BIT - 1)  #100...00 64bits
-    d = (b << LONG_BIT) | (c & BIT_MASK) #d is 128bits
-    assert a != 0, "Division by zero"
-    e = d // a #e is 64bits (quotient)
-    f = d % a #f is 64bits (remainder)
-    if e & SIGN_BIT:  # if highest of e's bits is 1
-        e = e - (1 << LONG_BIT)  # convert to negative number
-    if f & SIGN_BIT:  # if highest of f's bits is 1
-        f = f - (1 << LONG_BIT)  # convert to negative number
-    assert (e >> LONG_BIT) == 0 or (e >> LONG_BIT) == -1, "Overflow in um/mod"
-    inner.push_ds_int(f)
-    inner.push_ds_int(e)
+    u1 = inner.pop_ds_int()
+    ud_hi = inner.pop_ds_int()  # ud's high 64-bit cell
+    ud_lo = inner.pop_ds_int()  # ud's low 64-bit cell
+    assert u1 != 0, "Division by zero"
+    # Full 128-bit unsigned divide using _ud_divmod_base.
+    # Avoids word-width shifts (b << LONG_BIT = 0 translated) and
+    # the SIGN_BIT sign-correction code that used 1 << LONG_BIT = 0.
+    qlo, qhi, rem = _ud_divmod_base(ud_lo, ud_hi, u1)
+    # qhi should be 0 for a valid (non-overflow) UM/MOD; if not, the result
+    # is implementation-defined (overflow).  Push lo cell as quotient.
+    inner.push_ds_int(rem)
+    inner.push_ds_int(qlo)
     return ip
 
 # SM/REM ( d1 n1 -- n2 n3 )
@@ -1213,10 +1270,16 @@ def prim_DOT(inner, cur, ip):
 def prim_U_DOT(inner, cur, ip):
     """GForth core 2012: display u in field format according to current BASE."""
     x = inner.pop_ds_int()
+    # r_uint treats the signed cell as unsigned; avoids BIT_MASK = -1 translated.
+    lo, hi, digit = _ud_divmod_base(x, 0, inner.base)
+    buf = [digit_to_char(digit)]
+    while lo != 0 or hi != 0:
+        lo, hi, digit = _ud_divmod_base(lo, hi, inner.base)
+        buf.append(digit_to_char(digit))
+    buf.reverse()
+    s = "".join(buf)
     stdin, stdout, stderr = create_stdio()
-    BIT_MASK = (1 << LONG_BIT) - 1  #111...11 64bits
-    u_value = x & BIT_MASK
-    stdout.write(str(u_value))
+    stdout.write(s)
     stdout.write(' ')
     #stdout.flush()
     return ip
@@ -1269,12 +1332,19 @@ def prim_CR(inner, cur, ip):
 def prim_UDOT(inner, cur, ip):
     """GForth core 2012: display u as unsigned according to current BASE."""
     x = inner.pop_ds_int()
-    # Treat as unsigned
-    BIT_MASK = (1 << LONG_BIT) - 1
-    val = x & BIT_MASK
+    # Treat as unsigned via r_uint; avoids BIT_MASK = (1<<LONG_BIT)-1 = -1 translated.
+    # _ud_divmod_base handles the digit extraction correctly.
+    lo, hi, digit = _ud_divmod_base(x, 0, inner.base)
+    buf = [digit_to_char(digit)]
+    while lo != 0 or hi != 0:
+        lo, hi, digit = _ud_divmod_base(lo, hi, inner.base)
+        buf.append(digit_to_char(digit))
+    buf.reverse()
+    s = "".join(buf)
     stdin, stdout, stderr = create_stdio()
-    stdout.write(str(val))
+    stdout.write(s)
     stdout.write(' ')
+    stdout.flush()
     return ip
 
 
@@ -1328,17 +1398,17 @@ def prim_UDOTR(inner, cur, ip):
     n = inner.pop_ds_int()
     u = inner.pop_ds_int()
 
-    # Get unsigned value
-    if u < 0:
-        # Convert to unsigned (handle as positive for display)
-        BIT_MASK = (1 << LONG_BIT) - 1  # 64-bit mask
-        u = u & BIT_MASK
-
-    num_str = str(u)
+    # Build unsigned decimal string via _ud_divmod_base (r_uint, no BIT_MASK).
+    lo, hi, digit = _ud_divmod_base(u, 0, 10)
+    buf = [digit_to_char(digit)]
+    while lo != 0 or hi != 0:
+        lo, hi, digit = _ud_divmod_base(lo, hi, 10)
+        buf.append(digit_to_char(digit))
+    buf.reverse()
+    num_str = "".join(buf)
     width = n
 
     stdin, stdout, stderr = create_stdio()
-    # Right-justify: add leading spaces if needed
     if len(num_str) < width:
         stdout.write(' ' * (width - len(num_str)))
     stdout.write(num_str)
