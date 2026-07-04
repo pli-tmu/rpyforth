@@ -32,10 +32,14 @@ def remove_comments(line):
             if i == 0 or line[i-1] in ' \t\n\r\v\f':
                 break  # Skip rest of line
 
-        # Handle parenthetical comment
+        # Handle parenthetical comment. '(' opens a comment only when it stands
+        # as its own word: whitespace (or start) before it AND whitespace (or
+        # end of line) after it. This leaves paren-named words like (checkTime)
+        # or (mv) -- where '(' is glued to the name -- intact.
         if ch == '(':
-            # Check if it's actually a comment (needs space before or at start)
-            if i == 0 or line[i-1] in ' \t\n\r\v\f':
+            before_ok = i == 0 or line[i-1] in ' \t\n\r\v\f'
+            after_ok = i + 1 >= len(line) or line[i+1] in ' \t\n\r\v\f'
+            if before_ok and after_ok:
                 # Find matching ) with nesting support
                 i += 1
                 depth = 1

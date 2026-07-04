@@ -49,7 +49,9 @@ class OuterInterpreter(object):
         # Input source tracking for SOURCE and >IN
         self.source_buffer = ''  # Current input line
         self.source_index = 0    # Current parse position (>IN)
-        self.string_token_count = 0  # Counter for string tokens (S", .") on current line
+        # Per-spelling occurrence counters for string tokens (S", .", C") on
+        # the current line: each spelling scans for its own nth occurrence.
+        self.string_token_counts = {}
 
         # Runtime parse cursor. Defining words (CONSTANT/CREATE/VARIABLE/DEFER/')
         # can execute inside a colon body; when they do, they consume the next
@@ -66,6 +68,11 @@ class OuterInterpreter(object):
         from rpyforth.heap import HEAP_SIZE_BYTES
         self.to_in_addr = HEAP_SIZE_BYTES - 8
         inner.cell_store(self.to_in_addr, 0)
+        # Dedicated fixed cell backing the BASE variable, next to the parse cursor
+        # so it never collides with here-managed allocations. prim_BASE keeps it
+        # and inner.base in sync so `BASE @` / `BASE !` round-trip the radix.
+        self.base_addr = HEAP_SIZE_BYTES - 16
+        inner.cell_store(self.base_addr, inner.base)
 
         # Position of a DOES> body within the definition currently compiling
         # (-1 = none). At finalize this body is sliced into a standalone thread
@@ -77,9 +84,6 @@ class OuterInterpreter(object):
         # redefinition instead installs a fresh Word, leaving earlier references
         # (e.g. the process chain in cd16sim) pointing at the prior definition.
         self.current_predefined = False
-
-        # BASE variable address
-        self.base_addr = 0  # Will be set after initialization
 
         self.reset_code()
 
@@ -237,16 +241,35 @@ class OuterInterpreter(object):
             return o - 87
         return -1
 
+    def _prefix_base(self, s):
+        """Recognize gforth number-prefix specifiers that override BASE: '$' hex,
+        '#' decimal, '%' binary. Returns the effective base, or the passed-in
+        default when there is no prefix."""
+        if len(s) == 0:
+            return -1, 0
+        c = s[0]
+        if c == '$':
+            return 16, 1
+        if c == '#':
+            return 10, 1
+        if c == '%':
+            return 2, 1
+        return 0, 0
+
     def _is_number_base(self, s, base):
-        """True if s is an integer literal in the given base (leading '-' ok)."""
+        """True if s is an integer literal in the given base (leading '-' ok).
+        A leading '$'/'#'/'%' prefix overrides the base (gforth specifiers)."""
         length = len(s)
         if length == 0:
             return False
-        start_idx = 0
-        if s[0] == '-':
-            start_idx = 1
-            if length == 1:
-                return False
+        pbase, pskip = self._prefix_base(s)
+        if pbase > 0:
+            base = pbase
+        start_idx = pskip
+        if start_idx < length and s[start_idx] == '-':
+            start_idx += 1
+        if start_idx >= length:
+            return False
         for i in range(start_idx, length):
             d = self._digit_value(s[i])
             if d < 0 or d >= base:
@@ -254,12 +277,15 @@ class OuterInterpreter(object):
         return True
 
     def _to_number_base(self, s, base):
-        sign = 1
-        start_idx = 0
         length = len(s)
-        if s[0] == '-':
+        pbase, pskip = self._prefix_base(s)
+        if pbase > 0:
+            base = pbase
+        sign = 1
+        start_idx = pskip
+        if start_idx < length and s[start_idx] == '-':
             sign = -1
-            start_idx = 1
+            start_idx += 1
         n = 0
         for i in range(start_idx, length):
             n = n * base + self._digit_value(s[i])
@@ -411,12 +437,23 @@ class OuterInterpreter(object):
             parts.append(t)
         return ' '.join(parts), i
 
+    def _next_string_occurrence(self, start_token):
+        n = self.string_token_counts.get(start_token, 0)
+        self.string_token_counts[start_token] = n + 1
+        return n
+
+    def _copy_string_counts(self):
+        d = {}
+        for k in self.string_token_counts:
+            d[k] = self.string_token_counts[k]
+        return d
+
     def _handle_s_quote(self, toks, i, start_token):
         """Handle S" / s" - parse a string. In interpret mode push ( c-addr u );
         in compile mode allocate the buffer now and emit two literals so the
         compiled word pushes the same pair at runtime."""
-        parsed_str = self._parse_string_at_occurrence(start_token, self.string_token_count)
-        self.string_token_count += 1
+        parsed_str = self._parse_string_at_occurrence(
+            start_token, self._next_string_occurrence(start_token))
         i = self._skip_tokens_until_quote(toks, i)
         size = len(parsed_str)
         c_addr = self.inner.alloc_buf(parsed_str, size)
@@ -430,8 +467,8 @@ class OuterInterpreter(object):
 
     def _handle_dot_quote(self, toks, i, start_token):
         """Handle ." / ." - parse string and print or compile."""
-        parsed_str = self._parse_string_at_occurrence(start_token, self.string_token_count)
-        self.string_token_count += 1
+        parsed_str = self._parse_string_at_occurrence(
+            start_token, self._next_string_occurrence(start_token))
         i = self._skip_tokens_until_quote(toks, i)
         w_str = W_StringObject(parsed_str)
         if self.state == INTERPRET:
@@ -647,14 +684,14 @@ class OuterInterpreter(object):
         f.close()
         saved_buf = self.source_buffer
         saved_idx = self.source_index
-        saved_cnt = self.string_token_count
+        saved_cnt = self._copy_string_counts()
         saved_toks = self.toks
         saved_cur = self.inner.cell_fetch_int(self.to_in_addr)
         for line in content.split('\n'):
             self.interpret_line(line)
         self.source_buffer = saved_buf
         self.source_index = saved_idx
-        self.string_token_count = saved_cnt
+        self.string_token_counts = saved_cnt
         self.toks = saved_toks
         self.inner.cell_store(self.to_in_addr, saved_cur)
 
@@ -731,12 +768,14 @@ class OuterInterpreter(object):
         return True
 
     def _compile_then(self):
-        """Compile THEN."""
+        """Compile THEN. Resolves the forward branch left by IF/ELSE, or by a
+        WHILE whose loop was closed with UNTIL (BEGIN ... WHILE ... UNTIL THEN)."""
         if not self.ctrl:
             print "THEN without IF/ELSE"
             return False
         entry = self.ctrl.pop()
-        if entry.kind != CTRL_IF and entry.kind != CTRL_ELSE:
+        if (entry.kind != CTRL_IF and entry.kind != CTRL_ELSE
+                and entry.kind != CTRL_WHILE):
             print "THEN without IF/ELSE"
             return False
         self._patch_here(entry.index)
@@ -835,11 +874,30 @@ class OuterInterpreter(object):
         return True
 
     def _compile_until(self):
-        """Compile UNTIL (conditional branch back to BEGIN if false)."""
+        """Compile UNTIL (conditional branch back to BEGIN if false).
+
+        Also supports BEGIN ... WHILE ... UNTIL THEN (used by fcp's >goodVar): the
+        WHILE entry sits above its BEGIN, so pop the WHILE, branch back to the
+        BEGIN, then re-push the WHILE so the following THEN resolves its forward
+        exit branch."""
         if not self.ctrl:
             print "UNTIL without BEGIN"
             return False
         entry = self.ctrl.pop()
+        if entry.kind == CTRL_WHILE:
+            if not self.ctrl:
+                print "UNTIL without BEGIN"
+                self.ctrl.append(entry)
+                return False
+            begin_entry = self.ctrl.pop()
+            if begin_entry.kind != CTRL_BEGIN:
+                print "UNTIL without BEGIN"
+                self.ctrl.append(begin_entry)
+                self.ctrl.append(entry)
+                return False
+            self._emit_with_target(self.w0BR, begin_entry.index)
+            self.ctrl.append(entry)
+            return True
         if entry.kind != CTRL_BEGIN:
             print "UNTIL without BEGIN"
             return False
@@ -1167,33 +1225,34 @@ class OuterInterpreter(object):
         else:
             self.inner.push_ds_int(-1)
 
-    # FIND ( c-addr u -- c-addr 0 | xt 1 | xt -1 )
+    def _counted_string_at(self, c_addr):
+        """Read a counted string ( length byte then chars ) at c_addr. If a buf
+        slot holds a W_StringObject there (an S"-style whole-string address), use
+        it; otherwise decode the char-memory counted string that BL WORD builds."""
+        buf_entry = self.inner.buf[c_addr]
+        if isinstance(buf_entry, W_StringObject):
+            return buf_entry.strval
+        length = self.inner.char_fetch(c_addr)
+        if length < 0:
+            length = 0
+        chars = []
+        for k in range(length):
+            chars.append(chr(self.inner.char_fetch(c_addr + 1 + k)))
+        return "".join(chars)
+
+    # FIND ( c-addr -- c-addr 0 | xt 1 | xt -1 )
     def _handle_find(self):
-        w_u = self.inner.pop_ds_int()
         w_caddr = self.inner.pop_ds_int()
-
-        # Extract string from buffer
-        ptr = w_caddr
-        buf_entry = self.inner.buf[ptr]
-        if buf_entry is not None and isinstance(buf_entry, W_StringObject):
-            name = buf_entry.strval
-        else:
-            self.inner.push_ds_int(w_caddr)
-            self.inner.push_ds_int(w_u)
-            self.inner.push_ds_int(0)
-            return
-
-        name_upper = to_upper(name)
-        word = self._lookup(name_upper)
+        name = self._counted_string_at(w_caddr)
+        word = self._lookup(to_upper(name))
         if word is not None:
             self.inner.push_ds_int(word.wid)
             if word.immediate:
-                self.inner.push_ds_int(-1)
-            else:
                 self.inner.push_ds_int(1)
+            else:
+                self.inner.push_ds_int(-1)
         else:
             self.inner.push_ds_int(w_caddr)
-            self.inner.push_ds_int(w_u)
             self.inner.push_ds_int(0)
 
     # SOURCE ( -- c-addr u )
@@ -1273,6 +1332,74 @@ class OuterInterpreter(object):
         code = [self.wLIT, self.forth_wl["(DEFER)"], self.wEXIT]
         lits = [W_IntObject(slot), ZERO, ZERO]
         self.define_colon(name, CodeThread(code, lits))
+
+    def runtime_word(self):
+        """WORD executed from a colon body: consume the next token of the line
+        being interpreted (via the shared parse cursor) and store it as a counted
+        string at HERE, leaving its address. The delimiter char is popped and
+        ignored -- tokens are already whitespace-split, which covers BL WORD."""
+        self.inner.pop_ds_int()
+        word_str = self.parse_next_token()
+        length = len(word_str)
+        addr = self.inner.here
+        self.inner.char_store(addr, length)
+        self.inner.here += 1
+        for ch in word_str:
+            self.inner.char_store(self.inner.here, ord(ch))
+            self.inner.here += 1
+        self.inner.push_ds_int(addr)
+
+    def runtime_parse(self):
+        """PARSE executed from a colon body ( char "ccc<char>" -- c-addr u ).
+        Consume the next token of the line via the shared cursor and store it in
+        char memory, returning its address and length. The token-based cursor
+        means the delimiter char is honored only as whitespace, which covers the
+        BL PARSE fcp uses."""
+        self.inner.pop_ds_int()
+        word_str = self.parse_next_token()
+        length = len(word_str)
+        addr = self.inner.here
+        for ch in word_str:
+            self.inner.char_store(self.inner.here, ord(ch))
+            self.inner.here += 1
+        self.inner.push_ds_int(addr)
+        self.inner.push_ds_int(length)
+
+    def runtime_marker(self):
+        """MARKER executed from a colon body ( "name" -- ): define a word that, on
+        execution, would forget everything defined after it. Dictionary rollback
+        is not modeled here, so the marker word is a harmless no-op -- adequate
+        for a single benchmark load."""
+        name = self.parse_next_token()
+        if name == '':
+            print "MARKER requires a name"
+            return
+        code = [self.wEXIT]
+        lits = [ZERO]
+        self.define_colon(name, CodeThread(code, lits))
+
+    def runtime_included(self):
+        """INCLUDED executed from a colon body ( c-addr u -- ). Every string is
+        byte-backed in data space (alloc_buf writes S" strings there too), so
+        the filename is always read from char memory. Loading goes through the
+        same nested source path as INCLUDE, which saves/restores the parse
+        cursor."""
+        u = self.inner.pop_ds_int()
+        c_addr = self.inner.pop_ds_int()
+        if u < 0:
+            u = 0
+        chars = []
+        for k in range(u):
+            chars.append(chr(self.inner.char_fetch(c_addr + k)))
+        self._include_file("".join(chars))
+
+    def runtime_find(self):
+        """FIND executed from a colon body ( c-addr -- c-addr 0 | xt 1 | xt -1 )."""
+        self._handle_find()
+
+    def runtime_base(self):
+        """BASE executed from a colon body ( -- a-addr )."""
+        self._handle_base()
 
     def runtime_tick(self):
         name = self.parse_next_token()
@@ -1355,12 +1482,12 @@ class OuterInterpreter(object):
         buf_str = self.inner.buf[c_addr]
         assert isinstance(buf_str, W_StringObject)
         saved_buf = self.source_buffer
-        saved_cnt = self.string_token_count
+        saved_cnt = self._copy_string_counts()
         saved_toks = self.toks
         saved_cur = self.inner.cell_fetch_int(self.to_in_addr)
         self.interpret_line(buf_str.strval)
         self.source_buffer = saved_buf
-        self.string_token_count = saved_cnt
+        self.string_token_counts = saved_cnt
         self.toks = saved_toks
         self.inner.cell_store(self.to_in_addr, saved_cur)
 
@@ -1460,13 +1587,13 @@ class OuterInterpreter(object):
 
     # BASE ( -- a-addr )
     def _handle_base(self):
-        """Return address of BASE variable."""
-        if self.base_addr == 0:
-            # Allocate a cell for BASE
-            self.base_addr = self.inner.here
-            self.inner.here += self.inner.cell_size_bytes
-        # Store the current base at that address
-        self.inner.cell_store(self.base_addr, self.inner.base)
+        """Return the address of the BASE variable ( -- a-addr ). The cell is the
+        source of truth (HEX/DECIMAL/BASE! and a direct `BASE !` all write it), so
+        adopt it into inner.base -- which drives number parsing -- before handing
+        out the address for a following `BASE @` / `BASE !`."""
+        cell_val = self.inner.cell_fetch_int(self.base_addr)
+        if cell_val >= 2:
+            self.inner.base = cell_val
         self.inner.push_ds_int(self.base_addr)
 
     # ABORT ( -- )
@@ -1858,7 +1985,7 @@ class OuterInterpreter(object):
         # Store the source line for SOURCE word
         self.source_buffer = line
         self.source_index = 0
-        self.string_token_count = 0  # Reset counter for each new line
+        self.string_token_counts = {}
 
         toks = split_whitespace(line)
         toks_len = len(toks)
@@ -1924,6 +2051,25 @@ class OuterInterpreter(object):
             if tup == "CHAR":
                 s, i = self._read_tok(toks, i)
                 self.inner.push_ds_int(ord(s[0]))
+                continue
+
+            # :INLINE (fcp) defines an inlining word. Its true implementation
+            # metaprograms with : PARSE SLITERAL POSTPONE EVALUATE, which needs a
+            # compilable ':'; that machinery is absent here. fcp's own profiling
+            # fallback is ': :inline : ;' -- i.e. a plain colon definition -- so
+            # treat :INLINE as ':' (structurally identical, only the inlining perf
+            # optimization is dropped). A dict stub for :INLINE is installed so
+            # fcp's [UNDEFINED] :inline guard skips its metaprogramming variant.
+            if tup == ":INLINE":
+                if i >= toks_len:
+                    print ":inline requires a name"
+                    return
+                self.current_name, i = self._read_tok(toks, i)
+                self.noname_mode = False
+                self.state = COMPILE
+                self.does_ip_mark = -1
+                self.current_predefined = False
+                self.reset_code()
                 continue
 
             # Handle ':' / ':NONAME' / ';' lexically (not as immediate words).

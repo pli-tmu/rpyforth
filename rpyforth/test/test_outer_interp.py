@@ -412,9 +412,10 @@ def test_CHAR():
     assert run_and_pop("CHAR ello") == ord('e')
 
 def test_2STORE():
+    # Standard 2!: the top cell x2 lands at a-addr, x1 at the next cell.
     inner = run("2VARIABLE buf 10 20 buf 2!")
-    assert inner.cell_fetch(0).intval == 10
-    assert inner.cell_fetch(CELL_SIZE_BYTES).intval == 20
+    assert inner.cell_fetch(0).intval == 20
+    assert inner.cell_fetch(CELL_SIZE_BYTES).intval == 10
 
 def test_s2f():
     """Test S>F (integer to float conversion)"""
@@ -577,24 +578,23 @@ def test_create_with_comma():
     assert val2.intval == 456
 
 def test_find():
-    """Test FIND - find a word in the dictionary"""
+    """Test FIND - find a word in the dictionary (standard: c-addr -- xt flag)."""
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
-    outer.interpret_line('S" DUP"')
+    outer.interpret_line('S" DUP" DROP')
     outer.interpret_line("FIND")
     flag = inner.pop_ds_int()
     xt = inner.pop_ds_int()
     assert word_from_wid(xt).name == "DUP"
-    assert flag == 1
+    assert flag == -1
 
 def test_find_not_found():
-    """Test FIND with non-existent word"""
+    """Test FIND with non-existent word (standard: leaves c-addr 0)."""
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
-    outer.interpret_line('S" NOTAWORD"')
+    outer.interpret_line('S" NOTAWORD" DROP')
     outer.interpret_line("FIND")
     flag = inner.pop_ds_int()
-    u = inner.pop_ds_int()
     caddr = inner.pop_ds_int()
     assert flag == 0
 
@@ -602,7 +602,7 @@ def test_execute():
     """Test EXECUTE - execute an execution token"""
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
-    outer.interpret_line('S" DUP"')
+    outer.interpret_line('S" DUP" DROP')
     outer.interpret_line("FIND")
     flag = inner.pop_ds_int()
     xt = inner.pop_ds_int()
@@ -619,7 +619,7 @@ def test_to_body():
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
     outer.interpret_line("VARIABLE MYVAR")
-    outer.interpret_line('S" MYVAR"')
+    outer.interpret_line('S" MYVAR" DROP')
     outer.interpret_line("FIND")
     flag = inner.pop_ds_int()
     xt = inner.pop_ds_int()

@@ -511,11 +511,18 @@ class InnerInterpreter(InterpBase, object):
         stdout.flush()
 
     def alloc_buf(self, content, size):
-        # Advance by one cell so data space stays cell-aligned for the words
-        # defined after an interpreted string literal.
+        # The string lives both as a boxed object (legacy consumers index
+        # inner.buf) and as real bytes in data space, so char-level words
+        # (MOVE, COUNT, filename assembly) see the same characters. here
+        # stays cell-aligned.
         addr = self.here
+        assert size >= 0
         self.buf[addr] = W_StringObject(content[:size])
-        self.here += CELL_SIZE_BYTES
+        i = 0
+        while i < size:
+            self.char_store(addr + i, ord(content[i]))
+            i += 1
+        self.here = (addr + size + CELL_SIZE_BYTES) & ~(CELL_SIZE_BYTES - 1)
         return addr
 
     def _ensure_addr(self, addr, span):
@@ -533,14 +540,16 @@ class InnerInterpreter(InterpBase, object):
         return self.heap.cell_fetch(addr)
 
     def cell_2store(self, addr, x1_int, x2_int):
+        """Standard 2!: x2 (the top cell) lands at addr, x1 at the next."""
         assert 0 <= addr < HEAP_SIZE_BYTES - self.cell_size_bytes
-        self.cell_store(addr, x1_int)
-        self.cell_store(addr + self.cell_size_bytes, x2_int)
+        self.cell_store(addr, x2_int)
+        self.cell_store(addr + self.cell_size_bytes, x1_int)
 
     def cell_2fetch(self, addr):
+        """Standard 2@: returns (x1, x2) with x2 (the top) taken from addr."""
         assert 0 <= addr < HEAP_SIZE_BYTES - self.cell_size_bytes
-        x1 = make_int(self.cell_fetch_int(addr))
-        x2 = make_int(self.cell_fetch_int(addr + self.cell_size_bytes))
+        x1 = make_int(self.cell_fetch_int(addr + self.cell_size_bytes))
+        x2 = make_int(self.cell_fetch_int(addr))
         return x1, x2
 
     def char_store(self, addr, intval):
@@ -548,6 +557,14 @@ class InnerInterpreter(InterpBase, object):
 
     def char_fetch(self, addr):
         return self.heap.char_fetch(addr)
+
+    def set_base(self, n):
+        """Set the conversion radix and mirror it into the BASE cell so `BASE @`
+        reads the current value. Keeps HEX/DECIMAL/etc. in step with the cell that
+        Forth code manipulates through @ / !."""
+        self.base = n
+        if self.outer is not None:
+            self.cell_store(self.outer.base_addr, n)
 
     def float_store(self, addr, value):
         self.heap.float_store(addr, value)

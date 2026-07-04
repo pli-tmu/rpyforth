@@ -794,6 +794,11 @@ def prim_STORE(inner, cur, ip):
     addr = inner.pop_ds_int()
     val = inner.pop_ds_int()
     inner.cell_store(addr, val)
+    # A store to the sentinel BASE cell also drives the parsing radix, so
+    # `BASE !` takes effect immediately (storage semantics for ordinary
+    # addresses are unchanged).
+    if inner.outer is not None and addr == inner.outer.base_addr and val >= 2:
+        inner.base = val
     return ip
 
 
@@ -1025,35 +1030,35 @@ def prim_BASE_FETCH(inner, cur, ip):
 def prim_BASE_STORE(inner, cur, ip):
     """GForth core 2012: set the conversion base to u."""
     u = inner.pop_ds_int()
-    inner.base = u
+    inner.set_base(u)
     return ip
 
 
 # DECIMAL ( -- )
 def prim_DECIMAL(inner, cur, ip):
     """GForth core 2012: set BASE to decimal (radix 10)."""
-    inner.base = 10
+    inner.set_base(10)
     return ip
 
 
 # HEX ( -- )
 def prim_HEX(inner, cur, ip):
     """GForth core 2012: set BASE to hexadecimal (radix 16)."""
-    inner.base = 16
+    inner.set_base(16)
     return ip
 
 
 # OCTAL ( -- )
 def prim_OCTAL(inner, cur, ip):
     """GForth core 2012: set BASE to octal (radix 8)."""
-    inner.base = 8
+    inner.set_base(8)
     return ip
 
 
 # BINARY ( -- )
 def prim_BINARY(inner, cur, ip):
     """GForth core 2012: set BASE to binary (radix 2)."""
-    inner.base = 2
+    inner.set_base(2)
     return ip
 
 
@@ -1153,9 +1158,22 @@ def prim_NUMGREATER(inner, cur, ip):
 # TYPE ( c-addr u -- )
 @dont_look_inside
 def prim_TYPE(inner, cur, ip):
-    """GForth core 2012: display the character string."""
-    w_s = inner.pop_ds()
-    inner.print_str(w_s)
+    """GForth core 2012: display the character string. Two calling forms coexist:
+    ." / S" (in the boxed path) leave a W_StringObject on the object stack; ANS
+    code (e.g. brainless load-part) leaves ( c-addr u ) on the int stack pointing
+    at char memory. Prefer the boxed object when present, else read u chars."""
+    if inner.ds_ptr_locals > 0:
+        w_s = inner.pop_ds()
+        inner.print_str(w_s)
+        return ip
+    u = inner.pop_ds_int()
+    c_addr = inner.pop_ds_int()
+    if u < 0:
+        u = 0
+    chars = []
+    for k in range(u):
+        chars.append(chr(inner.char_fetch(c_addr + k)))
+    inner.print_str(W_StringObject("".join(chars)))
     return ip
 
 
@@ -1308,6 +1326,30 @@ def prim_UDOTR(inner, cur, ip):
     stdout.write(num_str)
     stdout.flush()
     return ip
+
+# .R ( n1 n2 -- ) -- display signed n1 right-justified in an n2-character field.
+@dont_look_inside
+def prim_DOTR(inner, cur, ip):
+    n = inner.pop_ds_int()
+    x = inner.pop_ds_int()
+    num_str = str(x)
+    stdin, stdout, stderr = create_stdio()
+    pad = n - len(num_str)
+    if pad > 0:
+        stdout.write(' ' * pad)
+    stdout.write(num_str)
+    stdout.flush()
+    return ip
+
+
+# KEY? ( -- flag ) -- true if a character is available at the input device. The
+# batch driver has no interactive terminal, so report none available (fcp only
+# uses KEY? to poll for an interrupt while searching).
+@dont_look_inside
+def prim_KEY_QUESTION(inner, cur, ip):
+    inner.push_ds_int(0)
+    return ip
+
 
 # CodeThread-aware primitives
 
@@ -1645,6 +1687,80 @@ def prim_TICK(inner, cur, ip):
     return ip
 
 
+# WORD ( char "<chars>ccc<char>" -- c-addr ) -- parse the next token off the input
+# line and store it as a counted string. Executable inside a colon body (brainless
+# load-part does BL WORD at runtime).
+def prim_WORD(inner, cur, ip):
+    inner.outer.runtime_word()
+    return ip
+
+
+# INCLUDED ( c-addr u -- ) -- load a source file named by the string. Executable
+# inside a colon body (brainless load-part includes files at runtime).
+def prim_INCLUDED(inner, cur, ip):
+    inner.outer.runtime_included()
+    return ip
+
+
+# PARSE ( char "ccc<char>" -- c-addr u ) -- parse the next token off the input
+# line. Executable inside a colon body (fcp FEN uses BL PARSE).
+def prim_PARSE(inner, cur, ip):
+    inner.outer.runtime_parse()
+    return ip
+
+
+# MARKER ( "name" -- ) -- define a dictionary marker (no-op forget here).
+def prim_MARKER(inner, cur, ip):
+    inner.outer.runtime_marker()
+    return ip
+
+
+# QUIT ( -- ) -- abandon the current activity and return to the interpreter.
+# Executable inside a colon body (fcp's think aborts with QUIT). Clears the
+# stacks and unwinds via Abort, which the outer interpreter catches.
+def prim_QUIT(inner, cur, ip):
+    inner.reset_ds_int()
+    inner.ds_ptr_floats = 0
+    inner.ds_ptr_locals = 0
+    inner.rs_ptr = 0
+    inner.lc_depth = 0
+    inner.cs_ptr = 0
+    inner.catch_ptr = 0
+    inner.outer.state = 0  # INTERPRET
+    raise Abort
+    return ip
+
+
+# FIND ( c-addr -- c-addr 0 | xt 1 | xt -1 ) -- look up a counted string in the
+# dictionary. Executable inside a colon body (fcp's [UNDEFINED]/[DEFINED]).
+def prim_FIND(inner, cur, ip):
+    inner.outer.runtime_find()
+    return ip
+
+
+# BASE ( -- a-addr ) -- address of the radix variable. Executable inside a colon
+# body (fcp saves/restores BASE around hex move-string parsing).
+def prim_BASE(inner, cur, ip):
+    inner.outer.runtime_base()
+    return ip
+
+
+# UNUSED ( -- u ) -- remaining free dictionary space, in address units.
+def prim_UNUSED(inner, cur, ip):
+    remaining = HEAP_SIZE_BYTES - inner.here
+    if remaining < 0:
+        remaining = 0
+    inner.push_ds_int(remaining)
+    return ip
+
+
+# :INLINE ( -- ) -- dict stub so fcp's [UNDEFINED] :inline guard reports it as
+# defined. The actual defining behavior is handled lexically in interpret_line
+# (treated as a plain colon), so this body is never executed.
+def prim_INLINE_STUB(inner, cur, ip):
+    return ip
+
+
 # COUNT ( c-addr1 -- c-addr2 u ) -- read the length byte of a counted string.
 def prim_COUNT(inner, cur, ip):
     c_addr1 = inner.pop_ds_int()
@@ -1758,11 +1874,12 @@ def prim_PLUSSTORE(inner, cur, ip):
 
 # 2@ ( a-addr -- x1 x2 )
 def prim_2FETCH(inner, cur, ip):
-    """GForth core 2012: fetch the cell pair stored at a-addr."""
+    """GForth core 2012: fetch the cell pair at a-addr (x2, the top, comes
+    from a-addr; x1 from the next cell)."""
     addr = inner.pop_ds_int()
     addr2 = addr + inner.cell_size_bytes
-    inner.push_ds_int(inner.cell_fetch_int(addr))
     inner.push_ds_int(inner.cell_fetch_int(addr2))
+    inner.push_ds_int(inner.cell_fetch_int(addr))
     return ip
 
 
@@ -2993,6 +3110,8 @@ def install_primitives(outer):
     outer.define_prim("KEY", prim_KEY)
     outer.define_prim("ACCEPT", prim_ACCEPT)
     outer.define_prim("U.R", prim_UDOTR)
+    outer.define_prim(".R", prim_DOTR)
+    outer.define_prim("KEY?", prim_KEY_QUESTION)
 
     # memory management
     outer.define_prim("!", prim_STORE)
@@ -3128,6 +3247,16 @@ def install_primitives(outer):
     outer.define_prim("CREATE", prim_CREATE)
     outer.define_prim("DEFER", prim_DEFER)
     outer.define_prim("'", prim_TICK)
+    outer.define_prim("WORD", prim_WORD)
+    outer.define_prim("PARSE", prim_PARSE)
+    outer.define_prim("MARKER", prim_MARKER)
+    outer.define_prim("QUIT", prim_QUIT)
+    outer.define_prim("FIND", prim_FIND)
+    outer.define_prim("BASE", prim_BASE)
+    outer.define_prim("UNUSED", prim_UNUSED)
+    outer.define_prim(":INLINE", prim_INLINE_STUB)
+    outer.define_prim("INCLUDED", prim_INCLUDED)
+    outer.define_prim("REQUIRED", prim_INCLUDED)
     outer.define_prim(">IN", prim_TO_IN)
     outer.define_prim("EVALUATE", prim_EVALUATE)
     outer.define_prim("COUNT", prim_COUNT)
