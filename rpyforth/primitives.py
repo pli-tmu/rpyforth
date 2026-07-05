@@ -986,16 +986,17 @@ def prim_QDO_RUNTIME(inner, cur, ip):
 
 
 # (LOOP) ( -- ) ( R: limit counter -- limit counter+1 | )
+# Promoting variant: emitted by the compiler only when the DO limit came from a
+# compile-time literal (e.g. "10 0 DO" or "NUM 0 DO" where NUM is a CONSTANT).
+# Promoting a literal limit folds the exit compare, making the tight literal-bound
+# nests (nestedloop/matrix) ~40% faster. Loops whose limit is computed at runtime
+# get (LOOPNP) instead, so a distinct limit per activation does not storm bridges.
 def prim_LOOP_RUNTIME(inner, cur, ip):
-    # Use dedicated integer loop stack - no object allocation!
-    # Counted DO..LOOP limits are almost always literals: promoting folds the
-    # exit compare in nested loops (nestedloop/matrix are ~40% faster with it).
     counter_val = inner.peek_loop_counter(0)
     limit_val = promote(inner.peek_loop_limit(0))
     new_counter_val = counter_val + 1
 
     if new_counter_val < limit_val:
-        # Continue loop: update counter in place (raw int, no allocation)
         inner.set_loop_counter(0, new_counter_val)
         origin_ip = ip - 1
         target = promote(cur.lits[origin_ip])
@@ -1004,7 +1005,29 @@ def prim_LOOP_RUNTIME(inner, cur, ip):
         ip = target_ip
         _maybe_enter_jit(inner, target_ip, origin_ip, cur)
     else:
-        # Loop done: pop from loop stack
+        inner.pop_loop()
+    return ip
+
+
+# (LOOPNP) ( -- ) ( R: limit counter -- limit counter+1 | )
+# Non-promoting variant of (LOOP): identical semantics, but the limit stays a
+# plain runtime red value. Emitted when the DO limit is computed at runtime (e.g.
+# brainless's variable board dimensions), where a promoted limit would fail its
+# guard_value on every distinct limit and spawn a bridge per loop activation.
+def prim_LOOPNP_RUNTIME(inner, cur, ip):
+    counter_val = inner.peek_loop_counter(0)
+    limit_val = inner.peek_loop_limit(0)
+    new_counter_val = counter_val + 1
+
+    if new_counter_val < limit_val:
+        inner.set_loop_counter(0, new_counter_val)
+        origin_ip = ip - 1
+        target = promote(cur.lits[origin_ip])
+        assert isinstance(target, W_IntObject)
+        target_ip = promote(target.intval)
+        ip = target_ip
+        _maybe_enter_jit(inner, target_ip, origin_ip, cur)
+    else:
         inner.pop_loop()
     return ip
 
@@ -3387,6 +3410,7 @@ def install_primitives(outer):
     outer.define_prim("(DO)", prim_DO_RUNTIME)
     outer.define_prim("(?DO)", prim_QDO_RUNTIME)
     outer.define_prim("(LOOP)", prim_LOOP_RUNTIME)
+    outer.define_prim("(LOOPNP)", prim_LOOPNP_RUNTIME)
     outer.define_prim("(+LOOP)", prim_PLUSLOOP_RUNTIME)
     outer.define_prim("UNLOOP", prim_UNLOOP)
     outer.define_prim("LEAVE", prim_LEAVE)

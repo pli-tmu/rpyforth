@@ -77,6 +77,7 @@ class CtrlEntry(object):
         self.kind = kind    # int: CTRL_IF, CTRL_ELSE, or CTRL_DO
         self.index = index  # int: position in scurrent_code for patching
         self.leave_addrs = []  # list of LEAVE positions to patch (for DO loops)
+        self.limit_is_literal = False  # True when a DO limit came from a compile-time literal
 
 
 class CompContext(object):
@@ -97,7 +98,7 @@ class CompContext(object):
 
 
 class OuterInterpreter(object):
-    _immutable_fields_ = ['wBR', 'w0BR', 'wLIT', 'wEXIT', 'wDO', 'wQDO', 'wLOOP', 'wPLUSLOOP', 'wLEAVE', 'wTYPE', 'wUNLOOP', 'wABORTQUOTE']
+    _immutable_fields_ = ['wBR', 'w0BR', 'wLIT', 'wEXIT', 'wDO', 'wQDO', 'wLOOP', 'wLOOPNP', 'wPLUSLOOP', 'wLEAVE', 'wTYPE', 'wUNLOOP', 'wABORTQUOTE']
 
     def __init__(self, inner):
         self.inner = inner
@@ -182,6 +183,7 @@ class OuterInterpreter(object):
         self.wDO = self.dict["(DO)"]
         self.wQDO = self.dict["(?DO)"]
         self.wLOOP = self.dict["(LOOP)"]
+        self.wLOOPNP = self.dict["(LOOPNP)"]
         self.wPLUSLOOP = self.dict["(+LOOP)"]
         self.wUNLOOP = self.dict["UNLOOP"]
         self.wLEAVE = self.dict["LEAVE"]
@@ -881,20 +883,40 @@ class OuterInterpreter(object):
         self._patch_here(entry.index)
         return True
 
+    def _do_limit_is_literal(self):
+        """True when the DO limit about to be consumed came from a compile-time
+        literal. The DO stack effect is ( limit start -- ), so the two most
+        recently emitted code cells are the pushes for `limit` (deeper) and
+        `start` (top). When both are LIT, each pushed exactly one value, so the
+        limit is unambiguously the literal two cells back. Requiring both to be
+        LIT keeps this sound: if `start` is a multi-cell word we cannot know the
+        limit's stack position, so we conservatively report False (correctness is
+        unaffected; only the promote fast path is skipped). CONSTANTs compile to a
+        LIT via _value_word_literal, so `NUM 0 DO` counts as literal too."""
+        if self.cc_ptr < 2:
+            return False
+        return (self.current_code[self.cc_ptr - 1] is self.wLIT and
+                self.current_code[self.cc_ptr - 2] is self.wLIT)
+
     def _compile_do(self):
         """Compile DO."""
+        limit_is_literal = self._do_limit_is_literal()
         self._emit_word(self.wDO)
         do_body_start = self.cc_ptr
-        self.ctrl.append(CtrlEntry(CTRL_DO, do_body_start))
+        entry = CtrlEntry(CTRL_DO, do_body_start)
+        entry.limit_is_literal = limit_is_literal
+        self.ctrl.append(entry)
 
     def _compile_qdo(self):
         """Compile ?DO. Like DO, but emits a forward branch (patched to the loop
         end by LOOP/+LOOP) taken at runtime when limit == start."""
+        limit_is_literal = self._do_limit_is_literal()
         qdo_addr = self.cc_ptr
         self._emit_with_target(self.wQDO, 0)
         do_body_start = self.cc_ptr
         entry = CtrlEntry(CTRL_DO, do_body_start)
         entry.leave_addrs.append(qdo_addr)
+        entry.limit_is_literal = limit_is_literal
         self.ctrl.append(entry)
 
     def _compile_loop(self):
@@ -906,7 +928,10 @@ class OuterInterpreter(object):
         if entry.kind != CTRL_DO:
             print "LOOP without DO"
             return False
-        self._emit_with_target(self.wLOOP, entry.index)
+        if entry.limit_is_literal:
+            self._emit_with_target(self.wLOOP, entry.index)
+        else:
+            self._emit_with_target(self.wLOOPNP, entry.index)
         loop_end = self.cc_ptr
         for leave_addr in entry.leave_addrs:
             self.current_lits[leave_addr] = W_IntObject(loop_end)
@@ -1177,7 +1202,8 @@ class OuterInterpreter(object):
             cw = code[i]
             if (cw is self.wEXIT or cw is self.wBR or cw is self.w0BR or
                     cw is self.wDO or cw is self.wQDO or cw is self.wLOOP or
-                    cw is self.wPLUSLOOP or cw is self.wLEAVE or cw is self.wUNLOOP):
+                    cw is self.wLOOPNP or cw is self.wPLUSLOOP or
+                    cw is self.wLEAVE or cw is self.wUNLOOP):
                 return None
             i += 1
         return thread
@@ -2539,7 +2565,7 @@ class OuterInterpreter(object):
         for idx in range(len(dcode)):
             w = dcode[idx]
             if (w is self.wBR or w is self.w0BR or w is self.wLOOP
-                    or w is self.wPLUSLOOP or w is self.wQDO):
+                    or w is self.wLOOPNP or w is self.wPLUSLOOP or w is self.wQDO):
                 lit = dlits[idx]
                 if isinstance(lit, W_IntObject):
                     new_target = lit.intval - mark
@@ -2624,7 +2650,7 @@ class OuterInterpreter(object):
         """True for words whose literal is an instruction index in the current
         thread (must be relocated when code is spliced)."""
         return (w is self.wBR or w is self.w0BR or w is self.wQDO or
-                w is self.wLOOP or w is self.wPLUSLOOP)
+                w is self.wLOOP or w is self.wLOOPNP or w is self.wPLUSLOOP)
 
     def _inline_self_calls(self, code, lits, selfword):
         """Splice one copy of the body into each non-tail self-call site, so a
