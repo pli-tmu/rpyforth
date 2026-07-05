@@ -1,5 +1,42 @@
 from rpython.rlib.jit import unroll_safe
 
+
+def _is_space(ch):
+    return (ch == ' ' or ch == '\t' or ch == '\n' or ch == '\r' or
+            ch == '\v' or ch == '\f')
+
+
+# Words that open a string literal terminated by '"'. Inside such a literal a
+# backslash or paren is ordinary string content, not a comment, so comment
+# removal must copy the literal verbatim up to the closing quote.
+_QUOTE_STRING_WORDS = {
+    'S"': True, 'C"': True, '."': True, 'ABORT"': True, 'S\\"': True,
+}
+
+
+def _delim_ahead(line, we, delim):
+    """True if the closing delimiter appears at/after position we. we is the end
+    of the opening word (the following char is the single delimiter space)."""
+    j = we
+    n = len(line)
+    while j < n:
+        if line[j] == delim:
+            return True
+        j += 1
+    return False
+
+
+def _quote_word_upper(word):
+    out = ''
+    for i in range(len(word)):
+        o = ord(word[i])
+        if o >= 97 and o <= 122:
+            out += chr(o - 32)
+        else:
+            out += word[i]
+    return out
+
+
 @unroll_safe
 def to_upper(s):
     out = ''
@@ -42,11 +79,52 @@ def remove_comments_stateful(line, depth):
 
     while i < n:
         ch = line[i]
+        at_word_start = i == 0 or _is_space(line[i-1])
+
+        # At a word boundary, check whether this word opens a string literal
+        # ('"'-terminated, e.g. S" ." ABORT") or a .( print. Inside such a literal
+        # a '\' or '(' is ordinary content, so copy it verbatim to the closing
+        # delimiter rather than treating it as a comment.
+        if at_word_start and not _is_space(ch):
+            we = i
+            while we < n and not _is_space(line[we]):
+                we += 1
+            word = line[i:we]
+            wu = _quote_word_upper(word)
+            if wu == '.(' and _delim_ahead(line, we, ')'):
+                # Copy the word, then everything up to and including the ')'.
+                while i < n and line[i] != ')':
+                    result += line[i]
+                    i += 1
+                if i < n:  # include the ')'
+                    result += line[i]
+                    i += 1
+                continue
+            # Only treat S" ." ABORT" etc as a string opener when a closing quote
+            # actually follows on this line. Without one the token is plain data
+            # (lexex lexinput.fth: `symbol ."` names the Forth word ." as a lexer
+            # keyword), so let normal '\' comment stripping apply.
+            if wu in _QUOTE_STRING_WORDS and _delim_ahead(line, we, '"'):
+                # Copy the word plus one delimiter space, then the string body up
+                # to and including the closing '"'.
+                j = we
+                result += word
+                if j < n:  # the single delimiter space after the word
+                    result += line[j]
+                    j += 1
+                while j < n and line[j] != '"':
+                    result += line[j]
+                    j += 1
+                if j < n:  # include the closing quote
+                    result += line[j]
+                    j += 1
+                i = j
+                continue
 
         # Handle backslash comment - rest of line is ignored
         if ch == '\\':
             # Check if it's actually a backslash comment (needs space before or at start)
-            if i == 0 or line[i-1] in ' \t\n\r\v\f':
+            if at_word_start:
                 break  # Skip rest of line
 
         # Handle parenthetical comment. '(' opens a comment only when it stands
@@ -54,7 +132,7 @@ def remove_comments_stateful(line, depth):
         # end of line) after it. This leaves paren-named words like (checkTime)
         # or (mv) -- where '(' is glued to the name -- intact.
         if ch == '(':
-            before_ok = i == 0 or line[i-1] in ' \t\n\r\v\f'
+            before_ok = at_word_start
             after_ok = i + 1 >= n or line[i+1] in ' \t\n\r\v\f'
             if before_ok and after_ok:
                 # ANS ( does not nest: scan to the first ')'.

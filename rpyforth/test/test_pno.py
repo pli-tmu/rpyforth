@@ -10,10 +10,15 @@ def run(line):
 
 
 def pno_result(line):
+    # #> now returns an ANS ( c-addr u ) pair in char memory.
     inner = run(line)
-    w = inner.pop_ds()
+    u = inner.pop_ds_int()
+    c_addr = inner.pop_ds_int()
     assert inner.depth_ds_int() == 0, "leaked %d int cells" % inner.depth_ds_int()
-    return w.strval
+    chars = []
+    for k in range(u):
+        chars.append(chr(inner.char_fetch(c_addr + k)))
+    return "".join(chars)
 
 
 def test_numsign_extracts_from_low_cell():

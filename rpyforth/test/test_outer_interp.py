@@ -816,18 +816,24 @@ def test_word_count():
 # Pictured Numeric Output Tests
 
 def test_PNO():
-    # #S expects double-cell number (ud.lo ud.hi), so push 0 as high-order cell
+    # #S expects double-cell number (ud.lo ud.hi), so push 0 as high-order cell.
+    # #> returns an ANS ( c-addr u ) pair in char memory.
     def run_and_pop(line):
         inner = InnerInterpreter()
         outer = OuterInterpreter(inner)
         outer.interpret_line(line)
-        return inner.pop_ds()
-    assert run_and_pop("DECIMAL  12345 0 <# #S #>").strval == '12345'
+        u = inner.pop_ds_int()
+        c_addr = inner.pop_ds_int()
+        chars = []
+        for k in range(u):
+            chars.append(chr(inner.char_fetch(c_addr + k)))
+        return "".join(chars)
+    assert run_and_pop("DECIMAL  12345 0 <# #S #>") == '12345'
     # In HEX base the literal 255 is hex 0x255, printed back as "255" (matches
     # gforth). Use a decimal magnitude to exercise hex digit output.
-    assert run_and_pop("HEX      0FF 0   <# #S #>").strval == 'FF'
+    assert run_and_pop("HEX      0FF 0   <# #S #>") == 'FF'
     # 5 is not a binary digit; take the magnitude in decimal, then format binary.
-    assert run_and_pop("DECIMAL 5 0  BINARY  <# #S #>").strval == '101'
+    assert run_and_pop("DECIMAL 5 0  BINARY  <# #S #>") == '101'
 
 
 def test_sign_negative():
@@ -846,17 +852,21 @@ def test_sign_positive():
     outer = OuterInterpreter(inner)
     # Use SIGN with a positive number
     outer.interpret_line("<# 1 SIGN 123 0 #S #>")
-    result = inner.pop_ds()
-    result.strval == '123'
+    u = inner.pop_ds_int()
+    c_addr = inner.pop_ds_int()
+    chars = [chr(inner.char_fetch(c_addr + k)) for k in range(u)]
+    assert "".join(chars) == '123'
 
 def test_sign_in_pno():
     """Test SIGN within pictured numeric output"""
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
-    # Complete PNO example with SIGN
+    # Complete PNO example with SIGN. #> now yields ( c-addr u ) ints.
     outer.interpret_line("<# -5 SIGN 0 0 #>")
-    w_str = inner.pop_ds()
-    assert isinstance(w_str, W_StringObject)
+    u = inner.pop_ds_int()
+    c_addr = inner.pop_ds_int()
+    chars = [chr(inner.char_fetch(c_addr + k)) for k in range(u)]
+    assert "".join(chars) == '-'
 
 # System Tests
 

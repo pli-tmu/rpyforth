@@ -1554,6 +1554,26 @@ class OuterInterpreter(object):
             lits = [W_IntObject(addr), ZERO, ZERO]
         self.define_colon(name, CodeThread(code, lits))
 
+    def runtime_does(self, does_word):
+        """(DOES>) executed at the point DOES> appears in a defining word. Rebind
+        the most recently defined (CREATEd) word so it pushes its data-field
+        address and then runs does_word. This covers the DOES>-only idiom where a
+        word without its own CREATE patches a separately CREATEd word (lexex
+        lexarrays.fth: 1darray). Idempotent for the in-word CREATE ... DOES> case,
+        where CREATE has already bound does_word."""
+        if does_word is None:
+            return
+        w = self.last_word
+        if w is None:
+            return
+        old = w.thread
+        if old is None:
+            return
+        addr_lit = old.lits[0]
+        code = [self.wLIT, does_word, self.wEXIT]
+        lits = [addr_lit, ZERO, ZERO]
+        w.thread = CodeThread(code, lits)
+
     def runtime_defer(self):
         name = self.parse_next_token()
         if name == '':
@@ -2326,7 +2346,10 @@ class OuterInterpreter(object):
         if tkey == "DOES>":
             # End the CREATE portion, then mark where the DOES> body begins. The
             # body (up to the trailing EXIT) becomes the runtime action bound to
-            # each child word by CREATE.
+            # each child word by CREATE. (DOES>) rebinds the most recent CREATEd
+            # word at runtime, covering the DOES>-only idiom where the defining
+            # word has no CREATE of its own (lexex 1darray).
+            self._emit_word(self.forth_wl["(DOES>)"])
             self._emit_word(self.wEXIT)
             self.does_ip_mark = self.cc_ptr
             return True, i, False

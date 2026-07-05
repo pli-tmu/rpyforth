@@ -1218,7 +1218,11 @@ def prim_SIGN(inner, cur, ip):
 
 # #> ( xd -- c-addr u )
 def prim_NUMGREATER(inner, cur, ip):
-    """GForth core 2012: finish pictured numeric output and deliver the string."""
+    """GForth core 2012: finish pictured numeric output and deliver the string as
+    ( c-addr u ). The digits are materialized in char memory so downstream ANS
+    code can do length arithmetic (lexex savetables.fth writeNumber.R) and hand
+    the pair to WRITE-FILE. alloc_buf also registers a buf slot, so the boxed-
+    string consumers (TYPE, S"-style) keep seeing the same characters."""
     if not inner._pno_active:
         inner.print_str(W_StringObject("#> outside <# #>"))
         return ip
@@ -1226,7 +1230,9 @@ def prim_NUMGREATER(inner, cur, ip):
     inner.pop_ds_int()
     s = "".join(inner._pno_buf)
     inner._pno_active = False
-    inner.push_ds(W_StringObject(s))
+    c_addr = inner.alloc_buf(s, len(s))
+    inner.push_ds_int(c_addr)
+    inner.push_ds_int(len(s))
     return ip
 
 
@@ -1902,6 +1908,15 @@ def prim_VARIABLE(inner, cur, ip):
 # had a DOES>, its body (carried on cur.does_word) becomes the child's action.
 def prim_CREATE(inner, cur, ip):
     inner.outer.runtime_create(cur.does_word)
+    return ip
+
+
+# (DOES>) ( -- ) -- emitted where DOES> appears in a defining word. Rebinds the
+# most recent CREATEd word to run this thread's carved DOES> body. Supports the
+# DOES>-only idiom (a word with no CREATE of its own that patches a separately
+# CREATEd word, e.g. lexex 1darray).
+def prim_DODOES(inner, cur, ip):
+    inner.outer.runtime_does(cur.does_word)
     return ip
 
 
@@ -3495,6 +3510,7 @@ def install_primitives(outer):
     outer.define_prim("FORTH-WORDLIST", prim_FORTH_WORDLIST)
     outer.define_prim("(:NONAME)", prim_BEGIN_NONAME)
     outer.define_prim("(;)", prim_END_DEF)
+    outer.define_prim("(DOES>)", prim_DODOES)
     # SLITERAL is immediate (a compiling word): POSTPONE SLITERAL emits it so it
     # runs when the enclosing word runs, compiling the string then.
     outer.define_prim("SLITERAL", prim_SLITERAL).immediate = True
