@@ -58,6 +58,49 @@ ANS-Forth compatible.
   `/usr/bin/grep` to bypass filtering.
 - zsh does not word-split unquoted vars: use `${=args}` for `--jit` params.
 
+## Operating mode (how to work — reproduce this)
+This is the working style expected on this project. Follow it as the default.
+
+### Orchestrate, don't do everything yourself
+- You are the lead. Delegate simple, mechanical, or parallelizable work to
+  subagents (Sonnet for cheap/mechanical, Opus for reasoning-heavy) and keep only
+  the conclusion — never let raw file dumps or a subagent's whole transcript into
+  your own context. Give each subagent: the exact repro, a detached-HEAD worktree,
+  the safety rules below, acceptance criteria, and "return a patch + which tests
+  you ran," not prose.
+- When investigation spans several files/programs, fan out read-only Explore/Opus
+  agents in parallel (one tool message, multiple Agent calls) and synthesize.
+- After a subagent finishes: export its diff with `rtk proxy git -C <worktree>
+  diff`, apply with `git apply -3`, run BOTH test suites yourself, then commit.
+  Never trust a subagent's "green" without re-running the suites in the main tree.
+
+### Root cause before fixes (systematic debugging)
+- No fix without a reproduced root cause. Read the error fully, reproduce it,
+  bisect. For layered failures (parser → compiler → VM → JIT) add instrumentation
+  at each boundary and let evidence point to the layer, then dig there.
+- JIT regressions: capture `PYPYLOG=jit-summary:FILE` and read abort/blackhole
+  counts; a "bad loop" storm means a green/promote/range-poison problem, not a
+  logic bug. Bisect perf with A/B builds, not guesses.
+
+### TDD and verification
+- Failing gforth-verified pytest first, then minimal code, then green. Both test
+  modes after any VM/primitive change. A perf claim requires a translated build +
+  benchmark run; untranslated timings prove nothing.
+- Serialize benchmarks (never run two heavy suites at once — CPU contention skews
+  medians), pin a core, prefer median + bootstrap CI over single runs.
+
+### Autonomy and communication
+- Act when the next step follows from the request; don't ask permission for
+  reversible work. Stop only for destructive/irreversible actions or a genuine
+  scope change. Finish the task before ending a turn — no bare "I'll do X next."
+- Report outcomes faithfully: failing tests shown, skipped steps named, done-means
+  -verified. Lead with the result, then the detail. Reply to this user in Japanese.
+
+### Housekeeping
+- Kill runaway/orphaned benchmark or probe processes (stuck gforth-fast, looping
+  probes) when you find them; they burn whole cores for days.
+- Keep the task list current (TaskUpdate) so delegated work is trackable.
+
 ## git
 - remove AI comments from source code before commits
 - keep commit messages one-line without signature
