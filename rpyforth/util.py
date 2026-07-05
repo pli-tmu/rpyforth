@@ -37,6 +37,27 @@ def _quote_word_upper(word):
     return out
 
 
+def _prev_word_is_postpone(result):
+    """True if the last whitespace-delimited word emitted so far is POSTPONE or
+    [COMPILE] (case-insensitive). Used so `POSTPONE (` names the comment word
+    rather than opening a comment. Builds the last word char by char to stay
+    clear of RPython's non-negative-slice-bound requirement."""
+    n = len(result)
+    j = n - 1
+    while j >= 0 and _is_space(result[j]):
+        j -= 1
+    # result[k] for k in (j .. first space below j] is the last word, reversed.
+    word = ''
+    while j >= 0 and not _is_space(result[j]):
+        ch = result[j]
+        o = ord(ch)
+        if o >= 97 and o <= 122:
+            ch = chr(o - 32)
+        word = ch + word
+        j -= 1
+    return word == 'POSTPONE' or word == '[COMPILE]'
+
+
 @unroll_safe
 def to_upper(s):
     out = ''
@@ -134,6 +155,13 @@ def remove_comments_stateful(line, depth):
         if ch == '(':
             before_ok = at_word_start
             after_ok = i + 1 >= n or line[i+1] in ' \t\n\r\v\f'
+            # POSTPONE ( and [COMPILE] ( name the comment word '(' rather than
+            # opening a comment (gforth compat/assert.fs: `POSTPONE (`). Preserve
+            # the '(' token in that case so the compiler can look it up.
+            if before_ok and after_ok and _prev_word_is_postpone(result):
+                result += ch
+                i += 1
+                continue
             if before_ok and after_ok:
                 # ANS ( does not nest: scan to the first ')'.
                 i += 1

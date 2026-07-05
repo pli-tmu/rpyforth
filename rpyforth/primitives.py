@@ -31,6 +31,7 @@ from rpyforth.inner_interp import (
     USE_STACK_FRAGMENT,
     CALL_SENTINEL,
 )
+from rpyforth.heap import ALLOC_BASE
 from rpyforth.metastack import push_ds_fragments
 from rpyforth.metastack_int import snapshot_cache, restore_cache
 from rpyforth.util import digit_to_char
@@ -910,6 +911,50 @@ def prim_FLOATS(inner, cur, ip):
     n = inner.pop_ds_int()
     # Each float is 8 bytes
     inner.push_ds_int(n * 8)
+    return ip
+
+
+# DFLOATS ( n1 -- n2 ) -- dfloats are 8 bytes on 64-bit (FLOATING-EXT).
+def prim_DFLOATS(inner, cur, ip):
+    n = inner.pop_ds_int()
+    inner.push_ds_int(n * 8)
+    return ip
+
+
+# SFLOATS ( n1 -- n2 ) -- sfloats are 4 bytes (FLOATING-EXT).
+def prim_SFLOATS(inner, cur, ip):
+    n = inner.pop_ds_int()
+    inner.push_ds_int(n * 4)
+    return ip
+
+
+# FALIGNED ( addr -- f-addr ) -- align to a float boundary (8 bytes here).
+def prim_FALIGNED(inner, cur, ip):
+    addr = inner.pop_ds_int()
+    remainder = addr % 8
+    if remainder != 0:
+        addr += (8 - remainder)
+    inner.push_ds_int(addr)
+    return ip
+
+
+# DFALIGNED ( addr -- dfaddr ) -- align to a dfloat boundary (8 bytes).
+def prim_DFALIGNED(inner, cur, ip):
+    addr = inner.pop_ds_int()
+    remainder = addr % 8
+    if remainder != 0:
+        addr += (8 - remainder)
+    inner.push_ds_int(addr)
+    return ip
+
+
+# SFALIGNED ( addr -- sfaddr ) -- align to an sfloat boundary (4 bytes).
+def prim_SFALIGNED(inner, cur, ip):
+    addr = inner.pop_ds_int()
+    remainder = addr % 4
+    if remainder != 0:
+        addr += (4 - remainder)
+    inner.push_ds_int(addr)
     return ip
 
 
@@ -1927,6 +1972,20 @@ def prim_VARIABLE(inner, cur, ip):
     return ip
 
 
+# 2CONSTANT ( x1 x2 "<name>" -- ) -- runtime defining word (DOUBLE). Names the
+# next token; the child word pushes x1 x2. Executable inside a colon body, which
+# is how compat/struct.fs uses it (end-struct is a 2constant-defining word).
+def prim_2CONSTANT(inner, cur, ip):
+    inner.outer.runtime_2constant()
+    return ip
+
+
+# 2VARIABLE ( "<name>" -- ) -- runtime defining word (DOUBLE-EXT).
+def prim_2VARIABLE(inner, cur, ip):
+    inner.outer.runtime_2variable()
+    return ip
+
+
 # CREATE ( "<name>" -- ) -- runtime defining word. When the enclosing definition
 # had a DOES>, its body (carried on cur.does_word) becomes the child's action.
 def prim_CREATE(inner, cur, ip):
@@ -1952,6 +2011,41 @@ def prim_DEFER(inner, cur, ip):
 # ' ( "<name>" -- xt ) -- tick, executable inside a colon body.
 def prim_TICK(inner, cur, ip):
     inner.outer.runtime_tick()
+    return ip
+
+
+# ( ( "ccc<paren>" -- ) -- the comment word, as an immediate dictionary word so
+# it can be POSTPONEd (compat/assert.fs). When executed it consumes input up to
+# and including the next ')'.
+def prim_PAREN(inner, cur, ip):
+    inner.outer.runtime_paren()
+    return ip
+
+
+# WORDLIST ( -- wid ) -- SEARCH. A prim so it works when compiled into a colon
+# body (compat/vocabulary.fs: `wordlist create ,`).
+def prim_WORDLIST(inner, cur, ip):
+    inner.outer._handle_wordlist()
+    return ip
+
+
+# GET-ORDER ( -- widn..wid1 n ) -- SEARCH.
+def prim_GET_ORDER(inner, cur, ip):
+    inner.outer._handle_get_order()
+    return ip
+
+
+# SET-ORDER ( widn..wid1 n -- ) -- SEARCH.
+def prim_SET_ORDER(inner, cur, ip):
+    inner.outer._handle_set_order()
+    return ip
+
+
+# CS-ROLL ( C: origN..orig0 N -- origN-1..orig0 origN ) -- TOOLS-EXT. A plain
+# (non-immediate) word that rolls the compile-time control-flow stack; used by
+# gc.fs via `: [cs-roll] cs-roll ; immediate`.
+def prim_CS_ROLL(inner, cur, ip):
+    inner.outer.runtime_cs_roll()
     return ip
 
 
@@ -2707,14 +2801,39 @@ def prim_FILE_SIZE(inner, cur, ip):
 
 # ALLOCATE ( u -- a-addr ior )
 def prim_ALLOCATE(inner, cur, ip):
-    """Allocate u bytes of memory, return address and 0 (success) or non-zero (failure)."""
+    """Allocate u bytes from the high ALLOCATE region (separate from dictionary
+    space, so a large block does not disturb HERE). Returns address and 0 on
+    success, or 0 and -1 on failure.
+
+    Layout: each block carries an 8-byte size header just below the address
+    returned to the caller, so FREE can recover the usable size and recycle the
+    block. A same-size freed block is reused before the bump pointer advances,
+    which keeps the region bounded across gc.fs's repeated FREE/ALLOCATE of
+    equal-size grain-info bitvectors."""
     size = inner.pop_ds_int()
-    # Use the inner interpreter's memory buffer
-    # Allocate from 'here' and advance
-    addr = inner.here
-    inner.here = addr + size
-    # Initialize memory (ensure we have space in mem array)
-    if inner.here < HEAP_SIZE_BYTES:
+    if size < 0:
+        inner.push_ds_int(0)
+        inner.push_ds_int(-1)
+        return ip
+    # Round the usable size up to a whole cell so every user address is
+    # cell-aligned and the free-list buckets stay aligned.
+    usable = size
+    rem = usable & (CELL_SIZE_BYTES - 1)
+    if rem != 0:
+        usable += (CELL_SIZE_BYTES - rem)
+    # Reuse a freed block of exactly this usable size, if any.
+    bucket = inner.alloc_free.get(usable, None)
+    if bucket is not None and len(bucket) > 0:
+        addr = bucket.pop()
+        inner.push_ds_int(addr)
+        inner.push_ds_int(0)
+        return ip
+    header = inner.alloc_ptr
+    addr = header + CELL_SIZE_BYTES
+    new_ptr = addr + usable
+    if new_ptr <= inner.alloc_limit:
+        inner.cell_store(header, usable)
+        inner.alloc_ptr = new_ptr
         inner.push_ds_int(addr)
         inner.push_ds_int(0)  # success
     else:
@@ -2725,9 +2844,18 @@ def prim_ALLOCATE(inner, cur, ip):
 
 # FREE ( a-addr -- ior )
 def prim_FREE(inner, cur, ip):
-    """Free previously allocated memory. Always succeeds in this simple implementation."""
-    inner.pop_ds_int()  # Discard address
-    inner.push_ds_int(0)  # Always success (no actual deallocation)
+    """Return a previously ALLOCATEd block to its size bucket for reuse. Reads
+    the usable size from the header just below the block. Always succeeds."""
+    addr = inner.pop_ds_int()
+    if addr >= ALLOC_BASE + CELL_SIZE_BYTES and addr <= inner.alloc_limit:
+        usable = inner.cell_fetch_int(addr - CELL_SIZE_BYTES)
+        if usable > 0:
+            bucket = inner.alloc_free.get(usable, None)
+            if bucket is None:
+                bucket = []
+                inner.alloc_free[usable] = bucket
+            bucket.append(addr)
+    inner.push_ds_int(0)  # success
     return ip
 
 
@@ -3449,6 +3577,11 @@ def install_primitives(outer):
     outer.define_prim("FROUND", prim_FROUND)
     outer.define_prim("FLOAT", prim_FLOAT)
     outer.define_prim("FLOATS", prim_FLOATS)
+    outer.define_prim("DFLOATS", prim_DFLOATS)
+    outer.define_prim("SFLOATS", prim_SFLOATS)
+    outer.define_prim("FALIGNED", prim_FALIGNED)
+    outer.define_prim("DFALIGNED", prim_DFALIGNED)
+    outer.define_prim("SFALIGNED", prim_SFALIGNED)
     outer.define_prim("FLOAT+", prim_FLOATPLUS)
     outer.define_prim("F.", prim_FDOT)
     outer.define_prim("D>F", prim_D2F)
@@ -3504,6 +3637,13 @@ def install_primitives(outer):
     outer.define_prim("VARIABLE", prim_VARIABLE)
     outer.define_prim("FVARIABLE", prim_VARIABLE)
     outer.define_prim("CREATE", prim_CREATE)
+    outer.define_prim("2CONSTANT", prim_2CONSTANT)
+    outer.define_prim("2VARIABLE", prim_2VARIABLE)
+    outer.define_prim("(", prim_PAREN).immediate = True
+    outer.define_prim("WORDLIST", prim_WORDLIST)
+    outer.define_prim("GET-ORDER", prim_GET_ORDER)
+    outer.define_prim("SET-ORDER", prim_SET_ORDER)
+    outer.define_prim("CS-ROLL", prim_CS_ROLL)
     outer.define_prim("DEFER", prim_DEFER)
     outer.define_prim("'", prim_TICK)
     outer.define_prim("WORD", prim_WORD)

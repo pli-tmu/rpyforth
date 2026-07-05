@@ -75,7 +75,8 @@ class ProgramSpec:
               stack balanced and be repeatable (idempotent across iterations).
     """
 
-    def __init__(self, name, workdir, pre_include, include_file, setup, unit):
+    def __init__(self, name, workdir, pre_include, include_file, setup, unit,
+                 rpy_env=None):
         self.name = name
         self.workdir = workdir
         # pre_include : words defined before the program is loaded (e.g. 3drop).
@@ -87,6 +88,9 @@ class ProgramSpec:
         self.setup = setup
         # unit  : the core workload word(s), timed each iteration.
         self.unit = unit
+        # rpy_env : extra environment for the rpyforth engine only (benchgc needs
+        #   a big ALLOCATE region for its GC memory block). gforth ignores it.
+        self.rpy_env = rpy_env or {}
 
 
 PROGRAMS = [
@@ -131,6 +135,25 @@ PROGRAMS = [
               'S" setup 1rb2rk/p4ppp/1p1qp1n/3n2N/2pP4/2P3P/PPQ2PBP/R1B1R1K w" '
               "evaluate 5 sd",
         unit="benchThink drop",
+    ),
+    ProgramSpec(
+        name="benchgc",
+        workdir=APPBENCH_DIR / "benchgc",
+        # bench-gc5.fs starts with `cells dup constant limit`, so 64000 (the cell
+        # count for limit=512000) must be on the stack before the include runs.
+        pre_include="64000",
+        include_file="bench-gc5.fs",
+        # Loading bench-gc5.fs already runs one (cold) testgc and prints the GC
+        # statistics; those non-CSV lines are ignored by the parser. testgc is a
+        # self-contained, stack-balanced, repeatable unit: each call allocates
+        # ~500 KB of live GC-managed nodes and the collector reclaims them, so the
+        # heap stays bounded across iterations (verified: active-end stays ~514000
+        # and RSS flat over 20+ runs). One testgc is ~270 ms warm -- in the
+        # 100-300 ms window. The RNG seed carries over between calls, which only
+        # varies the exact allocation sizes, not the balance or the work amount.
+        setup="",
+        unit="testgc drop",
+        rpy_env={"RPYFORTH_ALLOC_MB": "256"},
     ),
 ]
 
@@ -219,6 +242,8 @@ def run_engine(engine, spec, iterations, tmpdir, timeout, pin):
         cmd = ["taskset", "-c", str(pin)] + cmd
 
     env = os.environ.copy()
+    if engine == ENGINE_RPYFORTH and spec.rpy_env:
+        env.update(spec.rpy_env)
     t0 = time.perf_counter()
     try:
         proc = subprocess.run(

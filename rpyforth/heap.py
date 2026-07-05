@@ -7,7 +7,45 @@ from rpyforth.objects import W_FloatObject, make_int
 # C! / C@ and ! / @ reinterpret the same storage exactly like real Forth
 # memory: a cell is the 8 little-endian bytes at its address, and both views
 # compile to single raw loads/stores under the JIT.
-HEAP_SIZE_BYTES = 1 << 23
+import os
+
+# Dictionary + string space: HERE grows here from 0, and the boxed-string side
+# table (inner.buf) covers exactly this region. The fixed scratch cells
+# (parse cursor / BASE / STATE / WORD buffer) live at the top of THIS region so
+# they are always cheap to touch; the separate ALLOCATE region sits above it.
+DICT_SIZE_BYTES = 1 << 23
+
+# ALLOCATE / FREE space: a separate high region so a program that ALLOCATEs a
+# large block (appbench benchgc's gc.fs grabs one ~120 MB memory block up front)
+# does not disturb dictionary space, the boxed-string table, or the scratch
+# cells. Its size is chosen at start-up (see _alloc_region_bytes) so the default
+# stays tiny -- untranslated the raw buffer is a simulated array whose creation
+# cost is O(size), and the whole test suite must keep it small. Programs that
+# need a big region set RPYFORTH_ALLOC_MB.
+def _alloc_region_bytes():
+    raw = os.environ.get("RPYFORTH_ALLOC_MB")
+    mb = 0
+    if raw is not None and raw != "":
+        n = 0
+        ok = True
+        for ch in raw:
+            if "0" <= ch <= "9":
+                n = n * 10 + (ord(ch) - ord("0"))
+            else:
+                ok = False
+                break
+        if ok:
+            mb = n
+    if mb <= 0:
+        mb = 1  # default: 1 MB, enough for the test suite's small ALLOCATEs
+    return mb << 20
+
+# Compile-time upper bound used only for RPython-friendly constants; the real
+# runtime heap size is DICT_SIZE_BYTES + _alloc_region_bytes(), computed in
+# InnerInterpreter. HEAP_SIZE_BYTES here is the DEFAULT (small) total, used by
+# the asserts and by any code that needs a conservative constant.
+ALLOC_BASE = DICT_SIZE_BYTES
+HEAP_SIZE_BYTES = DICT_SIZE_BYTES + (1 << 20)
 HEAP_CELL_COUNT = HEAP_SIZE_BYTES >> 3
 
 CELL_BYTES = 8

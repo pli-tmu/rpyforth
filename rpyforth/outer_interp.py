@@ -129,27 +129,23 @@ class OuterInterpreter(object):
         # token index, not a character offset -- adequate for save/restore, which
         # is all the appbench sources do with >IN.
         self.toks = []
-        # Reserve a dedicated cell for the parse cursor at the top of the heap so
-        # it never collides with here-managed user allocations (which grow from
-        # 0). Fixed, not here-allocated, so tests that use low addresses (0, 4)
-        # are undisturbed.
-        from rpyforth.heap import HEAP_SIZE_BYTES
-        self.to_in_addr = HEAP_SIZE_BYTES - 8
+        # Reserve dedicated cells for the parse cursor / BASE / STATE / WORD
+        # buffer at the top of the DICTIONARY region (just below the separate
+        # ALLOCATE region). They are always in the small low region so touching
+        # them is cheap, they never collide with here-managed user allocations
+        # (which grow from 0), and they stay clear of ALLOCATEd blocks. Fixed,
+        # not here-allocated, so tests that use low addresses (0, 4) are
+        # undisturbed.
+        from rpyforth.heap import DICT_SIZE_BYTES
+        self.to_in_addr = DICT_SIZE_BYTES - 8
         inner.cell_store(self.to_in_addr, 0)
-        # Dedicated fixed cell backing the BASE variable, next to the parse cursor
-        # so it never collides with here-managed allocations. prim_BASE keeps it
-        # and inner.base in sync so `BASE @` / `BASE !` round-trip the radix.
-        self.base_addr = HEAP_SIZE_BYTES - 16
+        self.base_addr = DICT_SIZE_BYTES - 16
         inner.cell_store(self.base_addr, inner.base)
-        # Dedicated fixed cell backing STATE. STATE ( -- a-addr ) refreshes this
-        # cell from self.state and pushes its address, so `STATE @` reads the
-        # live compilation state both when interpreting and from a colon body
-        # (the state-smart POSTPONE idiom in brainless environ.fs/utils.fs).
-        self.state_addr = HEAP_SIZE_BYTES - 24
+        self.state_addr = DICT_SIZE_BYTES - 24
         # Fixed scratch buffer for WORD's counted string, below the reserved
         # cells: WORD must not advance HERE (fcp measures dictionary growth
         # with HERE deltas around book loading).
-        self.word_scratch_addr = HEAP_SIZE_BYTES - 280
+        self.word_scratch_addr = DICT_SIZE_BYTES - 280
         inner.cell_store(self.state_addr, 0)
 
         # Position of a DOES> body within the definition currently compiling
@@ -1426,6 +1422,24 @@ class OuterInterpreter(object):
         self.inner.cell_store(self.to_in_addr, idx + 1)
         return tok
 
+    def runtime_paren(self):
+        """( executed as a word: consume tokens up to and including the next one
+        containing ')'. This is the execution semantics of the '(' comment word,
+        reached when it is POSTPONEd (compat/assert.fs `POSTPONE (`). If the ')'
+        is not on the current line, leave paren_depth open so the enclosing line
+        loop's comment stripper continues the comment onto the next physical line
+        (the normal multi-line paren-comment path), rather than pulling lines here
+        and desynchronising the INCLUDE cursor."""
+        while True:
+            idx = self.inner.cell_fetch_int(self.to_in_addr)
+            if idx < 0 or idx >= len(self.toks):
+                self.paren_depth = 1
+                return
+            tok = self.toks[idx]
+            self.inner.cell_store(self.to_in_addr, idx + 1)
+            if ')' in tok:
+                return
+
     def runtime_refill(self):
         """REFILL ( -- flag ): consume the next physical line of the file being
         INCLUDEd, make it the current parse buffer (resetting the parse cursor),
@@ -1562,6 +1576,46 @@ class OuterInterpreter(object):
         addr = self.inner.here
         self.inner.here += self.inner.cell_size_bytes
         self._define_simple_word(name, W_IntObject(addr))
+
+    def runtime_2constant(self):
+        """2CONSTANT executed from a colon body: name the next token, bind a
+        double-cell value. The child word pushes x1 then x2."""
+        name = self.parse_next_token()
+        if name == '':
+            print "2CONSTANT requires a name"
+            return
+        if self.inner.ds_int_size() < 2:
+            print "2CONSTANT: stack underflow"
+            return
+        x2 = self.inner.pop_ds_int()
+        x1 = self.inner.pop_ds_int()
+        code = [self.wLIT, self.wLIT, self.wEXIT]
+        lits = [W_IntObject(x1), W_IntObject(x2), ZERO]
+        self.define_colon(name, CodeThread(code, lits))
+
+    def runtime_2variable(self):
+        """2VARIABLE executed from a colon body: allocate two cells, name it."""
+        name = self.parse_next_token()
+        if name == '':
+            print "2VARIABLE requires a name"
+            return
+        addr = self.inner.here
+        self.inner.here += self.inner.cell_size_bytes
+        self.inner.here += self.inner.cell_size_bytes
+        self._define_simple_word(name, W_IntObject(addr))
+
+    def runtime_cs_roll(self):
+        """CS-ROLL ( C: origN..orig0 N -- origN-1..orig0 origN ): roll the top
+        N+1 entries of the compile-time control-flow stack. N is on the data
+        stack. Executed during compilation (e.g. via gc.fs [cs-roll])."""
+        n = self.inner.pop_ds_int()
+        depth = len(self.ctrl) - 1 - n
+        if n < 0 or depth < 0:
+            print "CS-ROLL: control-flow stack underflow"
+            return
+        entry = self.ctrl[depth]
+        del self.ctrl[depth]
+        self.ctrl.append(entry)
 
     def runtime_create(self, does_word):
         """CREATE executed from a colon body. The child word pushes its data
@@ -2424,7 +2478,8 @@ class OuterInterpreter(object):
                         self.cond_skip_depth -= 1
                 continue
             if ckey == "[IF]":
-                if self.inner.pop_ds_int() == 0:
+                v = self.inner.pop_ds_int()
+                if v == 0:
                     self.cond_skipping = True
                     self.cond_skip_depth = 0
                     self.cond_skip_to_else = True
@@ -2578,12 +2633,16 @@ class OuterInterpreter(object):
             last_word = self.current_code[self.cc_ptr - 1]
             # Check if it's a colon definition (not a primitive) and not a control word
             if last_word is not None and last_word.prim is None and last_word.thread is not None:
-                # Replace the last word with TAILCALL and store the word in its literal slot
-                self.cc_ptr -= 1  # Remove the last word
-                self.lit_ptr -= 1  # Remove its literal
-                # Emit TAILCALL with the word as literal
-                wTAILCALL = self.dict.get("TAILCALL", None)
+                # Replace the last word with TAILCALL and store the word in its
+                # literal slot. TAILCALL lives in the FORTH wordlist, not
+                # necessarily the current one -- gc.fs defines words while the
+                # current wordlist is `garbage-collector`, so looking it up in
+                # self.dict would miss it. Only strip the last word once TAILCALL
+                # is confirmed present, or it would be silently dropped.
+                wTAILCALL = self.forth_wl.get("TAILCALL", None)
                 if wTAILCALL is not None:
+                    self.cc_ptr -= 1  # Remove the last word
+                    self.lit_ptr -= 1  # Remove its literal
                     self.push_code(wTAILCALL)
                     self.push_lit(W_WordObject(last_word))
                     tail_call_applied = True
@@ -2671,7 +2730,7 @@ class OuterInterpreter(object):
         # sites) explode the trace length and run slower inlined.
         if sites == 0 or sites > 4 or n * (sites + 1) > 96:
             return code, lits
-        wTAILCALL = self.dict.get("TAILCALL", None)
+        wTAILCALL = self.forth_wl.get("TAILCALL", None)
         # Pass 1: map every original instruction index (plus the one-past-end
         # position, a valid branch target) to its position in the new code.
         newpos = [0] * (n + 1)

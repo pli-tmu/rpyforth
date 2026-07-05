@@ -68,3 +68,50 @@ def test_get_order_set_order_roundtrip():
     # drop the wordlist ids GET-ORDER pushed
     for _ in range(n):
         inner.pop_ds_int()
+
+
+# --- benchgc coverage: WORDLIST / GET-ORDER / SET-ORDER usable when COMPILED
+#     into a colon body (compat/vocabulary.fs defines `vocabulary` this way) ---
+
+def test_wordlist_compiles_in_definition():
+    inner = run(": mkwl wordlist ; mkwl")
+    assert inner.pop_ds_int() >= 1  # 0 is FORTH-WORDLIST
+
+
+def test_set_order_negative_restores_default():
+    inner = run("-1 set-order get-order")
+    n = inner.pop_ds_int()
+    assert n == 1
+    assert inner.pop_ds_int() == 0
+
+
+def test_tailcall_word_defined_in_other_wordlist():
+    # A word defined while the current wordlist is NOT the FORTH wordlist and
+    # ending in a call to a colon word must not lose that last call: the
+    # tail-call optimisation looks TAILCALL up in the FORTH wordlist. Regression
+    # for gc.fs, whose words are compiled into the `garbage-collector` wordlist.
+    inner, outer = make()
+    outer.interpret_line(": vocabulary wordlist create , "
+                         "does> @ >r get-order dup 0= -50 and throw nip r> swap set-order ; ")
+    outer.interpret_line("vocabulary v3")
+    outer.interpret_line("also v3 definitions")
+    outer.interpret_line(": callee ( n -- n ) dup if 1+ else 1- then ;")
+    outer.interpret_line(": caller ( n -- n ) 10 + callee ;")  # ends in a colon-call
+    outer.interpret_line("previous definitions")
+    outer.interpret_line("also v3  5 caller  previous")
+    # 5 -> +10 = 15 -> callee: 15 true -> 1+ = 16
+    assert inner.pop_ds_int() == 16
+
+
+def test_vocabulary_defined_in_forth():
+    # Exactly compat/vocabulary.fs. Proves wordlist/get-order/set-order and
+    # also/definitions/previous cooperate for a Forth-defined vocabulary.
+    src = (
+        ": vocabulary wordlist create , "
+        "does> @ >r get-order dup 0= -50 and throw nip r> swap set-order ; "
+        "vocabulary myvoc "
+        "also myvoc definitions : secret 4242 ; previous definitions "
+        "also myvoc secret previous"
+    )
+    inner = run(src)
+    assert inner.pop_ds_int() == 4242

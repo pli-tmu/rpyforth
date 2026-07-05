@@ -53,6 +53,9 @@ class ProgramSpec:
     body: str
     supported_engines: List[str]
     rpy_jit_args: List[str] = field(default_factory=list)
+    # Extra environment for the rpyforth engine only (gforth ignores it). benchgc
+    # ALLOCATEs a large GC memory block, so it needs a big ALLOCATE region.
+    rpy_env: Dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -169,7 +172,21 @@ def build_program_registry() -> List[ProgramSpec]:
         supported_engines=[ENGINE_GFORTH, ENGINE_GFORTH_FAST, ENGINE_RPYFORTH],
     )
 
-    return [cd16sim, brainless, fcp, lexex]
+    # benchgc: a garbage-collector benchmark. bench-gc5.fs first does
+    # `cells dup constant limit`, so `limit` (in cells) is pushed on the stack
+    # BEFORE the include; 64000 cells -> limit=512000. gc.fs then ALLOCATEs one
+    # ~120 MB memory block, so the rpyforth engine needs a large ALLOCATE region
+    # (RPYFORTH_ALLOC_MB); gforth uses system malloc and ignores it.
+    benchgc = ProgramSpec(
+        name="benchgc",
+        workdir=appbench / "benchgc",
+        prelude="",
+        body="64000 include bench-gc5.fs\nbye",
+        supported_engines=[ENGINE_GFORTH, ENGINE_GFORTH_FAST, ENGINE_RPYFORTH],
+        rpy_env={"RPYFORTH_ALLOC_MB": "256"},
+    )
+
+    return [cd16sim, brainless, fcp, lexex, benchgc]
 
 
 def build_gforth_cmd(binary: Path, spec: ProgramSpec, tmpdir: Path) -> List[str]:
@@ -378,14 +395,17 @@ def run_program(
 ) -> RunResult:
     result = RunResult(program=spec.name, engine=engine_name)
 
+    extra_env: Optional[Dict[str, str]] = None
     if engine_name == ENGINE_RPYFORTH:
         cmd = build_rpyforth_cmd(engine_path, spec, tmpdir)
+        if spec.rpy_env:
+            extra_env = dict(spec.rpy_env)
     else:
         cmd = build_gforth_cmd(engine_path, spec, tmpdir)
 
     for i in range(1, iterations + 1):
         rc, stdout, stderr, wall, timed_out = run_once(
-            cmd, spec.workdir, timeout
+            cmd, spec.workdir, timeout, extra_env
         )
         save_log(
             log_dir, spec.name, engine_name, i, iterations,

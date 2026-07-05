@@ -21,7 +21,12 @@ from rpython.rlib.jit import JitDriver, promote, elidable, unroll_safe, promote_
 from rpython.rlib.debug import make_sure_not_resized
 from rpython.rlib.rfile import create_stdio
 
-from rpyforth.heap import HEAP_CELL_COUNT, HEAP_SIZE_BYTES, Heap
+from rpyforth.heap import (HEAP_CELL_COUNT, HEAP_SIZE_BYTES, DICT_SIZE_BYTES,
+                           ALLOC_BASE, Heap, _alloc_region_bytes)
+
+
+def alloc_region_bytes():
+    return _alloc_region_bytes()
 
 USE_VIRTUALIZATION = bool(os.environ.get("RPYFORTH_VIRTUALIZE"))
 
@@ -169,13 +174,27 @@ class InnerInterpreter(InterpBase, object):
         # nested run (e.g. CATCH) returns instead of escaping into outer frames.
         self.cs_base = 0
 
-        self.heap = Heap(HEAP_SIZE_BYTES)
+        # Total heap = dictionary region + a runtime-sized ALLOCATE region.
+        self.heap_size = DICT_SIZE_BYTES + alloc_region_bytes()
+        self.heap = Heap(self.heap_size)
         self.cell_size = CELL_SIZE
         self.cell_size_bytes = CELL_SIZE_BYTES
 
-        # for string
-        self.buf = [None] * (HEAP_SIZE_BYTES >> 3)
+        # for string. Sized to the dictionary region only: boxed strings are only
+        # ever parked at HERE-allocated (dictionary) addresses, never in the
+        # separate high ALLOCATE region.
+        self.buf = [None] * (DICT_SIZE_BYTES >> 3)
         self.here = 0
+        # Bump pointer for ALLOCATE, in the high region above dictionary space,
+        # and the highest address it may reach.
+        self.alloc_ptr = ALLOC_BASE
+        self.alloc_limit = self.heap_size
+        # Free-list reuse for ALLOCATE/FREE: freed blocks are bucketed by usable
+        # size so a later same-size ALLOCATE hands the block back instead of
+        # bumping. gc.fs FREEs and re-ALLOCATEs same-size grain-info bitvectors on
+        # every collection, so without this the bump pointer would grow without
+        # bound across a long run. Keyed by usable size -> list of user addresses.
+        self.alloc_free = {}
 
         self.base = 10
         self._pno_active = False
@@ -555,8 +574,8 @@ class InnerInterpreter(InterpBase, object):
         return addr
 
     def _ensure_addr(self, addr, span):
-        assert 0 <= addr < HEAP_SIZE_BYTES
-        assert addr + span <= HEAP_SIZE_BYTES
+        assert 0 <= addr < self.heap_size
+        assert addr + span <= self.heap_size
 
     def cell_store(self, addr, intval):
         assert isinstance(addr, int)
@@ -570,13 +589,13 @@ class InnerInterpreter(InterpBase, object):
 
     def cell_2store(self, addr, x1_int, x2_int):
         """Standard 2!: x2 (the top cell) lands at addr, x1 at the next."""
-        assert 0 <= addr < HEAP_SIZE_BYTES - self.cell_size_bytes
+        assert 0 <= addr < self.heap_size - self.cell_size_bytes
         self.cell_store(addr, x2_int)
         self.cell_store(addr + self.cell_size_bytes, x1_int)
 
     def cell_2fetch(self, addr):
         """Standard 2@: returns (x1, x2) with x2 (the top) taken from addr."""
-        assert 0 <= addr < HEAP_SIZE_BYTES - self.cell_size_bytes
+        assert 0 <= addr < self.heap_size - self.cell_size_bytes
         x1 = make_int(self.cell_fetch_int(addr + self.cell_size_bytes))
         x2 = make_int(self.cell_fetch_int(addr))
         return x1, x2
