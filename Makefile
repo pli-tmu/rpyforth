@@ -100,3 +100,9 @@ bench-shootout-curve: build-jit-stkfrag build-gforth $(PLOT_PY)
     	--compare ./rpyforth-c-stkfrag --compare $(GFORTH_FAST) --compare $(GFORTH) \
     	--only curve/ --iterations 5 \
     	--curve-chart warmup.pdf
+
+.PHONY: sweep-framesize
+sweep-framesize: $(PLOT_PY)
+	@$(PLOT_PY) benchmark/run_param_sweep.py \
+    	--iterations 3 --pin 2 \
+    	--pdf sweep-framesize.pdf

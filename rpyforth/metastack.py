@@ -1,8 +1,29 @@
 import os
 
 NTOP = 2
-FRAME_SIZE = 8
-ACTIVE_MAX = NTOP + FRAME_SIZE          # active-fragment capacity (== 11)
+
+
+def _parse_frame_size():
+    raw = os.environ.get("RPYFORTH_FRAME_SIZE")
+    if raw is None or raw == "":
+        return 8
+    n = 0
+    ok = True
+    for ch in raw:
+        if "0" <= ch <= "9":
+            n = n * 10 + (ord(ch) - ord("0"))
+        else:
+            ok = False
+            break
+    if not ok or n < 1:
+        return 8
+    if n > 64:
+        return 64
+    return n
+
+
+FRAME_SIZE = _parse_frame_size()
+ACTIVE_MAX = NTOP + FRAME_SIZE
 
 # Import window on a non-tail call: the callee inherits the caller's top NTOP
 # cells (already in the scalar tops -- free), and the caller's deeper frame
