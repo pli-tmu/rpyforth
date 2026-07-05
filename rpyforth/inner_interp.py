@@ -78,8 +78,8 @@ class Abort(Exception):
 
 
 # Portal-boundary sentinel: execute_thread pushes it on entry, and popping it
-# ends that invocation's dispatch loop. Inside a trace the popped return
-# address is promoted, so the halt test constant-folds away on real returns.
+# ends that invocation's dispatch loop. Inside a trace the return thread id is
+# promoted, so the halt test constant-folds away on real returns.
 HALT_THREAD = CodeThread([], [])
 
 def get_printable_location(ip, thread):
@@ -157,9 +157,11 @@ class InnerInterpreter(InterpBase, object):
 
         # Virtualized call stack for JIT optimization. A return address is one
         # packed int (thread id << CS_IP_BITS | ip): no GC write barrier, one
-        # array access per push/pop, and a single promote covers both the return
-        # ip and the return thread (the THREAD_REGISTRY lookup on the folded tid
-        # is pure), so each return costs one guard instead of two.
+        # array access per push/pop. Only the thread id is promoted on return so
+        # the THREAD_REGISTRY lookup folds and the target thread inlines; the
+        # return ip is left as a runtime value, so a caller that returns to many
+        # different positions (EXECUTE/opcode-table dispatch) does not spawn a
+        # guard_value per return site and shatter the trace into bridges.
         self.cs_pcs = [0] * STACK_SIZE
         self.cs_ptr = 0
         # Lower bound for execute_thread: it stops popping return frames when the
@@ -237,11 +239,15 @@ class InnerInterpreter(InterpBase, object):
         if USE_STACK_FRAGMENT:
             pop_ds_fragments_commit(self)
         self.cs_ptr = ptr
-        pc = promote(self.cs_pcs[ptr])
+        pc = self.cs_pcs[ptr]
         # Clear the slot (mirrors the old null write): helps the JIT treat the
         # tail above cs_ptr as dead and elide the reads on recursive traces.
         self.cs_pcs[ptr] = 0
-        tid = pc >> CS_IP_BITS
+        # Promote only the thread id: the registry lookup folds and the return
+        # thread inlines, while the return ip stays a runtime value so a
+        # polymorphic caller (EXECUTE/opcode dispatch) does not guard_value each
+        # return site into its own bridge.
+        tid = promote(pc >> CS_IP_BITS)
         ip = pc & CS_IP_MASK
         thread = THREAD_REGISTRY.threads[tid]
         return thread, ip
