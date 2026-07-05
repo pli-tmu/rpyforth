@@ -31,7 +31,7 @@ from rpyforth.inner_interp import (
     USE_STACK_FRAGMENT,
     CALL_SENTINEL,
 )
-from rpyforth.heap import ALLOC_BASE
+from rpyforth.heap import ALLOC_BASE, DICT_SIZE_BYTES
 from rpyforth.metastack import push_ds_fragments
 from rpyforth.metastack_int import snapshot_cache, restore_cache
 from rpyforth.util import digit_to_char
@@ -2114,7 +2114,7 @@ def prim_BASE(inner, cur, ip):
 
 # UNUSED ( -- u ) -- remaining free dictionary space, in address units.
 def prim_UNUSED(inner, cur, ip):
-    remaining = HEAP_SIZE_BYTES - inner.here
+    remaining = DICT_SIZE_BYTES - inner.here
     if remaining < 0:
         remaining = 0
     inner.push_ds_int(remaining)

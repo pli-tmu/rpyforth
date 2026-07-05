@@ -1,5 +1,6 @@
 from rpython.rtyper.lltypesystem import lltype, rffi
 from rpython.rlib.rarithmetic import intmask
+from rpython.rlib.objectmodel import we_are_translated
 
 from rpyforth.objects import W_FloatObject, make_int
 
@@ -37,8 +38,19 @@ def _alloc_region_bytes():
         if ok:
             mb = n
     if mb <= 0:
-        mb = 1  # default: 1 MB, enough for the test suite's small ALLOCATEs
+        mb = _default_alloc_mb(we_are_translated())
     return mb << 20
+
+
+def _default_alloc_mb(translated):
+    # Translated, the region is one calloc whose pages the OS maps lazily, so a
+    # generous default costs nothing and stock appbench programs (brainless's
+    # ttable ALLOCATEs several MB at load) run without an env var. Untranslated
+    # the raw buffer is a simulated array with O(size) creation cost, so the
+    # test suite default must stay at 1 MB.
+    if translated:
+        return 64
+    return 1
 
 # Compile-time upper bound used only for RPython-friendly constants; the real
 # runtime heap size is DICT_SIZE_BYTES + _alloc_region_bytes(), computed in
