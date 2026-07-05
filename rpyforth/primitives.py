@@ -1266,6 +1266,24 @@ def prim_DOT(inner, cur, ip):
     #stdout.flush()
     return ip
 
+# .S ( -- )
+@dont_look_inside
+def prim_DOT_S(inner, cur, ip):
+    """Print all int stack items non-destructively, gforth format: <n> v1 v2 ... TOS """
+    depth = inner.depth_ds_int()
+    stdin, stdout, stderr = create_stdio()
+    stdout.write('<')
+    stdout.write(str(depth))
+    stdout.write('> ')
+    i = depth - 1
+    while i >= 0:
+        stdout.write(str(inner.peek_ds_int(i)))
+        stdout.write(' ')
+        i -= 1
+    stdout.flush()
+    return ip
+
+
 @dont_look_inside
 def prim_U_DOT(inner, cur, ip):
     """GForth core 2012: display u in field format according to current BASE."""
@@ -3302,6 +3320,7 @@ def install_primitives(outer):
 
     # I/O
     outer.define_prim(".", prim_DOT)
+    outer.define_prim(".S", prim_DOT_S)
     outer.define_prim("U.", prim_U_DOT)
     outer.define_prim("EMIT", prim_EMIT)
     outer.define_prim("SPACE", prim_SPACE)

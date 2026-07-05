@@ -577,7 +577,7 @@ class OuterInterpreter(object):
     def _handle_dot_paren(self, toks, i, start_token):
         """.( ccc ) -- print ccc immediately during parsing (up to ')')."""
         line = self.source_buffer
-        occ = self._find_nth_occurrence(line, start_token, 0)
+        occ = self._find_nth_occurrence(line, start_token, self._next_string_occurrence(start_token))
         if occ < 0:
             return i
         if occ < len(line) and line[occ] == ' ':
