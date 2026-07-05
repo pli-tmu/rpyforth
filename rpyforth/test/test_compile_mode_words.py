@@ -110,3 +110,24 @@ def test_search_wordlist_in_colon_body():
         's" NOSUCHWORDXYZ" present?',
     ])
     assert inner2.pop_ds_int() == 0
+
+
+def test_compare_reads_char_memory():
+    # COMPARE must work on ALLOTted byte buffers (lexex compare-files), not
+    # just boxed S" strings. gforth: abc/abd -> -1, abc/abc -> 0,
+    # ab/abc -> -1 (shorter prefix), abc/ab -> 1.
+    from rpyforth.outer_interp import OuterInterpreter
+    from rpyforth.inner_interp import InnerInterpreter
+    inner = InnerInterpreter()
+    outer = OuterInterpreter(inner)
+    outer.interpret_line("create b1 8 allot  create b2 8 allot")
+    outer.interpret_line("65 b1 c! 66 b1 1+ c! 67 b1 2 + c!")   # ABC
+    outer.interpret_line("65 b2 c! 66 b2 1+ c! 68 b2 2 + c!")   # ABD
+    outer.interpret_line("b1 3 b2 3 compare")
+    assert inner.pop_ds_int() == -1
+    outer.interpret_line("b1 3 b1 3 compare")
+    assert inner.pop_ds_int() == 0
+    outer.interpret_line("b1 2 b1 3 compare")
+    assert inner.pop_ds_int() == -1
+    outer.interpret_line("b1 3 b1 2 compare")
+    assert inner.pop_ds_int() == 1

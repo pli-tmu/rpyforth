@@ -1821,20 +1821,38 @@ def prim_RESTORE_INPUT(inner, cur, ip):
 
 # COMPARE ( c-addr1 u1 c-addr2 u2 -- n ) -- lexicographic string comparison.
 def prim_COMPARE(inner, cur, ip):
-    inner.pop_ds_int()                 # u2
+    """Lexicographic byte comparison of two strings in data space. Every
+    string (S" literal or ALLOTted buffer) is byte-backed, so both operands
+    are read from char memory."""
+    u2 = inner.pop_ds_int()
     a2 = inner.pop_ds_int()
-    inner.pop_ds_int()                 # u1
+    u1 = inner.pop_ds_int()
     a1 = inner.pop_ds_int()
-    s1 = inner.buf_get(a1)
-    s2 = inner.buf_get(a2)
-    assert isinstance(s1, W_StringObject)
-    assert isinstance(s2, W_StringObject)
-    if s1.strval < s2.strval:
-        inner.push_ds_int(-1)
-    elif s1.strval > s2.strval:
-        inner.push_ds_int(1)
-    else:
-        inner.push_ds_int(0)
+    if u1 < 0:
+        u1 = 0
+    if u2 < 0:
+        u2 = 0
+    n = u1
+    if u2 < n:
+        n = u2
+    i = 0
+    res = 0
+    while i < n:
+        c1 = inner.char_fetch(a1 + i)
+        c2 = inner.char_fetch(a2 + i)
+        if c1 < c2:
+            res = -1
+            break
+        if c1 > c2:
+            res = 1
+            break
+        i += 1
+    if res == 0:
+        if u1 < u2:
+            res = -1
+        elif u1 > u2:
+            res = 1
+    inner.push_ds_int(res)
     return ip
 
 
