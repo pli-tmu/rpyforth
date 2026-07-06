@@ -38,6 +38,13 @@ def test_percent_binary_prefix():
     assert inner.pop_ds_int() == 0b1010
 
 
+def test_ampersand_decimal_prefix():
+    # gforth's '&' is a decimal specifier (like '#'); brew's mutation-0.3.fs does
+    # `&64 constant max-stack-effect`.
+    inner = run("HEX &64 DECIMAL")
+    assert inner.pop_ds_int() == 64
+
+
 def test_dollar_as_constant_value():
     inner = run("$30 CONSTANT COLORMASK  COLORMASK")
     assert inner.pop_ds_int() == 0x30
