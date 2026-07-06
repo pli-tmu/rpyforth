@@ -106,3 +106,46 @@ sweep-framesize: $(PLOT_PY)
 	@$(PLOT_PY) benchmark/run_param_sweep.py \
     	--iterations 3 --pin 2 \
     	--pdf sweep-framesize.pdf
+
+# ---------------------------------------------------------------------------
+# Appbench: M. Anton Ertl's application benchmark suite (untracked shared tree).
+# The website zip unpacks to appbench-1.4/. NEVER modify the extracted tree in
+# place; instrument /tmp copies instead.
+# ---------------------------------------------------------------------------
+APPBENCH_URL = https://www.complang.tuwien.ac.at/forth/appbench.zip
+APPBENCH_DIR = appbench/appbench-1.4
+
+.PHONY: setup-appbench
+setup-appbench: $(APPBENCH_DIR)
+
+# Fetched on demand when the tree is absent (guarded on the directory so a mere
+# mtime change does not re-download). Mirrors the setup-gforth pattern.
+$(APPBENCH_DIR):
+	mkdir -p appbench
+	wget -N -P appbench $(APPBENCH_URL)
+	cd appbench && unzip -o appbench.zip
+	@echo "appbench ready in $(APPBENCH_DIR)"
+
+# Cold functional + performance grid across gforth / gforth-fast / rpyforth.
+.PHONY: bench-appbench
+bench-appbench: build-jit-stkfrag build-gforth setup-appbench $(PLOT_PY)
+	@$(PLOT_PY) benchmark/run_appbench.py func \
+    	--iterations 5 --chart appbench.pdf
+
+# Warm steady-state + per-iteration warm-up curve visualization (the paper's
+# primary appbench comparison axis).
+.PHONY: bench-appbench-curve
+bench-appbench-curve: build-jit-stkfrag build-gforth setup-appbench $(PLOT_PY)
+	@$(PLOT_PY) benchmark/run_appbench.py steady \
+    	--iterations 50 --pin 3 --pdf appbench-curve.pdf
+
+# Ablation analysis. `measure` / `curves` generate the data (need the ladder
+# binaries and pinned cores); `render` draws waterfall / step-summary /
+# vs-gforth-fast charts from an existing results.json (+ warm_steady.json).
+ABLATION_RESULTS ?= logs/analysis/7038abb-dirty/results.json
+ABLATION_STEADY ?= logs/analysis/warm_steady.json
+
+.PHONY: bench-ablation-render
+bench-ablation-render: $(PLOT_PY)
+	@$(PLOT_PY) benchmark/run_ablation.py render \
+    	$(ABLATION_RESULTS) --steady-json $(ABLATION_STEADY)
