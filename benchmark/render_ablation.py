@@ -12,6 +12,7 @@ Outputs:
 
 from __future__ import annotations
 
+import argparse
 import json
 import math
 import sys
@@ -443,17 +444,181 @@ def render_vs_gforthfast(
     print(f"Wrote {pdf_path}")
 
 
-def main() -> None:
-    if len(sys.argv) < 2:
-        print(f"Usage: {sys.argv[0]} <results.json>", file=sys.stderr)
-        sys.exit(1)
+def load_warm_steady(path: str) -> Dict[Tuple[str, str], Optional[float]]:
+    """Load warm_steady.json produced by run_warmup_curves.py --json.
 
-    json_path = sys.argv[1]
-    lookup = load_cells(json_path)
+    Returns a dict keyed by (engine_label, bench_name) -> warm_median_usec.
+    """
+    with open(path) as f:
+        data = json.load(f)
+    benchmarks = data.get("benchmarks", {})
+    lookup: Dict[Tuple[str, str], Optional[float]] = {}
+    for bench_name, eng_map in benchmarks.items():
+        for label, info in eng_map.items():
+            warm = info.get("warm_median_usec")
+            lookup[(label, bench_name)] = float(warm) if warm is not None else None
+    return lookup
+
+
+def _suite_for(bench: str) -> str:
+    if bench in SHOOTOUT_BENCHES:
+        return "shootout"
+    return "appbench"
+
+
+def render_vs_gforthfast_warm(
+    cold_lookup: Dict[Tuple[str, str, str], Optional[float]],
+    warm_lookup: Dict[Tuple[str, str], Optional[float]],
+    pdf_path: str,
+) -> None:
+    """vs-gforth-fast chart using WARM steady-state medians.
+
+    Bar = warm ratio (gforth-fast_warm / flagship_warm).
+    Naive warm marker = black diamond.
+    Cold ratio shown as hollow diamond per bar.
+    """
+    FLAGSHIP_LABEL = "rpyforth-c-stkfrag"
+    GFFAST_LABEL = "gforth-fast"
+    NAIVE_LABEL = "rpyforth-naive"
+
+    all_benches = []
+    for bench in SHOOTOUT_BENCHES:
+        all_benches.append(("shootout", bench))
+    for bench in APPBENCH_BENCHES:
+        all_benches.append(("appbench", bench))
+
+    rows = []
+    for suite, bench in all_benches:
+        gf_warm = warm_lookup.get((GFFAST_LABEL, bench))
+        flagship_warm = warm_lookup.get((FLAGSHIP_LABEL, bench))
+        naive_warm = warm_lookup.get((NAIVE_LABEL, bench))
+
+        # cold ratio from existing cold lookup
+        gf_cold = cold_lookup.get(("gforth-fast", suite, bench))
+        flagship_cold = cold_lookup.get(("rpyforth-c-stkfrag", suite, bench))
+
+        if gf_warm is None or flagship_warm is None or flagship_warm == 0:
+            continue
+
+        warm_ratio = gf_warm / flagship_warm
+        naive_warm_ratio = (gf_warm / naive_warm) if (naive_warm and naive_warm > 0) else None
+        cold_ratio = (gf_cold / flagship_cold) if (gf_cold and flagship_cold and flagship_cold > 0) else None
+
+        rows.append((bench, suite, warm_ratio, naive_warm_ratio, cold_ratio))
+
+    rows.sort(key=lambda r: r[2])
+
+    fig, ax = plt.subplots(figsize=(13, 6.5))
+
+    bench_labels = [r[0] for r in rows]
+    y_pos = list(range(len(rows)))
+
+    win_color = "#4C72B0"
+    loss_color = "#C44E52"
+
+    for yi, (bench, suite, warm_ratio, naive_warm_ratio, cold_ratio) in enumerate(rows):
+        color = win_color if warm_ratio >= 1.0 else loss_color
+        ax.barh(
+            yi,
+            warm_ratio,
+            height=0.65,
+            color=color,
+            alpha=0.8,
+            edgecolor="white",
+            linewidth=0.3,
+        )
+        suite_marker = "S" if suite == "shootout" else "A"
+        label_x = max(warm_ratio + 0.02, 0.1)
+        ax.text(
+            label_x,
+            yi,
+            f"{warm_ratio:.2f}x  [{suite_marker}]",
+            va="center",
+            fontsize=7.5,
+            color="#333333",
+        )
+
+        # Naive warm marker (black filled diamond)
+        if naive_warm_ratio is not None:
+            ax.plot(
+                naive_warm_ratio,
+                yi,
+                marker="D",
+                markersize=5,
+                color="black",
+                alpha=0.6,
+                zorder=5,
+            )
+
+        # Cold ratio marker (hollow diamond, grey)
+        if cold_ratio is not None:
+            ax.plot(
+                cold_ratio,
+                yi,
+                marker="D",
+                markersize=5,
+                markerfacecolor="none",
+                markeredgecolor="#888888",
+                markeredgewidth=1.0,
+                alpha=0.75,
+                zorder=4,
+            )
+
+    ax.axvline(x=1.0, color="black", linewidth=1.2, linestyle="--", alpha=0.7)
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels(bench_labels, fontsize=8)
+    ax.set_xlabel("Speedup of rpy-stkfrag vs. gforth-fast  (>1 = rpy wins)", fontsize=10)
+    ax.set_title(
+        "Final position: rpy-stkfrag vs gforth-fast — warm steady-state\n"
+        "(bar = warm ratio; filled ◆ = rpy-naive warm; hollow ◆ = cold ratio)",
+        fontsize=11,
+        fontweight="bold",
+    )
+
+    win_patch = mpatches.Patch(facecolor=win_color, alpha=0.8, label="rpy-stkfrag wins (warm)")
+    loss_patch = mpatches.Patch(facecolor=loss_color, alpha=0.8, label="rpy-stkfrag loses (warm)")
+    naive_marker = plt.Line2D(
+        [0], [0], marker="D", color="w", markerfacecolor="black",
+        markersize=6, alpha=0.6, label="rpy-naive warm baseline",
+    )
+    cold_marker = plt.Line2D(
+        [0], [0], marker="D", color="w", markerfacecolor="none",
+        markeredgecolor="#888888", markeredgewidth=1.0,
+        markersize=6, alpha=0.75, label="cold ratio (hollow)",
+    )
+    ax.legend(handles=[win_patch, loss_patch, naive_marker, cold_marker],
+              fontsize=8, loc="lower right")
+    ax.grid(axis="x", alpha=0.3, linestyle=":")
+
+    plt.tight_layout()
+    with PdfPages(pdf_path) as pdf:
+        pdf.savefig(fig, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Wrote {pdf_path}")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("results_json", help="cold ablation results.json")
+    parser.add_argument("--steady-json", default=None,
+                        help="warm_steady.json from run_warmup_curves.py --json; "
+                             "renders warm vs-gforthfast chart to "
+                             "/tmp/ablation_vs_gforthfast_warm.pdf")
+    args = parser.parse_args()
+
+    lookup = load_cells(args.results_json)
 
     render_waterfall(lookup, "/tmp/ablation_waterfall.pdf")
     render_summary(lookup, "/tmp/ablation_summary.pdf")
     render_vs_gforthfast(lookup, "/tmp/ablation_vs_gforthfast.pdf")
+
+    if args.steady_json:
+        warm_lookup = load_warm_steady(args.steady_json)
+        render_vs_gforthfast_warm(
+            lookup,
+            warm_lookup,
+            "/tmp/ablation_vs_gforthfast_warm.pdf",
+        )
 
 
 if __name__ == "__main__":

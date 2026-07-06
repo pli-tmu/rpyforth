@@ -19,6 +19,7 @@ Misbehaving benchmarks are marked and excluded from the chart with a note.
 """
 
 import argparse
+import json
 import os
 import statistics
 import subprocess
@@ -287,6 +288,14 @@ COLORS = {
     ENGINE_GFORTH:     "#2ca02c",
 }
 
+EXTRA_COLORS = [
+    "#ff7f0e",
+    "#9467bd",
+    "#8c564b",
+    "#e377c2",
+    "#bcbd22",
+]
+
 ENGINE_LABELS = {
     ENGINE_RPYFORTH:    "rpyforth-c-stkfrag",
     ENGINE_GFORTH_FAST: "gforth-fast",
@@ -294,17 +303,32 @@ ENGINE_LABELS = {
 }
 
 
-def make_all_chart(results, pdf_path):
+def make_all_chart(results, pdf_path, extra_engines=None):
     """Build an 18-subplot grid (4 cols) of warm-up curves for all benchmarks.
 
     `results` is an ordered list of (bench_name, eng_results_dict) where
-    eng_results_dict maps engine -> run_dict.
+    eng_results_dict maps engine key -> run_dict.
+    `extra_engines` is an optional list of (engine_key, label) for additional
+    rpyforth variants added via --extra-rpyforth.
     """
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     import matplotlib.lines as mlines
     import math
+
+    if extra_engines is None:
+        extra_engines = []
+
+    all_engine_keys = list(ENGINES) + [k for k, _label in extra_engines]
+
+    color_map = dict(COLORS)
+    for i, (k, _label) in enumerate(extra_engines):
+        color_map[k] = EXTRA_COLORS[i % len(EXTRA_COLORS)]
+
+    label_map = dict(ENGINE_LABELS)
+    for k, label in extra_engines:
+        label_map[k] = label
 
     n = len(results)
     ncols = 4
@@ -319,7 +343,7 @@ def make_all_chart(results, pdf_path):
         ax = axes[row][col]
 
         all_times_ms = []
-        for engine in ENGINES:
+        for engine in all_engine_keys:
             r = eng_res.get(engine)
             if not r or not r["times"]:
                 continue
@@ -327,10 +351,10 @@ def make_all_chart(results, pdf_path):
             all_times_ms.extend(times_ms)
             xs = list(range(len(times_ms)))
             ax.plot(xs, times_ms, marker=".", markersize=2.5, linewidth=1.0,
-                    color=COLORS[engine], label=ENGINE_LABELS[engine])
+                    color=color_map[engine], label=label_map[engine])
             warm = steady_state_tail(r["times"])
             if warm is not None:
-                ax.axhline(warm / 1000.0, color=COLORS[engine], linewidth=0.7,
+                ax.axhline(warm / 1000.0, color=color_map[engine], linewidth=0.7,
                            linestyle=":", alpha=0.7)
 
         # Use log y-axis if range > 10x
@@ -354,14 +378,15 @@ def make_all_chart(results, pdf_path):
 
     # Shared legend (proxy artists)
     legend_handles = [
-        mlines.Line2D([], [], color=COLORS[e], linewidth=1.5, label=ENGINE_LABELS[e])
-        for e in ENGINES
+        mlines.Line2D([], [], color=color_map[e], linewidth=1.5, label=label_map[e])
+        for e in all_engine_keys
     ]
     legend_handles.append(
         mlines.Line2D([], [], color="grey", linewidth=0.7, linestyle=":",
                       alpha=0.7, label="warm-tail median")
     )
-    fig.legend(handles=legend_handles, loc="lower center", ncol=4,
+    ncol_legend = min(4, len(legend_handles))
+    fig.legend(handles=legend_handles, loc="lower center", ncol=ncol_legend,
                fontsize=8, frameon=True,
                bbox_to_anchor=(0.5, 0.01))
 
@@ -379,6 +404,158 @@ def make_all_chart(results, pdf_path):
 # Main
 # ---------------------------------------------------------------------------
 
+def _run_extra_shootout(extra_binary, extra_label, bench_path, iters, tmpdir,
+                         timeout, pin):
+    """Run an extra rpyforth binary on a shootout benchmark."""
+    driver_src = build_shootout_driver(bench_path, iters)
+    driver_path = Path(tmpdir) / ("%s_%s_driver.fs" % (bench_path.stem, extra_label))
+    driver_path.write_text(driver_src, encoding="utf-8")
+
+    if not Path(extra_binary).exists():
+        return {"engine": extra_label, "times": [], "wall": 0, "rc": -1,
+                "timed_out": False, "stderr": "binary not found", "skipped": True}
+
+    cmd = [str(extra_binary), str(driver_path)]
+    if pin is not None:
+        cmd = ["taskset", "-c", str(pin)] + cmd
+
+    t0 = time.perf_counter()
+    try:
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=timeout,
+            env=os.environ.copy(), cwd=str(SHOOTOUT_DIR),
+            stdin=subprocess.DEVNULL,
+        )
+        wall = time.perf_counter() - t0
+        stdout, stderr, rc, timed_out = proc.stdout, proc.stderr, proc.returncode, False
+    except subprocess.TimeoutExpired as exc:
+        wall = time.perf_counter() - t0
+        stdout = (exc.stdout or b"").decode("utf-8", "replace") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
+        stderr = (exc.stderr or b"").decode("utf-8", "replace") if isinstance(exc.stderr, bytes) else (exc.stderr or "")
+        rc, timed_out = -1, True
+
+    if isinstance(stdout, bytes):
+        stdout = stdout.decode("utf-8", "replace")
+    if isinstance(stderr, bytes):
+        stderr = stderr.decode("utf-8", "replace")
+
+    times = parse_curve_output(stdout)
+    return {
+        "engine": extra_label,
+        "times": times,
+        "wall": wall,
+        "rc": rc,
+        "timed_out": timed_out,
+        "stderr": stderr,
+        "skipped": False,
+    }
+
+
+def _run_extra_appbench(extra_binary, extra_label, spec, iters, tmpdir, timeout, pin):
+    """Run an extra rpyforth binary on an appbench benchmark."""
+    from run_appbench_steady import build_driver as appbench_build_driver, build_cmd as appbench_build_cmd
+
+    if not Path(extra_binary).exists():
+        return {"engine": extra_label, "times": [], "wall": 0, "rc": -1,
+                "timed_out": False, "stderr": "binary not found", "skipped": True}
+
+    driver_src = appbench_build_driver(spec, iters)
+    driver_path = Path(tmpdir) / ("%s_%s_driver.fs" % (spec.name, extra_label))
+    driver_path.write_text(driver_src, encoding="utf-8")
+
+    # build_cmd uses ENGINE_RPYFORTH key to select rpyforth-style command;
+    # we override the binary path by building the cmd manually.
+    cmd = [str(extra_binary), str(driver_path)]
+    if spec.rpy_env:
+        env = os.environ.copy()
+        env.update(spec.rpy_env)
+    else:
+        env = os.environ.copy()
+    if pin is not None:
+        cmd = ["taskset", "-c", str(pin)] + cmd
+
+    t0 = time.perf_counter()
+    try:
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=timeout,
+            env=env, cwd=str(spec.workdir), stdin=subprocess.DEVNULL,
+        )
+        wall = time.perf_counter() - t0
+        stdout, stderr, rc, timed_out = proc.stdout, proc.stderr, proc.returncode, False
+    except subprocess.TimeoutExpired as exc:
+        wall = time.perf_counter() - t0
+        stdout = (exc.stdout or b"").decode("utf-8", "replace") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
+        stderr = (exc.stderr or b"").decode("utf-8", "replace") if isinstance(exc.stderr, bytes) else (exc.stderr or "")
+        rc, timed_out = -1, True
+
+    if isinstance(stdout, bytes):
+        stdout = stdout.decode("utf-8", "replace")
+    if isinstance(stderr, bytes):
+        stderr = stderr.decode("utf-8", "replace")
+
+    times = parse_curve_output(stdout)
+    return {
+        "engine": extra_label,
+        "times": times,
+        "wall": wall,
+        "rc": rc,
+        "timed_out": timed_out,
+        "stderr": stderr,
+        "skipped": False,
+    }
+
+
+def _dump_json(results, iterations, json_path, extra_engines):
+    """Dump warm data JSON.
+
+    Schema:
+    {
+      "iterations": N,
+      "benchmarks": {
+        "<name>": {
+          "<engine_label>": {
+            "times_usec": [...],
+            "cold_usec": <first>,
+            "warm_median_usec": <median-of-last-50%>   # null if no data
+          }
+        }
+      }
+    }
+    """
+    all_engine_keys = list(ENGINES) + [k for k, _label in extra_engines]
+    label_map = dict(ENGINE_LABELS)
+    for k, label in extra_engines:
+        label_map[k] = label
+
+    benchmarks = {}
+    for name, eng_res in results:
+        bench_entry = {}
+        for engine in all_engine_keys:
+            r = eng_res.get(engine)
+            label = label_map.get(engine, engine)
+            if r is None or r.get("skipped") or r.get("timed_out") or not r["times"]:
+                bench_entry[label] = {
+                    "times_usec": [],
+                    "cold_usec": None,
+                    "warm_median_usec": None,
+                }
+            else:
+                times = r["times"]
+                warm = steady_state_tail(times)
+                bench_entry[label] = {
+                    "times_usec": times,
+                    "cold_usec": times[0],
+                    "warm_median_usec": warm,
+                }
+        benchmarks[name] = bench_entry
+
+    payload = {"iterations": iterations, "benchmarks": benchmarks}
+    Path(json_path).parent.mkdir(parents=True, exist_ok=True)
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+    print("Warm data JSON written to %s" % json_path)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--iterations", type=int, default=DEFAULT_ITERATIONS,
@@ -390,17 +567,41 @@ def main(argv=None):
                         help="CPU core to pin via taskset -c (default %d)" % DEFAULT_PIN)
     parser.add_argument("--pdf", type=str, default=DEFAULT_PDF,
                         help="output PDF path (default %s)" % DEFAULT_PDF)
+    parser.add_argument("--json", type=str, default=None, dest="json_path",
+                        help="dump warm data JSON to this path")
+    parser.add_argument("--extra-rpyforth", action="append", default=[],
+                        metavar="PATH:LABEL", dest="extra_rpyforth",
+                        help="additional rpyforth binary to run (repeatable); "
+                             "format PATH:LABEL")
     parser.add_argument("--shootout-only", action="store_true",
                         help="run only shootout benchmarks (skip appbench)")
     parser.add_argument("--appbench-only", action="store_true",
                         help="run only appbench benchmarks (skip shootout)")
     args = parser.parse_args(argv)
 
+    # Parse extra rpyforth entries: PATH:LABEL
+    extra_engines = []
+    for spec_str in args.extra_rpyforth:
+        if ":" not in spec_str:
+            print("ERROR: --extra-rpyforth must be PATH:LABEL, got: %s" % spec_str,
+                  file=sys.stderr)
+            return 1
+        colon = spec_str.index(":")
+        path_str = spec_str[:colon]
+        label = spec_str[colon + 1:]
+        # Resolve to absolute path so it works regardless of subprocess cwd.
+        path_str = str(Path(path_str).resolve())
+        extra_engines.append((path_str, label))
+
     # Print missing binaries early
     for engine in ENGINES:
         b = ENGINE_BINARY[engine]
         if not Path(b).exists():
             print("WARNING: engine binary missing: %s (%s)" % (engine, b),
+                  file=sys.stderr)
+    for path_str, label in extra_engines:
+        if not Path(path_str).exists():
+            print("WARNING: extra engine binary missing: %s (%s)" % (label, path_str),
                   file=sys.stderr)
 
     # Collect shootout benchmarks (excluding known-bad)
@@ -413,7 +614,7 @@ def main(argv=None):
     for name in SHOOTOUT_EXCLUDED:
         excluded_notes[name] = SHOOTOUT_EXCLUDED[name] if isinstance(SHOOTOUT_EXCLUDED, dict) else "excluded"
 
-    results = []  # list of (name, {engine: run_dict})
+    results = []  # list of (name, {engine_key: run_dict})
 
     with tempfile.TemporaryDirectory(prefix="warmup_all_") as tmpdir:
 
@@ -433,7 +634,7 @@ def main(argv=None):
                     driver_path = Path(tmpdir) / ("%s_%s_driver.fs" % (name, engine))
                     driver_path.write_text(driver_src, encoding="utf-8")
 
-                    print("  %-14s ... " % engine, end="", flush=True)
+                    print("  %-20s ... " % engine, end="", flush=True)
                     r = run_engine(engine, driver_path, SHOOTOUT_DIR, iters,
                                    args.timeout, args.pin)
                     warm = steady_state_tail(r["times"])
@@ -456,6 +657,31 @@ def main(argv=None):
                         ))
                     eng_res[engine] = r
 
+                # Extra engines for shootout
+                for path_str, label in extra_engines:
+                    print("  %-20s ... " % label, end="", flush=True)
+                    r = _run_extra_shootout(path_str, label, bench_path, iters,
+                                            tmpdir, args.timeout, args.pin)
+                    warm = steady_state_tail(r["times"])
+                    if r.get("skipped"):
+                        print("SKIP (binary missing)")
+                    elif r["timed_out"]:
+                        print("TIMEOUT after %.1fs" % r["wall"])
+                    elif not r["times"]:
+                        print("NO CSV DATA (rc=%d)" % r["rc"])
+                        if r["stderr"].strip():
+                            print("    stderr: %s" % r["stderr"].strip()[:200])
+                    else:
+                        conv = convergence_iteration(r["times"])
+                        print("%d iters, cold=%s warm=%s conv@%s (%.1fs)" % (
+                            len(r["times"]),
+                            fmt_usec(r["times"][0]),
+                            fmt_usec(warm),
+                            str(conv) if conv is not None else "n/a",
+                            r["wall"],
+                        ))
+                    eng_res[path_str] = r
+
                 results.append((name, eng_res))
 
         # --- Appbench programs ---
@@ -469,7 +695,7 @@ def main(argv=None):
                 for engine in ENGINES:
                     if not Path(ENGINE_BINARY[engine]).exists():
                         continue
-                    print("  %-14s ... " % engine, end="", flush=True)
+                    print("  %-20s ... " % engine, end="", flush=True)
                     r = run_appbench_engine(engine, spec, iters, tmpdir,
                                             args.timeout, args.pin)
                     warm = steady_state_tail(r["times"])
@@ -491,6 +717,31 @@ def main(argv=None):
                             r["wall"],
                         ))
                     eng_res[engine] = r
+
+                # Extra engines for appbench
+                for path_str, label in extra_engines:
+                    print("  %-20s ... " % label, end="", flush=True)
+                    r = _run_extra_appbench(path_str, label, spec, iters,
+                                            tmpdir, args.timeout, args.pin)
+                    warm = steady_state_tail(r["times"])
+                    if r.get("skipped"):
+                        print("SKIP (binary missing)")
+                    elif r["timed_out"]:
+                        print("TIMEOUT after %.1fs  [null]" % r["wall"])
+                    elif not r["times"]:
+                        print("NO CSV DATA (rc=%d)" % r["rc"])
+                        if r["stderr"].strip():
+                            print("    stderr: %s" % r["stderr"].strip()[:200])
+                    else:
+                        conv = convergence_iteration(r["times"])
+                        print("%d iters, cold=%s warm=%s conv@%s (%.1fs)" % (
+                            len(r["times"]),
+                            fmt_usec(r["times"][0]),
+                            fmt_usec(warm),
+                            str(conv) if conv is not None else "n/a",
+                            r["wall"],
+                        ))
+                    eng_res[path_str] = r
 
                 results.append((spec.name, eng_res))
 
@@ -524,10 +775,14 @@ def main(argv=None):
         for name, reason in excluded_notes.items():
             print("  %-14s  %s" % (name, reason))
 
+    # --- JSON dump ---
+    if args.json_path:
+        _dump_json(results, args.iterations, args.json_path, extra_engines)
+
     # --- Chart ---
     pdf_path = Path(args.pdf)
     try:
-        make_all_chart(results, pdf_path)
+        make_all_chart(results, pdf_path, extra_engines=extra_engines)
         print("\nWarm-up curve chart written to %s" % pdf_path)
     except Exception as exc:
         import traceback
