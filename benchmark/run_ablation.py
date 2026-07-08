@@ -1054,7 +1054,9 @@ CURVES_DEFAULT_ITERATIONS = 30
 LEXEX_ITERATIONS = 15
 CURVES_DEFAULT_TIMEOUT = 600
 CURVES_DEFAULT_PIN = 3
-DEFAULT_PDF = "/tmp/warmup_all.pdf"
+WARMUP_OUTDIR = REPO_ROOT / "logs" / "warmup"
+DEFAULT_PDF = None
+DEFAULT_JSON = None
 
 
 def run_engine(engine, driver_path, workdir, iterations, timeout, pin, rpy_env=None):
@@ -1660,12 +1662,21 @@ def cmd_curves(args):
         for name, reason in excluded_notes.items():
             print("  %-14s  %s" % (name, reason))
 
-    # --- JSON dump ---
-    if args.json_path:
-        _dump_json(results, args.iterations, args.json_path, extra_engines)
+    # --- Resolve output paths ---
+    # Default to a persistent, per-revision directory so both the chart and its
+    # underlying data survive across runs (logs/warmup/<rev>/). /tmp defaults are
+    # gone: an explicit --pdf/--json still overrides.
+    rev = git_revision(REPO_ROOT)
+    outdir = WARMUP_OUTDIR / rev
+    pdf_path = Path(args.pdf) if args.pdf else outdir / "warmup_all.pdf"
+    json_path = Path(args.json_path) if args.json_path else outdir / "warmup_curves.json"
+    pdf_path.parent.mkdir(parents=True, exist_ok=True)
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # --- JSON dump (always) ---
+    _dump_json(results, args.iterations, json_path, extra_engines)
 
     # --- Chart ---
-    pdf_path = Path(args.pdf)
     try:
         make_all_chart(results, pdf_path, extra_engines=extra_engines)
         print("\nWarm-up curve chart written to %s" % pdf_path)
@@ -2316,9 +2327,10 @@ def main(argv=None):
     cp.add_argument("--pin", type=int, default=CURVES_DEFAULT_PIN,
                     help="CPU core to pin via taskset -c (default %d)" % CURVES_DEFAULT_PIN)
     cp.add_argument("--pdf", type=str, default=DEFAULT_PDF,
-                    help="output PDF path (default %s)" % DEFAULT_PDF)
-    cp.add_argument("--json", type=str, default=None, dest="json_path",
-                    help="dump warm data JSON to this path")
+                    help="output PDF path (default logs/warmup/<rev>/warmup_all.pdf)")
+    cp.add_argument("--json", type=str, default=DEFAULT_JSON, dest="json_path",
+                    help="dump warm data JSON to this path "
+                         "(default logs/warmup/<rev>/warmup_curves.json; always written)")
     cp.add_argument("--extra-rpyforth", action="append", default=[],
                     metavar="PATH:LABEL", dest="extra_rpyforth",
                     help="additional rpyforth binary to run (repeatable); "
