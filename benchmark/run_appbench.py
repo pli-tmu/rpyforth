@@ -40,6 +40,7 @@ Per-program core-word / count choices (see SteadySpec below):
   - brainless: unit = benchmark3 x8               (self-contained movegen loops)
   - fcp     : unit = benchThink                    (position set up once in prelude)
   - lexex   : unit = lexcore + dict rewind         (re-do decorate + table build)
+  - coremark: unit = steady-unit (2000 iter run)   (CRC self-check each iteration)
 
 Safety: never modifies appbench/appbench-1.4/. Drivers are written to a tmpdir
 and run with cwd set to the program dir. Subprocesses use a hard timeout so a
@@ -49,7 +50,7 @@ stuck engine is killed.
 
 Functional + performance benchmark harness for the appbench-1.4 suite.
 
-Programs covered: cd16sim, brainless, fcp, lexex, benchgc.
+Programs covered: cd16sim, brainless, fcp, lexex, benchgc, coremark.
 
 Each program is run under gforth (reference), gforth-fast, and rpyforth-c-stkfrag.
 Functional status per (program, engine):
@@ -76,6 +77,7 @@ from typing import Dict, List, Optional, Tuple
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 APPBENCH_DIR = REPO_ROOT / "appbench" / "appbench-1.4"
+COREMARK_DIR = REPO_ROOT / "benchmark" / "coremark-src"
 GFORTH_DIR = REPO_ROOT / "gforth-0.7.9"
 GFORTH_SETUP = APPBENCH_DIR / "setup" / "gforth.fs"
 
@@ -203,6 +205,16 @@ PROGRAMS = [
         setup="",
         unit="testgc drop",
         rpy_env={"RPYFORTH_ALLOC_MB": "256"},
+    ),
+    SteadySpec(
+        name="coremark",
+        workdir=COREMARK_DIR,
+        pre_include="",
+        include_file="coremark.f",
+        # 2000 iterations is ~200 ms warm on gforth-fast (utime ticks); CRC
+        # self-check runs inside coremark each timed iteration.
+        setup=": steady-unit 2000 0 iterations 2! coremark ;",
+        unit="steady-unit",
     ),
 ]
 
@@ -751,7 +763,15 @@ def build_program_registry() -> List[ProgramSpec]:
         rpy_env={"RPYFORTH_ALLOC_MB": "256"},
     )
 
-    return [cd16sim, brainless, fcp, lexex, benchgc]
+    coremark = ProgramSpec(
+        name="coremark",
+        workdir=COREMARK_DIR,
+        prelude="",
+        body='S" coremark.f" included 131072 0 iterations 2! coremark bye',
+        supported_engines=[ENGINE_GFORTH, ENGINE_GFORTH_FAST, ENGINE_RPYFORTH],
+    )
+
+    return [cd16sim, brainless, fcp, lexex, benchgc, coremark]
 
 
 def build_gforth_cmd(binary: Path, spec: ProgramSpec, tmpdir: Path) -> List[str]:
@@ -824,7 +844,11 @@ def normalise_output(text: str) -> List[str]:
         line = re.sub(r'\s+', ' ', line).strip()
         if not line:
             continue
-        if re.search(r'\b(seconds?|elapsed|ms,|Hz|nps\b)\b', line, re.IGNORECASE):
+        if re.search(r'\b(seconds?|secs|elapsed|ms,|Hz|nps\b)\b', line, re.IGNORECASE):
+            continue
+        if re.match(r'^Total ticks\b', line, re.IGNORECASE):
+            continue
+        if re.match(r'^Iterations/Sec\b', line, re.IGNORECASE):
             continue
         if re.match(r'^(?:Gforth|Authors:|Copyright|License|Gforth comes|Type)', line):
             continue
