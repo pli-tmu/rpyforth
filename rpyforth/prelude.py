@@ -22,6 +22,9 @@ PRELUDE = """\
 : M+ S>D D+ ;
 : D= D- D0= ;
 : D<> D= 0= ;
+: D< D- NIP 0< ;
+: D> 2SWAP D< ;
+: D0< NIP 0< ;
 CREATE pad-buf 512 ALLOT
 : PAD pad-buf ;
 : NALIGNED 1- TUCK + SWAP INVERT AND ;

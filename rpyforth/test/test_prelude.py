@@ -118,6 +118,25 @@ def test_d_not_equals():
     assert pop("5 0 5 0 D<>") == 0
 
 
+def test_d_less_than():
+    assert pop("1 0 3 0 D<") == -1
+    assert pop("3 0 1 0 D<") == 0
+    assert pop("5 0 5 0 D<") == 0
+
+
+def test_d_greater_than():
+    assert pop("3 0 1 0 D>") == -1
+    assert pop("1 0 3 0 D>") == 0
+    assert pop("5 0 5 0 D>") == 0
+
+
+def test_d0_less_than():
+    assert pop("-1 -1 D0<") == -1
+    assert pop("0 -1 D0<") == -1
+    assert pop("-1 0 D0<") == 0
+    assert pop("0 0 D0<") == 0
+
+
 def test_pad_round_trips():
     # PAD is a stable scratch buffer: store then fetch at the same address
     inner = run_with_prelude("PAD 42 SWAP !  PAD @")
