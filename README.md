@@ -1,5 +1,7 @@
 # rpyforth
 
+A Forth language written in RPython.
+
 ## Setup
 
 ```
