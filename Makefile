@@ -34,6 +34,22 @@ build-all: build-jit built-jit-stkfrag build-jit-novirt
 test: _pypy_binary/bin/python setup-pypy
 	PYTHONPATH=. ./_pypy_binary/bin/python2 ./pypy/pytest.py rpyforth/test -vv -s
 
+.PHONY: test-joy
+test-joy: _pypy_binary/bin/python setup-pypy
+	PYTHONPATH=. ./_pypy_binary/bin/python2 ./pypy/pytest.py rpyjoy/test -q
+
+.PHONY: bench-joy
+bench-joy: _pypy_binary/bin/python setup-pypy
+	.venv/bin/python benchmark/run_joy.py --iterations 3
+
+.PHONY: build-joy
+build-joy: _pypy_binary/bin/python setup-pypy
+	RPYJOY_EXE_NAME=rpyjoy-c PYTHONPATH=. $(PYTHON2) $(RPYTHON) -Ojit $(RPYTHON_ARGS) rpyjoy/targetrpyjoy.py
+
+.PHONY: build-joy-stkfrag
+build-joy-stkfrag: _pypy_binary/bin/python setup-pypy
+	RPYJOY_STACK_FRAGMENT=1 RPYJOY_EXE_NAME=rpyjoy-c-stkfrag PYTHONPATH=. $(PYTHON2) $(RPYTHON) -Ojit $(RPYTHON_ARGS) rpyjoy/targetrpyjoy.py
+
 .PHONY: coverage
 coverage:
 	python3 check_coverage.py
