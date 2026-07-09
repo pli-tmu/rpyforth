@@ -17,3 +17,6 @@ gforth-[0-9]*/
 
 # Generated benchmark charts
 *.pdf
+
+# Local VFXForth installation
+vfxforth/_install/

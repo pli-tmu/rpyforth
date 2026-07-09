@@ -28,7 +28,7 @@ build-jit-novirt: _pypy_binary/bin/python setup-pypy
 	RPYFORTH_EXE_NAME=rpyforth-c-novirt PYTHONPATH=. $(PYTHON2) $(RPYTHON) -Ojit $(RPYTHON_ARGS) rpyforth/$(TARGET).py
 
 .PHONY: build-all
-build-all: build-jit build-jit-novirt
+build-all: build-jit built-jit-stkfrag build-jit-novirt
 
 .PHONY: test
 test: _pypy_binary/bin/python setup-pypy
@@ -133,6 +133,91 @@ bench-appbench: build-jit-stkfrag build-gforth setup-appbench $(PLOT_PY)
 bench-appbench-curve: build-jit-stkfrag build-gforth setup-appbench $(PLOT_PY)
 	@$(PLOT_PY) benchmark/run_appbench.py steady \
     	--iterations 50 --pin 3 --pdf appbench-curve.pdf
+
+# VFXForth: local install from bundled tree (no sudo, no /usr/local).
+VFXFORTH_DIR     = vfxforth/VfxForth64Lin
+VFXFORTH_INSTALL = vfxforth/_install
+VFXFORTH_BINDIR  = $(VFXFORTH_INSTALL)/bin
+VFXFORTH_BIN     = $(VFXFORTH_BINDIR)/VfxForth_x64_lin.elf
+VFXFORTH         = $(VFXFORTH_BINDIR)/vfxforth
+VFXFORTH_URL     = https://vfxforth.com/downloads/VfxCommunity/VfxForth_x64_lin.tar.gz
+VFXFORTH_TARBALL = vfxforth/VfxForth_x64_lin.tar.gz
+
+$(VFXFORTH_TARBALL):
+	mkdir -p vfxforth
+	wget -N -P vfxforth $(VFXFORTH_URL)
+
+$(VFXFORTH_DIR)/.extracted: $(VFXFORTH_TARBALL)
+	mkdir -p $(VFXFORTH_DIR)
+	tar -zxf $< -C vfxforth
+	@touch $@
+
+$(VFXFORTH_BINDIR):
+	mkdir -p $@
+
+$(VFXFORTH_BIN): $(VFXFORTH_DIR)/Bin/VfxForth_x64_lin.elf | $(VFXFORTH_BINDIR) $(VFXFORTH_DIR)/.extracted
+	cp -p $< $@
+
+$(VFXFORTH_BINDIR)/VfxForthK_x64_lin.elf: $(VFXFORTH_DIR)/Bin/VfxForthK_x64_lin.elf | $(VFXFORTH_BINDIR) $(VFXFORTH_DIR)/.extracted
+	cp -p $< $@
+
+$(VFXFORTH_BINDIR)/x64.elf: $(VFXFORTH_DIR)/Bin/x64.elf | $(VFXFORTH_BINDIR) $(VFXFORTH_DIR)/.extracted
+	cp -p $< $@
+
+$(VFXFORTH_BINDIR)/stublin64.elf: $(VFXFORTH_DIR)/Bin/stublin64.elf | $(VFXFORTH_BINDIR) $(VFXFORTH_DIR)/.extracted
+	cp -p $< $@
+
+$(VFXFORTH_BINDIR)/libmpeparser64.so.0: $(VFXFORTH_DIR)/Bin/libmpeparser64.so.0 | $(VFXFORTH_BINDIR) $(VFXFORTH_DIR)/.extracted
+	cp -p $< $@
+
+$(VFXFORTH_BINDIR)/vfxsupp64.so.1: $(VFXFORTH_DIR)/Bin/vfxsupp64.so.1 | $(VFXFORTH_BINDIR) $(VFXFORTH_DIR)/.extracted
+	cp -p $< $@
+
+$(VFXFORTH): $(VFXFORTH_BIN) \
+		$(VFXFORTH_BINDIR)/VfxForthK_x64_lin.elf \
+		$(VFXFORTH_BINDIR)/x64.elf \
+		$(VFXFORTH_BINDIR)/stublin64.elf \
+		$(VFXFORTH_BINDIR)/libmpeparser64.so.0 \
+		$(VFXFORTH_BINDIR)/vfxsupp64.so.1
+	@printf '#!/bin/sh\nVFXROOT=$$(cd "$$(dirname "$$0")/.." && pwd)\nexport LD_LIBRARY_PATH="$$VFXROOT/bin$${LD_LIBRARY_PATH:+:$$LD_LIBRARY_PATH}"\nexec "$$VFXROOT/bin/VfxForth_x64_lin.elf" "$$@"\n' > $@
+	@chmod +x $@
+
+.PHONY: download-vfxforth
+download-vfxforth: $(VFXFORTH_TARBALL)
+
+.PHONY: extract-vfxforth
+extract-vfxforth: $(VFXFORTH_DIR)/.extracted
+
+.PHONY: setup-vfxforth
+setup-vfxforth: $(VFXFORTH)
+	@echo "VFXForth installed locally in $(VFXFORTH_INSTALL)"
+	@echo "Run with: $(VFXFORTH)"
+
+.PHONY: test-vfxforth
+test-vfxforth: setup-vfxforth
+	@SMOKE=$(VFXFORTH_INSTALL)/_smoke_test.fs; \
+	trap 'rm -f $$SMOKE' EXIT; \
+	{ \
+		echo '.( VFXForth local install smoke test started ) cr'; \
+		echo '2 3 4 + * . cr'; \
+		echo '.( VFXForth local install smoke test: OK ) cr'; \
+		echo 'bye'; \
+	} > $$SMOKE; \
+	$(VFXFORTH) "include $$SMOKE"
+
+.PHONY: uninstall-vfxforth
+uninstall-vfxforth:
+	@echo "Removing globally installed VFXForth files..."
+	sudo rm -f /usr/local/bin/VfxForth*_x64_lin.elf
+	sudo rm -f /usr/local/bin/x64.elf
+	sudo rm -f /usr/local/bin/vfxlin64
+	sudo rm -f /usr/local/bin/vfx64
+	sudo rm -f /usr/lib/libmpeparser64.so.0
+	sudo rm -f /usr/lib/vfxsupp64.so.1
+	sudo rm -f /usr/lib/vfxsupp64.so.1.0.1
+	rm -f $(HOME)/.VfxForth.ini
+	rm -rf $(HOME)/.VfxForth
+	@echo "VFXForth uninstalled."
 
 # Ablation analysis
 ABLATION_RESULTS ?= logs/analysis/7038abb-dirty/results.json
