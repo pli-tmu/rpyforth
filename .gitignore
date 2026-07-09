@@ -20,3 +20,7 @@ gforth-[0-9]*/
 
 # Local VFXForth installation
 vfxforth/_install/
+
+# Local SwiftForth installation
+swiftforth/SwiftForth/
+swiftforth/_install/

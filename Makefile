@@ -39,7 +39,10 @@ coverage:
 	python3 check_coverage.py
 
 .PHONY: setup-gforth
-setup-gforth:
+setup-gforth: download-gforth build-gforth
+
+.PHONY: download-gforth
+download-gforth:
 	wget -N https://www.complang.tuwien.ac.at/forth/gforth/Snapshots/current/gforth.tar.xz
 	tar xJf gforth.tar.xz
 	src=$$(tar tJf gforth.tar.xz | sed 's#/.*##' | grep -m1 '^gforth-'); \
@@ -62,20 +65,12 @@ GFORTH = ./$(GFORTH_DIR)/gforth
 .PHONY: build-gforth
 build-gforth: $(GFORTH_DIR)/gforth-fast
 
-# Compile Gforth in-tree. The source tree is an order-only prerequisite so it is
-# fetched on demand when absent (without forcing a rebuild when only its mtime
-# changes). This keeps `make bench-shootout` self-bootstrapping instead of dying
-# with "cd: $(GFORTH_DIR): No such file or directory" on a fresh checkout.
 $(GFORTH_DIR)/gforth-fast: | $(GFORTH_DIR)
 	cd $(GFORTH_DIR) && ./configure --prefix="$$PWD/_install" && $(MAKE) -j$$(nproc)
 
 $(GFORTH_DIR):
 	$(MAKE) setup-gforth
 
-# run_shootout.py renders its --chart / --curve-chart PDFs with matplotlib.
-# The system Python is externally managed (PEP 668), so a bare `pip install`
-# is refused; install matplotlib into a project-local venv instead and run the
-# benchmark driver from it. Create it once with `make setup-plot`.
 VENV = .venv
 PLOT_PY = $(VENV)/bin/python
 
@@ -107,9 +102,7 @@ sweep-framesize: $(PLOT_PY)
     	--iterations 3 --pin 2 \
     	--pdf sweep-framesize.pdf
 
-# ---------------------------------------------------------------------------
 # Appbench: M. Anton Ertl's application benchmark suite (untracked shared tree).
-# ---------------------------------------------------------------------------
 APPBENCH_URL = https://www.complang.tuwien.ac.at/forth/appbench.zip
 APPBENCH_DIR = appbench/appbench-1.4
 
@@ -218,6 +211,44 @@ uninstall-vfxforth:
 	rm -f $(HOME)/.VfxForth.ini
 	rm -rf $(HOME)/.VfxForth
 	@echo "VFXForth uninstalled."
+
+# SwiftForth: local install from downloaded tarball (no sudo, no /usr/local).
+SWIFTFORTH_URL     = https://dl.forth.com/downloads/SwiftForth-linux-eval.tgz
+SWIFTFORTH_TARBALL = swiftforth/SwiftForth-linux-eval.tgz
+SWIFTFORTH_DIR     = swiftforth/SwiftForth
+SWIFTFORTH_INSTALL = swiftforth/_install
+SWIFTFORTH_BIN     = $(SWIFTFORTH_INSTALL)/bin/sf
+
+$(SWIFTFORTH_TARBALL):
+	mkdir -p swiftforth
+	wget -nc -P swiftforth $(SWIFTFORTH_URL)
+
+$(SWIFTFORTH_DIR)/.extracted: $(SWIFTFORTH_TARBALL)
+	mkdir -p $(SWIFTFORTH_DIR)
+	tar -zxf $< -C swiftforth
+	@touch $@
+
+$(SWIFTFORTH_INSTALL)/bin:
+	mkdir -p $@
+
+$(SWIFTFORTH_BIN): $(SWIFTFORTH_DIR)/.extracted | $(SWIFTFORTH_INSTALL)/bin
+	@printf '#!/bin/sh\nSFROOT=$$(cd "$$(dirname "$$0")/../.." && pwd)\ncd "$$SFROOT/SwiftForth" || exit 1\nexec "$$SFROOT/SwiftForth/bin/linux/sf64" "$$@"\n' > $@
+	@chmod +x $@
+
+.PHONY: download-swiftforth
+download-swiftforth: $(SWIFTFORTH_TARBALL)
+
+.PHONY: extract-swiftforth
+extract-swiftforth: $(SWIFTFORTH_DIR)/.extracted
+
+.PHONY: setup-swiftforth
+setup-swiftforth: $(SWIFTFORTH_BIN)
+	@echo "SwiftForth installed locally in $(SWIFTFORTH_INSTALL)"
+	@echo "Run with: $(SWIFTFORTH_BIN)"
+
+.PHONY: test-swiftforth
+test-swiftforth: setup-swiftforth
+	@$(SWIFTFORTH_BIN) 'cr .( SwiftForth local install smoke test started ) cr 2 3 4 + * . cr cr .( SwiftForth local install smoke test: OK ) cr bye'
 
 # Ablation analysis
 ABLATION_RESULTS ?= logs/analysis/7038abb-dirty/results.json
