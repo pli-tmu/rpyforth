@@ -187,11 +187,21 @@ def git_revision(repo_root: Path) -> str:
 
 
 def discover_benchmarks(root: Path) -> List[Path]:
-    """Return all .fs files under shootout/, sorted."""
+    """Return all .fs files under shootout/, sorted.
+
+    Forth-specific adaptations live in shootout/vfxforth/ and
+    shootout/swiftforth/; they are selected by the wrapper scripts and must
+    not be discovered as separate benchmarks.
+    """
     shootout_dir = root / "shootout"
     if not shootout_dir.is_dir():
         raise RuntimeError(f"shootout/ directory not found at {root}")
-    return sorted(p for p in shootout_dir.rglob("*.fs") if p.is_file())
+    variant_dirs = {"vfxforth", "swiftforth"}
+    return sorted(
+        p for p in shootout_dir.rglob("*.fs")
+        if p.is_file()
+        and not any(part in variant_dirs for part in p.relative_to(shootout_dir).parts[:-1])
+    )
 
 
 def run_benchmark(
@@ -227,8 +237,15 @@ def run_benchmark(
     except subprocess.TimeoutExpired as exc:
         result.status = "timeout"
         result.returncode = -1
-        result.stdout = exc.stdout or ""
-        result.stderr = exc.stderr or ""
+        # PyPy may provide bytes even with text=True; decode defensively.
+        if isinstance(exc.stdout, bytes):
+            result.stdout = exc.stdout.decode("utf-8", errors="replace")
+        else:
+            result.stdout = exc.stdout or ""
+        if isinstance(exc.stderr, bytes):
+            result.stderr = exc.stderr.decode("utf-8", errors="replace")
+        else:
+            result.stderr = exc.stderr or ""
         result.error_message = f"timed out after {timeout}s"
         result.wall_seconds = time.perf_counter() - start
         return result
@@ -262,8 +279,10 @@ def parse_standard_output(result: BenchmarkResult) -> None:
         result.elapsed_usec = int(elapsed_match.group(1))
 
     # Known result labels (e.g. "Ack: 8189", "Count: 1028").
+    # Allow the label anywhere on the line so wrappers/forths that prefix the
+    # line with "Including ..." still report the correct value.
     known_label_match = re.search(
-        r"^\s*(Ack|Count|Fib|Result):\s*(\S+)", text, re.MULTILINE | re.IGNORECASE
+        r"(?:^|.*\s)(Ack|Count|Fib|Result):\s*(\S+)", text, re.MULTILINE | re.IGNORECASE
     )
     if known_label_match:
         result.result_value = f"{known_label_match.group(1)}: {known_label_match.group(2)}"

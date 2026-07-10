@@ -84,16 +84,20 @@ GFORTH_SETUP = APPBENCH_DIR / "setup" / "gforth.fs"
 ENGINE_GFORTH = "gforth"
 ENGINE_GFORTH_FAST = "gforth-fast"
 ENGINE_RPYFORTH = "rpyforth"
+ENGINE_VFXFORTH = "vfxforth"
+ENGINE_SWIFTFORTH = "swiftforth"
 
 REFERENCE_ENGINE = ENGINE_GFORTH_FAST
 
 # Order matters for the steady-mode table / legend.
-ENGINES = [ENGINE_RPYFORTH, ENGINE_GFORTH_FAST, ENGINE_GFORTH]
+ENGINES = [ENGINE_RPYFORTH, ENGINE_GFORTH_FAST, ENGINE_GFORTH, ENGINE_VFXFORTH, ENGINE_SWIFTFORTH]
 
 ENGINE_BINARY = {
     ENGINE_RPYFORTH: REPO_ROOT / "rpyforth-c-stkfrag",
     ENGINE_GFORTH_FAST: GFORTH_DIR / "gforth-fast",
     ENGINE_GFORTH: GFORTH_DIR / "gforth",
+    ENGINE_VFXFORTH: REPO_ROOT / "vfxforth.sh",
+    ENGINE_SWIFTFORTH: REPO_ROOT / "swiftforth.sh",
 }
 
 # steady mode defaults
@@ -148,7 +152,7 @@ PROGRAMS = [
     SteadySpec(
         name="cd16sim",
         workdir=APPBENCH_DIR / "cd16sim",
-        pre_include=": 3drop 2drop drop ;",
+        pre_include="[undefined] 3drop [if] : 3drop 2drop drop ; [then]",
         include_file="bench.f",
         setup="",
         # clear resets the machine state so each 150000-step run is identical.
@@ -325,13 +329,15 @@ PROGRAMS.append(
 )
 
 
-def build_driver(spec, iterations):
+def build_driver(spec, iterations, engine):
     """Return Forth source for a driver that times `unit` `iterations` times.
 
-    UTIME ( -- d ) is microseconds as a double cell. Elapsed for one iteration
-    is far below 2^31 us (~35 min), so after `d-` we drop the high cell and
-    print the low cell as a bare integer. A CR is emitted before each CSV line
-    so the workload's own stdout cannot merge with our data line.
+    Gforth/rpyforth use UTIME ( -- d ). VFXForth uses TICKS ( -- ms ) and
+    SwiftForth uses uCOUNTER ( -- d ), both saved in variables because their
+    2>R / 2R> words are not usable for this pattern. Elapsed for one iteration
+    is far below 2^31 us (~35 min), so we drop the high cell and print the low
+    cell as a bare integer. A CR is emitted before each CSV line so the
+    workload's own stdout cannot merge with our data line.
     """
     lines = []
     if spec.pre_include:
@@ -346,13 +352,32 @@ def build_driver(spec, iterations):
         lines.append("include " + include_abs)
     if spec.setup:
         lines.append(spec.setup)
+
+    if engine == ENGINE_VFXFORTH:
+        lines.append("variable _tstart")
+        lines.append(": _start-timer ticks 1000 * _tstart ! ;")
+        lines.append(": _elapsed-us ticks 1000 * _tstart @ - ;")
+        start_timer = "_start-timer"
+        elapsed_timer = "_elapsed-us"
+    elif engine == ENGINE_SWIFTFORTH:
+        lines.append("variable _tlo variable _thi")
+        lines.append(": _start-timer uCOUNTER _thi ! _tlo ! ;")
+        lines.append(": _elapsed-us uCOUNTER _tlo @ _thi @ D- drop ;")
+        start_timer = "_start-timer"
+        elapsed_timer = "_elapsed-us"
+    else:
+        # Gforth / rpyforth: use the return stack for the double timestamp.
+        lines.append(": _start-timer utime 2>r ;")
+        lines.append(": _elapsed-us utime 2r> D- drop ;")
+        start_timer = "_start-timer"
+        elapsed_timer = "_elapsed-us"
+
     # Loop body: time the unit, print "i,elapsed_usec" on its own line.
     lines.append(": steady-run  ( n -- )")
     lines.append("  0 DO")
-    lines.append("    utime 2>r")
+    lines.append("    " + start_timer)
     lines.append("    " + spec.unit)
-    lines.append("    utime 2r> d-")
-    lines.append("    drop            \\ elapsed low cell (usec)")
+    lines.append("    " + elapsed_timer)
     # A CR both BEFORE and AFTER the CSV isolates the data line: the leading CR
     # detaches it from any stdout the unit printed, and the trailing CR keeps the
     # NEXT iteration's unit output (e.g. lexex's buildTransTable progress dots)
@@ -366,7 +391,7 @@ def build_driver(spec, iterations):
 
 def build_cmd(engine, driver_path, spec):
     binary = ENGINE_BINARY[engine]
-    if engine == ENGINE_RPYFORTH:
+    if engine in (ENGINE_RPYFORTH, ENGINE_VFXFORTH, ENGINE_SWIFTFORTH):
         return [str(binary), str(driver_path)]
     # gforth / gforth-fast: -m <mem> plus the appbench gforth setup shim, then
     # load our driver file.
@@ -410,7 +435,7 @@ def steady_onset_index(times, frac=0.5):
 
 
 def run_engine(engine, spec, iterations, tmpdir, timeout, pin):
-    driver = build_driver(spec, iterations)
+    driver = build_driver(spec, iterations, engine)
     driver_path = Path(tmpdir) / ("%s_%s_driver.fs" % (spec.name, engine))
     driver_path.write_text(driver, encoding="utf-8")
 
@@ -525,6 +550,8 @@ def make_chart(results, iterations, pdf_path):
         ENGINE_RPYFORTH: "#d62728",
         ENGINE_GFORTH_FAST: "#1f77b4",
         ENGINE_GFORTH: "#2ca02c",
+        ENGINE_VFXFORTH: "#9467bd",
+        ENGINE_SWIFTFORTH: "#ff7f0e",
     }
 
     for row, prog in enumerate(progs):
@@ -717,12 +744,17 @@ def median_ci(
 def build_program_registry() -> List[ProgramSpec]:
     appbench = APPBENCH_DIR
 
+    _ALL_ENGINES = [
+        ENGINE_GFORTH, ENGINE_GFORTH_FAST, ENGINE_RPYFORTH,
+        ENGINE_VFXFORTH, ENGINE_SWIFTFORTH,
+    ]
+
     cd16sim = ProgramSpec(
         name="cd16sim",
         workdir=appbench / "cd16sim",
-        prelude=": 3drop 2drop drop ;",
+        prelude="[undefined] 3drop [if] : 3drop 2drop drop ; [then]",
         body="include bench.f\n1000000 benchmark\nbye",
-        supported_engines=[ENGINE_GFORTH, ENGINE_GFORTH_FAST, ENGINE_RPYFORTH],
+        supported_engines=_ALL_ENGINES,
     )
 
     brainless = ProgramSpec(
@@ -730,7 +762,7 @@ def build_program_registry() -> List[ProgramSpec]:
         workdir=appbench / "brainless",
         prelude="",
         body="include benchmark.fs\nbenchmark\nbye",
-        supported_engines=[ENGINE_GFORTH, ENGINE_GFORTH_FAST, ENGINE_RPYFORTH],
+        supported_engines=_ALL_ENGINES,
     )
 
     fcp = ProgramSpec(
@@ -738,7 +770,7 @@ def build_program_registry() -> List[ProgramSpec]:
         workdir=appbench / "fcp",
         prelude="",
         body="include fcp-1.31-64.f\nbench\nbye",
-        supported_engines=[ENGINE_GFORTH, ENGINE_GFORTH_FAST, ENGINE_RPYFORTH],
+        supported_engines=_ALL_ENGINES,
     )
 
     lexex = ProgramSpec(
@@ -746,7 +778,7 @@ def build_program_registry() -> List[ProgramSpec]:
         workdir=appbench / "lexex",
         prelude="",
         body="include run.fth\nbye",
-        supported_engines=[ENGINE_GFORTH, ENGINE_GFORTH_FAST, ENGINE_RPYFORTH],
+        supported_engines=_ALL_ENGINES,
     )
 
     # benchgc: a garbage-collector benchmark. bench-gc5.fs first does
@@ -759,7 +791,7 @@ def build_program_registry() -> List[ProgramSpec]:
         workdir=appbench / "benchgc",
         prelude="",
         body="64000 include bench-gc5.fs\nbye",
-        supported_engines=[ENGINE_GFORTH, ENGINE_GFORTH_FAST, ENGINE_RPYFORTH],
+        supported_engines=_ALL_ENGINES,
         rpy_env={"RPYFORTH_ALLOC_MB": "256"},
     )
 
@@ -768,7 +800,7 @@ def build_program_registry() -> List[ProgramSpec]:
         workdir=COREMARK_DIR,
         prelude="",
         body='S" coremark.f" included 131072 0 iterations 2! coremark bye',
-        supported_engines=[ENGINE_GFORTH, ENGINE_GFORTH_FAST, ENGINE_RPYFORTH],
+        supported_engines=_ALL_ENGINES,
     )
 
     return [cd16sim, brainless, fcp, lexex, benchgc, coremark]
@@ -803,6 +835,32 @@ def build_rpyforth_cmd(binary: Path, spec: ProgramSpec, tmpdir: Path) -> List[st
     return cmd
 
 
+def build_vfxforth_cmd(binary: Path, spec: ProgramSpec, tmpdir: Path) -> List[str]:
+    lines = []
+    if spec.prelude:
+        lines.append(spec.prelude)
+    lines.append(spec.body)
+    forth_expr = "\n".join(lines)
+
+    wrapper_path = tmpdir / f"{spec.name}_vfx_wrapper.fs"
+    wrapper_path.write_text(forth_expr, encoding="utf-8")
+
+    return [str(binary), str(wrapper_path)]
+
+
+def build_swiftforth_cmd(binary: Path, spec: ProgramSpec, tmpdir: Path) -> List[str]:
+    lines = ["warning off"]
+    if spec.prelude:
+        lines.append(spec.prelude)
+    lines.append(spec.body)
+    forth_expr = "\n".join(lines)
+
+    wrapper_path = tmpdir / f"{spec.name}_sf_wrapper.fs"
+    wrapper_path.write_text(forth_expr, encoding="utf-8")
+
+    return [str(binary), str(wrapper_path)]
+
+
 def run_once(
     cmd: List[str],
     workdir: Path,
@@ -828,7 +886,13 @@ def run_once(
         return proc.returncode, proc.stdout, proc.stderr, wall, False
     except subprocess.TimeoutExpired as exc:
         wall = time.perf_counter() - t0
-        return -1, exc.stdout or "", exc.stderr or "", wall, True
+        stdout = exc.stdout or ""
+        stderr = exc.stderr or ""
+        if isinstance(stdout, bytes):
+            stdout = stdout.decode("utf-8", "replace")
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode("utf-8", "replace")
+        return -1, stdout, stderr, wall, True
     except FileNotFoundError as exc:
         return -2, "", f"binary not found: {exc.filename}", 0.0, False
 
@@ -865,6 +929,8 @@ def normalise_output(text: str) -> List[str]:
         if re.match(r'^Loading run\.fth', line):
             continue
         if re.match(r'^Time taken:', line):
+            continue
+        if re.match(r'^Elapsed:', line):
             continue
         line = re.sub(r'\b\d+\.\d+\b', '<T>', line)
         lines.append(line)
@@ -927,6 +993,8 @@ def resolve_engines(overrides: Dict[str, str]) -> Dict[str, Path]:
         ENGINE_GFORTH: GFORTH_DIR / "gforth",
         ENGINE_GFORTH_FAST: GFORTH_DIR / "gforth-fast",
         ENGINE_RPYFORTH: REPO_ROOT / "rpyforth-c-stkfrag",
+        ENGINE_VFXFORTH: REPO_ROOT / "vfxforth.sh",
+        ENGINE_SWIFTFORTH: REPO_ROOT / "swiftforth.sh",
     }
     result: Dict[str, Path] = {}
     for name, default in defaults.items():
@@ -989,6 +1057,10 @@ def run_program(
         cmd = build_rpyforth_cmd(engine_path, spec, tmpdir)
         if spec.rpy_env:
             extra_env = dict(spec.rpy_env)
+    elif engine_name == ENGINE_VFXFORTH:
+        cmd = build_vfxforth_cmd(engine_path, spec, tmpdir)
+    elif engine_name == ENGINE_SWIFTFORTH:
+        cmd = build_swiftforth_cmd(engine_path, spec, tmpdir)
     else:
         cmd = build_gforth_cmd(engine_path, spec, tmpdir)
 
@@ -1218,6 +1290,10 @@ def run_func(args) -> int:
         overrides[ENGINE_GFORTH_FAST] = args.gforth_fast
     if args.rpyforth:
         overrides[ENGINE_RPYFORTH] = args.rpyforth
+    if args.vfxforth:
+        overrides[ENGINE_VFXFORTH] = args.vfxforth
+    if args.swiftforth:
+        overrides[ENGINE_SWIFTFORTH] = args.swiftforth
 
     engine_paths = resolve_engines(overrides)
     selected_engines = args.engines
@@ -1399,7 +1475,8 @@ def _add_func_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--engines", nargs="+", metavar="NAME",
         default=[ENGINE_GFORTH, ENGINE_GFORTH_FAST, ENGINE_RPYFORTH],
-        help="Engines to benchmark (default: gforth gforth-fast rpyforth)",
+        help="Engines to benchmark (default: gforth gforth-fast rpyforth; "
+             "also supported: vfxforth swiftforth)",
     )
     parser.add_argument(
         "--gforth", metavar="PATH", default=None,
@@ -1412,6 +1489,14 @@ def _add_func_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--rpyforth", metavar="PATH", default=None,
         help="Override path to rpyforth-c-stkfrag binary",
+    )
+    parser.add_argument(
+        "--vfxforth", metavar="PATH", default=None,
+        help="Override path to vfxforth runner (default: ./vfxforth.sh)",
+    )
+    parser.add_argument(
+        "--swiftforth", metavar="PATH", default=None,
+        help="Override path to swiftforth runner (default: ./swiftforth.sh)",
     )
 
 

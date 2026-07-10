@@ -5,9 +5,10 @@ cd "${REPO_ROOT}"
 
 BENCHMARKS=(fibo.fs ack.fs nestedloop.fs sieve.fs heap.fs ary.fs)
 CURVE_BENCHMARKS=(fibo.fs ack.fs nestedloop.fs sieve.fs heap.fs ary.fs)
-COMMANDS=(gforth ./rpyforth.sh)
-WARMUP_RUNS=5
-MEASURE_RUNS=100
+COMMANDS=(gforth ./rpyforth.sh ./vfxforth.sh ./swiftforth.sh)
+WARMUP_RUNS=${WARMUP_RUNS:-5}
+MEASURE_RUNS=${MEASURE_RUNS:-100}
+BENCH_TIMEOUT=${BENCH_TIMEOUT:-60}
 
 # Parse command line arguments
 MODE="standard"  # standard, curve, or all
@@ -57,6 +58,32 @@ echo "Memory profiling: $ENABLE_MEMORY"
 echo "Logs directory: $LOG_DIR"
 echo "---------------------------------------------------"
 
+# Resolve the benchmark file path for a given target.
+# VFXForth and SwiftForth use Forth-specific adaptations under shootout/<forth>/.
+resolve_bench_file() {
+    local cmd_name="$1"
+    local bm="$2"
+    case "$cmd_name" in
+        run-vfxforth|vfxforth)
+            if [ -f "shootout/vfxforth/${bm}" ]; then
+                echo "shootout/vfxforth/${bm}"
+            else
+                echo "shootout/${bm}"
+            fi
+            ;;
+        run-swiftforth|swiftforth)
+            if [ -f "shootout/swiftforth/${bm}" ]; then
+                echo "shootout/swiftforth/${bm}"
+            else
+                echo "shootout/${bm}"
+            fi
+            ;;
+        *)
+            echo "shootout/${bm}"
+            ;;
+    esac
+}
+
 # Function to run a single benchmark with optional memory profiling
 run_benchmark() {
     local cmd="$1"
@@ -65,13 +92,21 @@ run_benchmark() {
     local mem_log_file="$4"
 
     if [ "$ENABLE_MEMORY" = true ]; then
-        # Use /usr/bin/time -v to capture memory metrics
-        /usr/bin/time -v ${cmd} "${bench_file}" > "${log_file}" 2> "${mem_log_file}.tmp"
+        # Use /usr/bin/time -v to capture memory metrics; timeout prevents hangs.
+        timeout "${BENCH_TIMEOUT}" /usr/bin/time -v ${cmd} "${bench_file}" > "${log_file}" 2> "${mem_log_file}.tmp"
+        local rc=$?
+        if [ $rc -eq 124 ]; then
+            echo "TIMEOUT after ${BENCH_TIMEOUT}s" >> "${log_file}"
+        fi
         # Extract memory info and append to mem_log_file, keep stderr output
         grep -E "(Maximum resident set size|Minor|Major|Voluntary|Involuntary|Page size|Elapsed)" "${mem_log_file}.tmp" > "${mem_log_file}" 2>/dev/null
         rm -f "${mem_log_file}.tmp"
     else
-        ${cmd} "${bench_file}" > "${log_file}" 2>&1
+        timeout "${BENCH_TIMEOUT}" ${cmd} "${bench_file}" > "${log_file}" 2>&1
+        local rc=$?
+        if [ $rc -eq 124 ]; then
+            echo "TIMEOUT after ${BENCH_TIMEOUT}s" >> "${log_file}"
+        fi
     fi
 }
 
@@ -80,13 +115,14 @@ run_standard_benchmarks() {
     for bm in "${BENCHMARKS[@]}"; do
         for cmd in "${COMMANDS[@]}"; do
             cmd_name=$(basename "${cmd}" .sh)
+            bench_file=$(resolve_bench_file "${cmd_name}" "${bm}")
 
             echo "[Target: ${cmd_name} | Bench: ${bm}]"
 
             # 1. Warmup Phase (JIT Training)
             echo "  - Warming up (${WARMUP_RUNS} runs)..."
             for i in $(seq 1 $WARMUP_RUNS); do
-                run_benchmark "${cmd}" "shootout/${bm}" \
+                run_benchmark "${cmd}" "${bench_file}" \
                     "${LOG_DIR}/${bm}_${cmd_name}_warmup_${i}.log" \
                     "${LOG_DIR}/${bm}_${cmd_name}_warmup_${i}.mem"
             done
@@ -94,7 +130,7 @@ run_standard_benchmarks() {
             # 2. Measurement Phase (Steady State)
             echo "  - Measuring (${MEASURE_RUNS} runs)..."
             for i in $(seq 1 $MEASURE_RUNS); do
-                run_benchmark "${cmd}" "shootout/${bm}" \
+                run_benchmark "${cmd}" "${bench_file}" \
                     "${LOG_DIR}/${bm}_${cmd_name}_run_${i}.log" \
                     "${LOG_DIR}/${bm}_${cmd_name}_run_${i}.mem"
             done
@@ -108,7 +144,7 @@ run_curve_benchmarks() {
     for bm in "${CURVE_BENCHMARKS[@]}"; do
         for cmd in "${COMMANDS[@]}"; do
             cmd_name=$(basename "${cmd}" .sh)
-            curve_file="shootout/curve/${bm}"
+            curve_file=$(resolve_bench_file "${cmd_name}" "curve/${bm}")
 
             if [ ! -f "${curve_file}" ]; then
                 echo "  [Skip] Curve benchmark not found: ${curve_file}"
