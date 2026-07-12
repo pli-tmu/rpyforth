@@ -41,6 +41,10 @@ from jitlog_analysis import (
     format_jitlog_comparison,
 )
 
+# Filesystem location of the shootout .fs sources (repo-root shootout/).
+REPO_ROOT = Path(__file__).resolve().parent.parent
+SHOOTOUT_DIR = REPO_ROOT / "shootout"
+
 
 # Per-benchmark command-line arguments (filename relative to repo root).
 # Most shootout files hard-code their input size; only a few are wired to
@@ -98,6 +102,8 @@ class BenchmarkResult:
     path: Path
     args: List[str]
     config: str = "A"
+    label: str = ""
+    command: str = ""
     status: str = "pending"
     returncode: int = 0
     stdout: str = ""
@@ -195,13 +201,22 @@ def discover_benchmarks(root: Path) -> List[Path]:
     """
     shootout_dir = root / "shootout"
     if not shootout_dir.is_dir():
-        raise RuntimeError(f"shootout/ directory not found at {root}")
+        raise RuntimeError(f"shootout/ directory not found at {shootout_dir}")
     variant_dirs = {"vfxforth", "swiftforth"}
     return sorted(
         p for p in shootout_dir.rglob("*.fs")
         if p.is_file()
         and not any(part in variant_dirs for part in p.relative_to(shootout_dir).parts[:-1])
     )
+
+
+def benchmark_display_name(benchmark: Path, repo_root: Path) -> str:
+    """Return the "shootout/..." display name for a benchmark path."""
+    shootout_dir = repo_root / "shootout"
+    try:
+        return str(Path("shootout") / benchmark.relative_to(shootout_dir))
+    except ValueError:
+        return str(benchmark.relative_to(repo_root))
 
 
 def run_benchmark(
@@ -215,12 +230,13 @@ def run_benchmark(
     wrapper: Optional[List[str]] = None,
 ) -> BenchmarkResult:
     """Execute one benchmark and capture its output."""
-    rel_path = benchmark.relative_to(repo_root)
     result = BenchmarkResult(
-        name=str(rel_path),
+        name=benchmark_display_name(benchmark, repo_root),
         path=benchmark,
         args=list(args),
         config=config,
+        command=" ".join(cmd_prefix),
+        label=short_label(cmd_prefix),
     )
 
     cmd = list(wrapper or []) + list(cmd_prefix) + [str(benchmark)] + args
@@ -330,7 +346,9 @@ def analyze_result(result: BenchmarkResult) -> None:
     if result.status != "ok":
         return
 
-    if result.name.startswith("curve/"):
+    from jitlog_analysis import is_curve_benchmark
+
+    if is_curve_benchmark(result.name):
         parse_curve_output(result)
     else:
         parse_standard_output(result)
@@ -455,6 +473,10 @@ def save_log(
     with log_path.open("w", encoding="utf-8") as f:
         f.write(f"# benchmark: {result.name}\n")
         f.write(f"# config: {result.config}\n")
+        if result.label:
+            f.write(f"# label: {result.label}\n")
+        if result.command:
+            f.write(f"# command: {result.command}\n")
         f.write(f"# iteration: {iteration}\n")
         f.write(f"# command args: {' '.join(result.args)}\n")
         f.write(f"# status: {result.status}\n")
@@ -511,6 +533,8 @@ def load_log(log_path: Path) -> Optional[BenchmarkResult]:
         path=Path("shootout") / name,
         args=headers.get("command args", "").split(),
         config=headers.get("config", "A"),
+        label=headers.get("label", ""),
+        command=headers.get("command", ""),
         status=headers.get("status", "ok"),
         returncode=int(headers.get("return code", "0")),
         stdout="\n".join(stdout_lines),
@@ -570,7 +594,13 @@ def parse_cmd(text: str) -> List[str]:
 
 def short_label(cmd: List[str]) -> str:
     """Return a compact display label for a command prefix."""
+    from plot_engines import engine_display_name, normalize_engine
+
     name = Path(cmd[0]).name
+    canon = normalize_engine(name)
+    # Known engines collapse to a stable legend name (drop .sh / -stkfrag).
+    if canon in ("rpyforth", "gforth-fast", "gforth", "vfxforth", "swiftforth"):
+        return engine_display_name(canon)
     if len(cmd) == 1:
         return name
     return f"{name} {' '.join(cmd[1:])}"
@@ -1113,9 +1143,15 @@ def main(argv: Optional[List[str]] = None) -> int:
 
         benchmarks = discover_benchmarks(repo_root)
         if args.only:
-            benchmarks = [b for b in benchmarks if args.only in str(b.relative_to(repo_root))]
+            benchmarks = [
+                b for b in benchmarks if args.only in benchmark_display_name(b, repo_root)
+            ]
         if args.exclude:
-            benchmarks = [b for b in benchmarks if args.exclude not in str(b.relative_to(repo_root))]
+            benchmarks = [
+                b
+                for b in benchmarks
+                if args.exclude not in benchmark_display_name(b, repo_root)
+            ]
 
         if not benchmarks:
             print("No benchmarks found.", file=sys.stderr)
@@ -1127,7 +1163,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         progress = RunProgress(total_runs)
         try:
             for benchmark in benchmarks:
-                rel = str(benchmark.relative_to(repo_root))
+                rel = benchmark_display_name(benchmark, repo_root)
                 bench_args = DEFAULT_ARGS.get(rel, [])
 
                 for config_id, cmd_prefix, _label in plan.configs:

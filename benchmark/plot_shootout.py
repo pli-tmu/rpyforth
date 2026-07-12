@@ -101,13 +101,12 @@ def build_paired_stable_data(
     return names, a_values, b_values, speedups, a_stdevs, b_stdevs
 
 
-# Distinct colors for an arbitrary number of compared configurations.
-_PALETTE = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b"]
+def config_colors(plan: "RunPlan") -> Dict[str, str]:
+    """Map each configuration id to a color keyed by engine name."""
+    from plot_engines import colors_for_configs
 
-
-def config_colors(config_ids: List[str]) -> Dict[str, str]:
-    """Map each configuration id to a stable color from the palette."""
-    return {cid: _PALETTE[i % len(_PALETTE)] for i, cid in enumerate(config_ids)}
+    labels = {cfg_id: label for cfg_id, _, label in plan.configs}
+    return colors_for_configs([cfg_id for cfg_id, _, _ in plan.configs], labels)
 
 
 def build_multi_stable_data(
@@ -219,7 +218,7 @@ def generate_bar_chart(
         raise RuntimeError("No stable benchmark results to plot")
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    colors = config_colors(config_ids)
+    colors = config_colors(plan)
     height = max(4.0, len(names) * 0.6)
     fig, (ax_norm, ax_abs) = plt.subplots(1, 2, figsize=(15, height))
     draw_normalized(ax_norm, names, data, plan, colors, errs=errs)
@@ -248,7 +247,7 @@ def build_curve_runs(
     benchmark and config."""
     curve_runs: Dict[str, Dict[str, List[List[int]]]] = {}
     for r in results:
-        if not r.name.startswith("curve/"):
+        if not is_curve_benchmark(r.name):
             continue
         runs = [c for c in (r.curve_runs or ([r.curve_times] if r.curve_times else [])) if c]
         if runs:
@@ -259,7 +258,21 @@ def build_curve_runs(
 def draw_curve(ax, program, runs_by_config, plan, colors, logy: bool = True) -> None:
     """Plot warm-up curves for one benchmark: per-config median over runs with a
     min-max variance band and a steady-state line."""
-    for config in sorted(runs_by_config):
+    from plot_engines import normalize_engine, sort_engines
+
+    # Plot in canonical engine order when labels are known.
+    label_by_cfg = {cfg_id: label for cfg_id, _, label in plan.configs}
+    ordered_engines = sort_engines(label_by_cfg[c] for c in runs_by_config if c in label_by_cfg)
+    config_order: List[str] = []
+    for eng in ordered_engines:
+        for cfg_id, runs in runs_by_config.items():
+            if normalize_engine(label_by_cfg.get(cfg_id, cfg_id)) == eng and cfg_id not in config_order:
+                config_order.append(cfg_id)
+    for cfg_id in sorted(runs_by_config):
+        if cfg_id not in config_order:
+            config_order.append(cfg_id)
+
+    for config in config_order:
         runs = [c for c in runs_by_config[config] if c]
         if not runs:
             continue
@@ -281,7 +294,7 @@ def draw_curve(ax, program, runs_by_config, plan, colors, logy: bool = True) -> 
     if logy:
         ax.set_yscale("log")
     ax.set_xlim(left=0.5)
-    ax.set_title(program.replace("curve/", ""))
+    ax.set_title(program.replace("curve/", "").replace("shootout/", ""))
     ax.set_xlabel("Iteration")
     ax.set_ylabel("Time / iteration (us%s)" % (", log" if logy else ""))
     ax.legend(fontsize=8)
@@ -314,7 +327,7 @@ def generate_curve_chart(
         )
 
     programs = sorted(curve_runs)
-    colors = config_colors([cfg_id for cfg_id, _, _ in plan.configs])
+    colors = config_colors(plan)
     cols = min(3, len(programs))
     rows = (len(programs) + cols - 1) // cols
 
@@ -372,10 +385,7 @@ def generate_pdf_report(
     else:
         elapsed_title = speedup_title = speedup_xlabel = ""
 
-    curve_colors = {"A": "#3498db", "B": "#e74c3c"} if plan.gforth_baseline else {
-        "A": "#1f77b4",
-        "B": "#ff7f0e",
-    }
+    curve_colors = config_colors(plan)
 
     with PdfPages(str(pdf_path)) as pdf:
         show_variance = has_iteration_variance(results)
@@ -383,7 +393,7 @@ def generate_pdf_report(
         if plan.multi:
             names, data, errs, config_ids = build_multi_stable_data(results, plan)
             if names:
-                colors = config_colors(config_ids)
+                colors = config_colors(plan)
                 fig, ax = plt.subplots(figsize=(10, max(6, len(names) * 0.5)))
                 draw_normalized(ax, names, data, plan, colors, errs=errs)
                 plt.tight_layout()
@@ -454,7 +464,7 @@ def generate_pdf_report(
                 if any(len(samples) > 1 for samples in samples_by_name[name].values())
             ]
             config_ids = [config_id for config_id, _, _ in plan.configs]
-            bar_colors = config_colors(config_ids) if plan.multi else curve_colors
+            bar_colors = config_colors(plan) if plan.multi else curve_colors
 
             fig, ax = plt.subplots(figsize=(max(10, len(benchmarks) * 1.8), 6))
             positions: List[float] = []
@@ -520,7 +530,7 @@ def generate_pdf_report(
             fig, axes = plt.subplots(
                 rows, cols, figsize=(5 * cols, 4 * rows), squeeze=False
             )
-            colors = config_colors([cfg_id for cfg_id, _, _ in plan.configs])
+            colors = config_colors(plan)
 
             for idx, program in enumerate(programs):
                 draw_curve(axes.flatten()[idx], program, curve_runs[program], plan, colors)

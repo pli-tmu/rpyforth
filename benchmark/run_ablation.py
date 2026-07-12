@@ -112,6 +112,10 @@ GFORTH_DIR = REPO_ROOT / "gforth-0.7.9"
 GFORTH_FAST = GFORTH_DIR / "gforth-fast"
 GFORTH = GFORTH_DIR / "gforth"
 
+# Filesystem location of the shootout .fs sources (used by both the measure
+# and curves subcommands below).
+SHOOTOUT_DIR = REPO_ROOT / "shootout"
+
 
 # ===========================================================================
 # SUBCOMMAND: measure  (formerly run_analysis.py)
@@ -279,7 +283,7 @@ def build_ladder(iterations_note=""):
 def validate_binaries(pin: Optional[int]) -> Dict[str, str]:
     """Run the sieve smoke benchmark on every config; expect 'Count: 1028'."""
     results = {}
-    sieve = REPO_ROOT / "shootout" / (SMOKE_BENCH + ".fs")
+    sieve = SHOOTOUT_DIR / (SMOKE_BENCH + ".fs")
     wrapper = ["taskset", "-c", str(pin)] if pin is not None else []
     for cid, exe, _, _ in RPYFORTH_LADDER:
         binp = REPO_ROOT / exe
@@ -963,8 +967,6 @@ def cmd_measure(args):
 # ---------------------------------------------------------------------------
 # Shootout configuration
 # ---------------------------------------------------------------------------
-
-SHOOTOUT_DIR = REPO_ROOT / "shootout"
 
 # All .fs files in shootout/ except the curve/ subdirectory
 def _discover_shootout_benches():

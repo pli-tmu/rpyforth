@@ -1,0 +1,46 @@
+Third-party notice for benchmark/factor/
+========================================
+
+Factor / rpyfactor benchmark programs and runners under this directory
+(shootout/, axis-b/, phase-b/, run_factor.py).
+
+
+---------------------------------------------------------------------------
+License grants in this tree
+---------------------------------------------------------------------------
+
+No LICENSE, COPYING, Copyright line, or redistribution grant was found
+under benchmark/factor/ (search over *.factor / *.py for
+copyright|license|GPL|MIT|BSD|Apache|public domain|SPDX|redistribut:
+no license-grant matches; incidental English words like "mutable" are
+not grants).
+
+This directory does **not** vendor Factor's own LICENSE.txt
+(factor/LICENSE.txt at the repository root of the Factor checkout, if
+present, is outside this tree and is not referenced by these homologs).
+
+
+---------------------------------------------------------------------------
+Provenance (self-declared in comments / runners)
+---------------------------------------------------------------------------
+
+shootout/*.factor
+  Headers describe homologs of shootout/*.fs
+  (e.g. ack.factor: "shootout/ack.fs homolog: …").
+  See shootout/NOTICE for the Forth sources' lack of
+  in-tree license grants.
+
+axis-b/*.factor
+  "Axis B: …" suite; no third-party copyright/license text.
+
+phase-b/nsieve.factor
+  "shootout/sieve.fs homolog using real mutable arrays (Phase B …)".
+
+phase-b/recursive.factor
+  "Phase B: recursive kernels homolog (Factor recursive.factor spirit)."
+  This is an in-comment comparison only; the file does not claim to be
+  a copy of Factor extra/benchmark sources and carries no Factor
+  license text.
+
+run_factor.py
+  Local harness for this repository; no third-party license block.

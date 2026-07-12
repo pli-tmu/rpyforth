@@ -447,6 +447,7 @@ def sync_benchmark_file_status(repo_root):
     synced = []
     for bench in SHOOTOUT_BENCHMARKS:
         entry = dict(bench)
+        # entry["path"] is "shootout/<name>.fs" relative to the repo root.
         path = os.path.join(repo_root, entry["path"])
         if entry["status"] == "supported" and not os.path.isfile(path):
             entry["status"] = "missing_source"
