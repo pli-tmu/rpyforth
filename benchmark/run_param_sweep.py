@@ -138,8 +138,7 @@ def run_benchmarks_for_f(
     aggregated = aggregate_iterations(all_results)
     out: Dict[str, Optional[int]] = {}
     for r in aggregated:
-        rel = str(r.path.relative_to(REPO_ROOT))
-        out[rel] = r.elapsed_usec
+        out[r.name] = r.elapsed_usec
     return out
 
 

@@ -60,12 +60,14 @@ Functional status per (program, engine):
 """
 
 import argparse
+import copy
 import difflib
 import json
 import os
 import platform
 import random
 import re
+import shutil
 import statistics
 import subprocess
 import sys
@@ -90,7 +92,8 @@ ENGINE_SWIFTFORTH = "swiftforth"
 REFERENCE_ENGINE = ENGINE_GFORTH_FAST
 
 # Order matters for the steady-mode table / legend.
-ENGINES = [ENGINE_RPYFORTH, ENGINE_GFORTH_FAST, ENGINE_GFORTH, ENGINE_VFXFORTH, ENGINE_SWIFTFORTH]
+# Default engines for paper plots (4-way; plain gforth omitted).
+ENGINES = [ENGINE_RPYFORTH, ENGINE_GFORTH_FAST, ENGINE_VFXFORTH, ENGINE_SWIFTFORTH]
 
 ENGINE_BINARY = {
     ENGINE_RPYFORTH: REPO_ROOT / "rpyforth-c-stkfrag",
@@ -122,7 +125,7 @@ class SteadySpec:
     """
 
     def __init__(self, name, workdir, pre_include, include_file, setup, unit,
-                 rpy_env=None, prelude=None, gforth_mem="16M"):
+                 rpy_env=None, prelude=None, gforth_mem="256M"):
         self.name = name
         self.workdir = workdir
         # pre_include : words defined before the program is loaded (e.g. 3drop).
@@ -181,12 +184,13 @@ PROGRAMS = [
         # iteration; benchThink re-runs the depth-5 search from the same
         # position each time (thinker resets its state), so it is repeatable.
         #
-        # `' noop IS checkTime` neutralises fcp's DEFERred time/keyboard poll.
+        # `' NOOP IS checkTime` neutralises fcp's DEFERred time/keyboard poll.
         # Without it, benchThink's ?thinkAbort fires QUIT when KEY? sees EOF on
         # the DEVNULL stdin (or a wall-time limit trips), truncating the timing
         # loop after a few iterations. Disabling the poll makes each search run
         # the full fixed depth deterministically -> a clean repeatable unit.
-        setup="' noop IS checkTime\n"
+        # Use NOOP (fcp's spelling); VFX is case-insensitive but keep the name.
+        setup="' NOOP IS checkTime\n"
               'S" setup 1rb2rk/p4ppp/1p1qp1n/3n2N/2pP4/2P3P/PPQ2PBP/R1B1R1K w" '
               "evaluate 5 sd",
         unit="benchThink drop",
@@ -250,6 +254,12 @@ PROGRAMS = [
 # Verified on rpyforth, gforth and gforth-fast: after N looped units, one final
 # saveAllTables + compare against ref.tt still prints "Output file is correct",
 # and HERE is flat across iterations (bounded ~3.6 MB working set).
+#
+# VFX Forth cannot do this in-process: the second lexcore SIGSEGVs (with or
+# without dictionary rewind) and then hangs on "Press E to exit". Steady mode
+# therefore uses process-per-iteration for lexex/vfxforth (see
+# needs_process_per_iteration): each sample is a fresh VFX process that loads
+# once and times a single unit.
 #
 # lexinput.fth is used UNMODIFIED except for two edits made to a /tmp COPY (the
 # real appbench tree is never touched): its last line `syntaxTree lexgen` is
@@ -329,6 +339,155 @@ PROGRAMS.append(
 )
 
 
+# SwiftForth rejects empty DOES> bodies (`CREATE ... DOES> ;` is an illegal
+# instruction at the created word). cd16sim's `w:` uses that idiom; ANS CREATE
+# alone already returns the body address, so drop DOES> for SF runs only.
+_SF_W_WIRE_OLD = ": w:  ( <name> -- ) CREATE -1 , DOES> ;      \\ wire"
+_SF_W_WIRE_NEW = ": w:  ( <name> -- ) CREATE -1 , ;             \\ wire"
+
+# VFX Forth mismatches gforth-style `if`/`endif` control-flow items in gc.fs
+# (and the CS-ROLL jump-into-loop in sweep1). Patch a /tmp copy: deep-stacks
+# mark path, native THEN, and a CS-ROLL-free sweep1.
+_VFX_SWEEP1 = """\
+: sweep1 ( uactivestart uactiveend -- )
+    \\ VFX-safe: no CS-ROLL jump-into-loop; use native THEN
+    >r
+    begin ( u )
+	dup live @ bit-set? 0= IF
+	    assert2( dup live @ bit-set? 0= )
+	    dup 1+ live @ find-next-bit ( ustart uend )
+	    dup r@ u>= IF ( ustart uend )
+		assert2( dup r@ = )
+		2dup one-chunk
+		2dup erase-chunk
+		drop grain-num-addr active-end !
+		r> drop EXIT
+	    THEN
+	    2dup free-chunk nip
+	THEN
+	dup sweep-live
+	dup rot - live-grains +!
+	dup r@ u>= IF ( u )
+	    assert2( dup r@ 1+ = )
+	    r> 2drop EXIT
+	THEN
+    again ;
+
+"""
+
+# core_portme.f ships gforth `utime`; VFX/SwiftForth need their own timers.
+_CORE_PORTME_GFORTH_START = "   utime start_time_var 2! ;  \\ gforth"
+_CORE_PORTME_GFORTH_STOP = "   utime stop_time_var 2! ;  \\ gforth"
+_CORE_PORTME_VFX_START = "   ticks #1000 um* start_time_var 2! ;  \\ Vfx"
+_CORE_PORTME_VFX_STOP = "   ticks #1000 um* stop_time_var 2! ;  \\ Vfx"
+_CORE_PORTME_SF_START = "   ucounter start_time_var 2! ;  \\ SwiftForth"
+_CORE_PORTME_SF_STOP = "   ucounter stop_time_var 2! ;  \\ SwiftForth"
+
+
+def _patch_core_portme(portme_path, engine):
+    text = portme_path.read_text(encoding="utf-8")
+    if engine == ENGINE_VFXFORTH:
+        start, stop = _CORE_PORTME_VFX_START, _CORE_PORTME_VFX_STOP
+    elif engine == ENGINE_SWIFTFORTH:
+        start, stop = _CORE_PORTME_SF_START, _CORE_PORTME_SF_STOP
+        # SwiftForth lacks ANS d>; coremark's matrix_sum needs it.
+        # Avoid matching the commented `\ : d>` stub already in the file.
+        if "\n: d>  (" not in text and not text.startswith(": d>  ("):
+            d_gt = (
+                ": d>  ( d1 d2 -- flag )\n"
+                "  2over 2over d= >r\n"
+                "  d< r> or invert ;\n\n"
+            )
+            text = d_gt + text
+    else:
+        return
+    if _CORE_PORTME_GFORTH_START not in text or _CORE_PORTME_GFORTH_STOP not in text:
+        raise RuntimeError("core_portme.f: expected gforth utime lines not found")
+    text = text.replace(_CORE_PORTME_GFORTH_START, start, 1)
+    text = text.replace(_CORE_PORTME_GFORTH_STOP, stop, 1)
+    portme_path.write_text(text, encoding="utf-8")
+
+
+def _patch_benchgc_for_vfx(dst):
+    import re
+
+    b5 = dst / "bench-gc5.fs"
+    text = b5.read_text(encoding="utf-8")
+    old = "15000000 cells false false"
+    if old not in text:
+        raise RuntimeError("bench-gc5.fs: expected deep-stacks flag line not found")
+    b5.write_text(text.replace(old, "15000000 cells false true ", 1), encoding="utf-8")
+
+    gc = dst / "gc.fs"
+    src = gc.read_text(encoding="utf-8")
+    patched, n = re.subn(
+        r": sweep1 \( uactivestart uactiveend -- \).*?\n(?=: set-sweep-sentinel)",
+        _VFX_SWEEP1,
+        src,
+        count=1,
+        flags=re.S,
+    )
+    if n != 1:
+        raise RuntimeError("gc.fs: failed to rewrite sweep1 for VFX")
+    # gforth `endif` (POSTPONE then) mismatches VFX IF origs; use native THEN.
+    patched = patched.replace("endif", "THEN")
+    gc.write_text(patched, encoding="utf-8")
+
+
+def prepare_engine_workdir(engine, spec, tmpdir):
+    """Return a workdir safe for the given engine (patched /tmp copy when needed).
+
+    Never modifies appbench/appbench-1.4/ or coremark-src in place.
+    """
+    workdir = Path(spec.workdir)
+    name = getattr(spec, "name", None)
+
+    if engine == ENGINE_SWIFTFORTH and name == "cd16sim":
+        dst = Path(tmpdir) / "cd16sim_swiftforth"
+        if not dst.is_dir():
+            shutil.copytree(workdir, dst)
+            pkg = dst / "cd16pkg.vhd"
+            text = pkg.read_text(encoding="utf-8")
+            if _SF_W_WIRE_OLD not in text:
+                raise RuntimeError(
+                    "cd16sim SwiftForth patch: expected w: line not found in %s"
+                    % pkg
+                )
+            pkg.write_text(
+                text.replace(_SF_W_WIRE_OLD, _SF_W_WIRE_NEW, 1),
+                encoding="utf-8",
+            )
+        return dst
+
+    if engine == ENGINE_VFXFORTH and name == "benchgc":
+        dst = Path(tmpdir) / "benchgc_vfxforth"
+        if not dst.is_dir():
+            shutil.copytree(workdir, dst)
+            _patch_benchgc_for_vfx(dst)
+        return dst
+
+    if name == "coremark" and engine in (ENGINE_VFXFORTH, ENGINE_SWIFTFORTH):
+        dst = Path(tmpdir) / ("coremark_%s" % engine)
+        if not dst.is_dir():
+            shutil.copytree(workdir, dst)
+            _patch_core_portme(dst / "core_portme.f", engine)
+        return dst
+
+    return workdir
+
+
+def prepare_swiftforth_workdir(spec, tmpdir):
+    """Backward-compatible alias."""
+    return prepare_engine_workdir(ENGINE_SWIFTFORTH, spec, tmpdir)
+
+
+def with_workdir(spec, workdir):
+    """Shallow-copy a SteadySpec/ProgramSpec with an alternate workdir."""
+    cloned = copy.copy(spec)
+    cloned.workdir = Path(workdir)
+    return cloned
+
+
 def build_driver(spec, iterations, engine):
     """Return Forth source for a driver that times `unit` `iterations` times.
 
@@ -340,6 +499,15 @@ def build_driver(spec, iterations, engine):
     workload's own stdout cannot merge with our data line.
     """
     lines = []
+
+    # Match appbench-1.4/run's FORTH=...include ../setup/<engine> preamble.
+    # VFX needs setup/vfx.fth so ms@ is `ticks` before fcp's timer cascade;
+    # otherwise Linux VFX can pick a wrong gettimeofday branch and SIGSEGV.
+    if engine == ENGINE_VFXFORTH:
+        lines.append("include %s" % (APPBENCH_DIR / "setup" / "vfx.fth"))
+    elif engine == ENGINE_SWIFTFORTH:
+        lines.append("include %s" % (APPBENCH_DIR / "setup" / "sf.f"))
+
     if spec.pre_include:
         lines.append(spec.pre_include)
     if spec.prelude is not None:
@@ -353,6 +521,15 @@ def build_driver(spec, iterations, engine):
     if spec.setup:
         lines.append(spec.setup)
 
+    # VFX Forth SIGSEGVs on nested CATCH while a file is still being INCLUDEd
+    # (INCLUDE-FILE installs its own CATCH). fcp's stock benchThink is
+    # `['] thinker CATCH ...`, which crashes under our driver include and then
+    # sits on "Press E to exit" until the harness timeout. With checkTime=NOOP
+    # the CATCH is unnecessary — call thinker directly.
+    if engine == ENGINE_VFXFORTH and spec.name == "fcp":
+        lines.append("' NOOP IS checkTime")
+        lines.append(": benchThink thinker readTimer ;")
+
     if engine == ENGINE_VFXFORTH:
         lines.append("variable _tstart")
         lines.append(": _start-timer ticks 1000 * _tstart ! ;")
@@ -365,10 +542,19 @@ def build_driver(spec, iterations, engine):
         lines.append(": _elapsed-us uCOUNTER _tlo @ _thi @ D- drop ;")
         start_timer = "_start-timer"
         elapsed_timer = "_elapsed-us"
-    else:
-        # Gforth / rpyforth: use the return stack for the double timestamp.
+    elif engine == ENGINE_RPYFORTH:
+        # rpyforth: utime returns a double; we can safely use the return stack
+        # because its DO LOOP does not store control indices there.
         lines.append(": _start-timer utime 2>r ;")
         lines.append(": _elapsed-us utime 2r> D- drop ;")
+        start_timer = "_start-timer"
+        elapsed_timer = "_elapsed-us"
+    else:
+        # Gforth's DO LOOP uses the return stack for loop-control indices, so
+        # 2>r inside the loop corrupts them and segfaults. Use variables.
+        lines.append("variable _tlo variable _thi")
+        lines.append(": _start-timer utime _thi ! _tlo ! ;")
+        lines.append(": _elapsed-us utime _tlo @ _thi @ D- drop ;")
         start_timer = "_start-timer"
         elapsed_timer = "_elapsed-us"
 
@@ -387,6 +573,17 @@ def build_driver(spec, iterations, engine):
     lines.append("%d steady-run" % iterations)
     lines.append("cr bye")
     return "\n".join(lines) + "\n"
+
+
+def needs_process_per_iteration(engine, spec):
+    """True when the engine cannot safely re-run `unit` in one process.
+
+    VFX Forth SIGSEGVs (then hangs on 'Press E to exit') on lexex's second
+    lexcore — both with dictionary rewind and without. Steady mode therefore
+    launches one fresh VFX process per timed iteration (load once per process,
+    time a single unit). Func mode already does this via run_program's loop.
+    """
+    return engine == ENGINE_VFXFORTH and getattr(spec, "name", None) == "lexex"
 
 
 def build_cmd(engine, driver_path, spec):
@@ -434,42 +631,128 @@ def steady_onset_index(times, frac=0.5):
     return int(len(times) * (1.0 - frac))
 
 
-def run_engine(engine, spec, iterations, tmpdir, timeout, pin):
-    driver = build_driver(spec, iterations, engine)
-    driver_path = Path(tmpdir) / ("%s_%s_driver.fs" % (spec.name, engine))
-    driver_path.write_text(driver, encoding="utf-8")
+def _popen_engine(cmd, env, workdir, timeout):
+    """Run one engine command; kill the process group on timeout.
 
-    cmd = build_cmd(engine, driver_path, spec)
-    if pin is not None:
-        cmd = ["taskset", "-c", str(pin)] + cmd
-
-    env = os.environ.copy()
-    if engine == ENGINE_RPYFORTH and spec.rpy_env:
-        env.update(spec.rpy_env)
+    Returns (rc, stdout, stderr, wall, timed_out).
+    """
     t0 = time.perf_counter()
+    # New session so a timeout can kill the whole tree (vfxforth.sh otherwise
+    # leaves a stuck VFX binary on SIGSEGV's "Press E" prompt).
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+        cwd=str(workdir),
+        stdin=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    timed_out = False
     try:
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            env=env,
-            cwd=str(spec.workdir),
-            stdin=subprocess.DEVNULL,
-        )
-        wall = time.perf_counter() - t0
-        stdout, stderr, rc, timed_out = proc.stdout, proc.stderr, proc.returncode, False
-    except subprocess.TimeoutExpired as exc:
-        wall = time.perf_counter() - t0
-        stdout = exc.stdout or ""
-        stderr = exc.stderr or ""
-        rc, timed_out = -1, True
+        stdout, stderr = proc.communicate(timeout=timeout)
+        rc = proc.returncode
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        try:
+            os.killpg(proc.pid, 9)
+        except (ProcessLookupError, PermissionError):
+            proc.kill()
+        stdout, stderr = proc.communicate()
+        rc = -1
+    wall = time.perf_counter() - t0
 
     if isinstance(stdout, bytes):
         stdout = stdout.decode("utf-8", "replace")
     if isinstance(stderr, bytes):
         stderr = stderr.decode("utf-8", "replace")
+    return rc, stdout, stderr, wall, timed_out
 
+
+def run_engine_process_per_iteration(engine, run_spec, iterations, tmpdir, timeout, pin):
+    """Collect N samples by launching one fresh process per timed unit.
+
+    Used when in-process multi-iter is unsafe (lexex on VFX). Each process
+    loads the program once and times a single unit; CSV indices are remapped
+    to 0..N-1 so downstream warm-tail / curve code sees a normal series.
+    `timeout` applies per process (same as func-mode per-run timeout).
+    """
+    env = os.environ.copy()
+    if engine == ENGINE_RPYFORTH and run_spec.rpy_env:
+        env.update(run_spec.rpy_env)
+
+    times = []
+    stderr_parts = []
+    cmd = None
+    rc = 0
+    timed_out = False
+    t0 = time.perf_counter()
+
+    for i in range(iterations):
+        driver = build_driver(run_spec, 1, engine)
+        driver_path = Path(tmpdir) / (
+            "%s_%s_iter%d_driver.fs" % (run_spec.name, engine, i)
+        )
+        driver_path.write_text(driver, encoding="utf-8")
+        cmd = build_cmd(engine, driver_path, run_spec)
+        if pin is not None:
+            cmd = ["taskset", "-c", str(pin)] + cmd
+
+        irc, stdout, stderr, _wall, ito = _popen_engine(
+            cmd, env, run_spec.workdir, timeout
+        )
+        if stderr.strip():
+            stderr_parts.append(stderr.strip())
+        sample = parse_curve_output(stdout)
+        if ito:
+            timed_out = True
+            rc = -1
+            break
+        if irc != 0 or not sample:
+            rc = irc if irc != 0 else 1
+            break
+        times.append(sample[0])
+        rc = irc
+
+    return {
+        "engine": engine,
+        "times": times,
+        "wall": time.perf_counter() - t0,
+        "rc": rc,
+        "timed_out": timed_out,
+        "stderr": "\n".join(stderr_parts),
+        "cmd": cmd,
+        "process_per_iteration": True,
+    }
+
+
+def run_engine(engine, spec, iterations, tmpdir, timeout, pin):
+    run_spec = spec
+    patched = prepare_engine_workdir(engine, spec, tmpdir)
+    if patched != Path(spec.workdir):
+        run_spec = with_workdir(spec, patched)
+
+    if needs_process_per_iteration(engine, run_spec):
+        return run_engine_process_per_iteration(
+            engine, run_spec, iterations, tmpdir, timeout, pin
+        )
+
+    driver = build_driver(run_spec, iterations, engine)
+    driver_path = Path(tmpdir) / ("%s_%s_driver.fs" % (spec.name, engine))
+    driver_path.write_text(driver, encoding="utf-8")
+
+    cmd = build_cmd(engine, driver_path, run_spec)
+    if pin is not None:
+        cmd = ["taskset", "-c", str(pin)] + cmd
+
+    env = os.environ.copy()
+    if engine == ENGINE_RPYFORTH and run_spec.rpy_env:
+        env.update(run_spec.rpy_env)
+
+    rc, stdout, stderr, wall, timed_out = _popen_engine(
+        cmd, env, run_spec.workdir, timeout
+    )
     times = parse_curve_output(stdout)
     return {
         "engine": engine,
@@ -490,7 +773,7 @@ def fmt_usec(v):
     return "%d us" % v
 
 
-def print_table(results, iterations):
+def print_table(results, engines, iterations):
     """results: {prog_name: {engine: run_dict}}"""
     print("")
     print("=" * 92)
@@ -506,7 +789,7 @@ def print_table(results, iterations):
         ref = eng_res.get(REFERENCE_ENGINE)
         ref_warm = steady_state_tail(ref["times"]) if ref and ref["times"] else None
         first_prog_row = True
-        for engine in ENGINES:
+        for engine in engines:
             r = eng_res.get(engine)
             if not r:
                 continue
@@ -537,37 +820,32 @@ def print_table(results, iterations):
     print("")
 
 
-def make_chart(results, iterations, pdf_path):
+def make_chart(results, engines, iterations, pdf_path):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+    from plot_engines import engine_color, sort_engines
 
     progs = list(results.keys())
     n = len(progs)
     fig, axes = plt.subplots(n, 1, figsize=(10, 4.0 * n), squeeze=False)
-
-    colors = {
-        ENGINE_RPYFORTH: "#d62728",
-        ENGINE_GFORTH_FAST: "#1f77b4",
-        ENGINE_GFORTH: "#2ca02c",
-        ENGINE_VFXFORTH: "#9467bd",
-        ENGINE_SWIFTFORTH: "#ff7f0e",
-    }
+    plot_engines = sort_engines(engines)
 
     for row, prog in enumerate(progs):
         ax = axes[row][0]
         eng_res = results[prog]
-        for engine in ENGINES:
+        for engine in plot_engines:
             r = eng_res.get(engine)
             if not r or not r["times"]:
                 continue
             times_ms = [t / 1000.0 for t in r["times"]]
             xs = list(range(len(times_ms)))
+            color = engine_color(engine)
             ax.plot(xs, times_ms, marker="o", markersize=2.5, linewidth=1.2,
-                    color=colors[engine], label=engine)
+                    color=color, label=engine)
             warm = steady_state_tail(r["times"])
             if warm is not None:
-                ax.axhline(warm / 1000.0, color=colors[engine], linewidth=0.7,
+                ax.axhline(warm / 1000.0, color=color, linewidth=0.7,
                            linestyle=":", alpha=0.6)
         onset = steady_onset_index(
             eng_res.get(ENGINE_RPYFORTH, {}).get("times", []))
@@ -583,12 +861,49 @@ def make_chart(results, iterations, pdf_path):
         ax.legend(loc="upper right", fontsize=8)
 
     fig.suptitle(
-        "Warm-up curves: rpyforth (meta-tracing JIT) vs gforth-fast / gforth\n"
+        "Warm-up curves: rpyforth / gforth-fast / vfxforth / swiftforth\n"
         "dotted line = warm-tail median; dashed vertical = steady-state onset",
         fontsize=11)
     fig.tight_layout(rect=(0, 0, 1, 0.97))
     fig.savefig(str(pdf_path))
     plt.close(fig)
+
+
+def _save_steady_logs(results, engines, log_dir, iterations):
+    """Write JSON summary and per-iteration CSV files for steady mode."""
+    log_dir.mkdir(parents=True, exist_ok=True)
+    csv_dir = log_dir / "csv"
+    csv_dir.mkdir(parents=True, exist_ok=True)
+
+    summary = {
+        "mode": "steady",
+        "iterations": iterations,
+        "engines": engines,
+        "results": [],
+    }
+    for prog in sorted(results):
+        for engine in engines:
+            r = results[prog].get(engine)
+            if not r:
+                continue
+            csv_path = csv_dir / ("%s_%s.csv" % (prog, engine))
+            with csv_path.open("w", encoding="utf-8") as f:
+                f.write("iteration,elapsed_usec\n")
+                for i, t in enumerate(r["times"]):
+                    f.write("%d,%d\n" % (i, t))
+            summary["results"].append({
+                "program": prog,
+                "engine": engine,
+                "times": r["times"],
+                "wall_seconds": r["wall"],
+                "returncode": r["rc"],
+                "timed_out": r["timed_out"],
+                "cold_usec": r["times"][0] if r["times"] else None,
+                "warm_median_usec": steady_state_tail(r["times"]),
+            })
+    json_path = log_dir / "steady_results.json"
+    json_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    return json_path, csv_dir
 
 
 def run_steady(args):
@@ -600,17 +915,27 @@ def run_steady(args):
             print("No matching programs for %r" % args.programs, file=sys.stderr)
             return 1
 
-    for engine in ENGINES:
+    for engine in args.engines:
         b = ENGINE_BINARY[engine]
         if not Path(b).exists():
             print("WARNING: engine binary missing: %s (%s)" % (engine, b),
                   file=sys.stderr)
 
+    revision = git_revision(REPO_ROOT)
+    env_line = capture_environment()
+    if args.pin is not None:
+        env_line += " | pin core %d" % args.pin
+    print(env_line + " | commit " + revision)
+
+    out_base = args.output if args.output.is_absolute() else REPO_ROOT / args.output
+    log_dir = out_base / revision / "appbench"
+    log_dir.mkdir(parents=True, exist_ok=True)
+
     results = {}
     with tempfile.TemporaryDirectory(prefix="appbench_steady_") as tmpdir:
         for spec in selected:
             results[spec.name] = {}
-            for engine in ENGINES:
+            for engine in args.engines:
                 if not Path(ENGINE_BINARY[engine]).exists():
                     continue
                 print("running %-10s on %-13s ..." % (spec.name, engine),
@@ -618,25 +943,31 @@ def run_steady(args):
                 r = run_engine(engine, spec, args.iterations, tmpdir,
                                args.timeout, args.pin)
                 warm = steady_state_tail(r["times"])
+                ppi = " [proc/iter]" if r.get("process_per_iteration") else ""
                 if r["timed_out"]:
-                    print(" TIMEOUT after %.1fs" % r["wall"])
+                    print(" TIMEOUT after %.1fs%s" % (r["wall"], ppi))
                 elif not r["times"]:
-                    print(" NO CSV DATA (rc=%d)" % r["rc"])
+                    print(" NO CSV DATA (rc=%d)%s" % (r["rc"], ppi))
                     if r["stderr"].strip():
                         print("    stderr: %s" % r["stderr"].strip()[:300])
                 else:
-                    print(" %d iters, cold=%s warm=%s (%.1fs)" % (
+                    print(" %d iters, cold=%s warm=%s (%.1fs)%s" % (
                         len(r["times"]), fmt_usec(r["times"][0]),
-                        fmt_usec(warm), r["wall"]))
+                        fmt_usec(warm), r["wall"], ppi))
                 results[spec.name][engine] = r
 
-    print_table(results, args.iterations)
+    json_path, csv_dir = _save_steady_logs(results, args.engines, log_dir, args.iterations)
+    print("Steady logs written to %s" % log_dir)
+    print("  JSON: %s" % json_path)
+    print("  CSVs: %s" % csv_dir)
+
+    print_table(results, args.engines, args.iterations)
 
     pdf_path = Path(args.pdf)
     if not pdf_path.is_absolute():
         pdf_path = REPO_ROOT / pdf_path
     try:
-        make_chart(results, args.iterations, pdf_path)
+        make_chart(results, args.engines, args.iterations, pdf_path)
         print("Warm-up curve chart written to %s" % pdf_path)
     except Exception as exc:
         print("ERROR generating chart: %s" % exc, file=sys.stderr)
@@ -1052,21 +1383,26 @@ def run_program(
 ) -> RunResult:
     result = RunResult(program=spec.name, engine=engine_name)
 
+    run_spec = spec
+    patched = prepare_engine_workdir(engine_name, spec, tmpdir)
+    if patched != Path(spec.workdir):
+        run_spec = with_workdir(spec, patched)
+
     extra_env: Optional[Dict[str, str]] = None
     if engine_name == ENGINE_RPYFORTH:
-        cmd = build_rpyforth_cmd(engine_path, spec, tmpdir)
-        if spec.rpy_env:
-            extra_env = dict(spec.rpy_env)
+        cmd = build_rpyforth_cmd(engine_path, run_spec, tmpdir)
+        if run_spec.rpy_env:
+            extra_env = dict(run_spec.rpy_env)
     elif engine_name == ENGINE_VFXFORTH:
-        cmd = build_vfxforth_cmd(engine_path, spec, tmpdir)
+        cmd = build_vfxforth_cmd(engine_path, run_spec, tmpdir)
     elif engine_name == ENGINE_SWIFTFORTH:
-        cmd = build_swiftforth_cmd(engine_path, spec, tmpdir)
+        cmd = build_swiftforth_cmd(engine_path, run_spec, tmpdir)
     else:
-        cmd = build_gforth_cmd(engine_path, spec, tmpdir)
+        cmd = build_gforth_cmd(engine_path, run_spec, tmpdir)
 
     for i in range(1, iterations + 1):
         rc, stdout, stderr, wall, timed_out = run_once(
-            cmd, spec.workdir, timeout, extra_env
+            cmd, run_spec.workdir, timeout, extra_env
         )
         save_log(
             log_dir, spec.name, engine_name, i, iterations,
@@ -1242,8 +1578,7 @@ def generate_appbench_chart(
             runnable_progs.append(prog)
 
     if runnable_progs:
-        palette = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728"]
-        n_eng_colors = {eng: palette[i % len(palette)] for i, eng in enumerate(engines)}
+        from plot_engines import engine_color
         group = 0.8
         width = group / max(1, n_eng)
         y_pos = range(len(runnable_progs))
@@ -1257,7 +1592,7 @@ def generate_appbench_chart(
             ax_bar.barh(
                 offsets, vals, width,
                 label=eng,
-                color=n_eng_colors[eng],
+                color=engine_color(eng),
                 alpha=0.85,
             )
 
@@ -1446,9 +1781,15 @@ def _add_steady_args(parser: argparse.ArgumentParser) -> None:
                         help="pin runs to this CPU core via taskset -c")
     parser.add_argument("--programs", type=str, default=None,
                         help="comma-separated subset of program names")
+    parser.add_argument("--engines", nargs="+", metavar="NAME",
+                        default=ENGINES,
+                        help="Engines to benchmark (default: %s)" % " ".join(ENGINES))
     parser.add_argument("--pdf", type=str,
                         default=str(REPO_ROOT / "appbench_steady_curves.pdf"),
                         help="output PDF for the warm-up curve chart")
+    parser.add_argument("--output", type=Path, default=Path("logs"),
+                        help="parent directory for per-run logs and CSV data "
+                             "(default: logs/)")
 
 
 def _add_func_args(parser: argparse.ArgumentParser) -> None:
