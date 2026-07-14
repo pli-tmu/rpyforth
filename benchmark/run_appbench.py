@@ -63,6 +63,7 @@ import argparse
 import copy
 import difflib
 import json
+import math
 import os
 import platform
 import random
@@ -1581,7 +1582,8 @@ def generate_appbench_chart(
         from plot_engines import engine_color
         group = 0.8
         width = group / max(1, n_eng)
-        y_pos = range(len(runnable_progs))
+        row_names = runnable_progs + ["geomean"]
+        y_pos = range(len(row_names))
 
         for j, eng in enumerate(engines):
             offsets = [i - group / 2 + width * (j + 0.5) for i in y_pos]
@@ -1589,16 +1591,21 @@ def generate_appbench_chart(
             for prog in runnable_progs:
                 med, _ = timings.get((prog, eng), (None, 0.0))
                 vals.append((med * 1e6) if med is not None else 0)
+            pos = [v for v in vals if v > 0]
+            gm = (math.exp(sum(math.log(v) for v in pos) / len(pos))
+                  if pos else 0)
             ax_bar.barh(
-                offsets, vals, width,
+                offsets, vals + [gm], width,
                 label=eng,
                 color=engine_color(eng),
                 alpha=0.85,
             )
 
+        ax_bar.axhline(len(row_names) - 1.5, color="gray", linewidth=0.8,
+                       linestyle=":")
         ax_bar.set_xscale("log")
         ax_bar.set_yticks(list(y_pos))
-        ax_bar.set_yticklabels(runnable_progs, fontsize=9)
+        ax_bar.set_yticklabels(row_names, fontsize=9)
         ax_bar.set_xlabel("Wall-clock time (microseconds, log scale)", fontsize=9)
         ax_bar.set_title("Runtime comparison (runnable subset)", fontsize=10)
         ax_bar.legend(fontsize=8)

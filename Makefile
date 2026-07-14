@@ -35,6 +35,26 @@ build-jit: _pypy_binary/bin/python setup-pypy
 build-jit-stkfrag: _pypy_binary/bin/python setup-pypy
 	RPYFORTH_STACK_FRAGMENT=1 PYTHONPATH=. RPYFORTH_EXE_NAME=rpyforth-c-stkfrag $(PYTHON2) $(RPYTHON) -Ojit $(RPYTHON_ARGS) rpyforth/$(TARGET).py
 
+.PHONY: build-jit-stkfrag-floatfrag
+build-jit-stkfrag-floatfrag: _pypy_binary/bin/python setup-pypy
+	RPYFORTH_STACK_FRAGMENT=1 RPYFORTH_FLOAT_FRAGMENT=1 PYTHONPATH=. RPYFORTH_EXE_NAME=rpyforth-c-stkfrag-floatfrag $(PYTHON2) $(RPYTHON) -Ojit $(RPYTHON_ARGS) rpyforth/$(TARGET).py
+
+.PHONY: build-jit-stkfrag-frameonly
+build-jit-stkfrag-frameonly: _pypy_binary/bin/python setup-pypy
+	RPYFORTH_STACK_FRAGMENT=1 RPYFORTH_FRAME_ONLY=1 PYTHONPATH=. RPYFORTH_EXE_NAME=rpyforth-c-stkfrag-frameonly $(PYTHON2) $(RPYTHON) -Ojit $(RPYTHON_ARGS) rpyforth/$(TARGET).py
+
+.PHONY: build-jit-stkfrag-ntop4
+build-jit-stkfrag-ntop4: _pypy_binary/bin/python setup-pypy
+	RPYFORTH_STACK_FRAGMENT=1 RPYFORTH_NTOP=4 PYTHONPATH=. RPYFORTH_EXE_NAME=rpyforth-c-stkfrag-ntop4 $(PYTHON2) $(RPYTHON) -Ojit $(RPYTHON_ARGS) rpyforth/$(TARGET).py
+
+.PHONY: build-jit-stkfrag-ntop8
+build-jit-stkfrag-ntop8: _pypy_binary/bin/python setup-pypy
+	RPYFORTH_STACK_FRAGMENT=1 RPYFORTH_NTOP=8 PYTHONPATH=. RPYFORTH_EXE_NAME=rpyforth-c-stkfrag-ntop8 $(PYTHON2) $(RPYTHON) -Ojit $(RPYTHON_ARGS) rpyforth/$(TARGET).py
+
+.PHONY: build-jit-stkfrag-ntop16
+build-jit-stkfrag-ntop16: _pypy_binary/bin/python setup-pypy
+	RPYFORTH_STACK_FRAGMENT=1 RPYFORTH_NTOP=16 PYTHONPATH=. RPYFORTH_EXE_NAME=rpyforth-c-stkfrag-ntop16 $(PYTHON2) $(RPYTHON) -Ojit $(RPYTHON_ARGS) rpyforth/$(TARGET).py
+
 .PHONY: build-jit-novirt
 build-jit-novirt: _pypy_binary/bin/python setup-pypy
 	RPYFORTH_EXE_NAME=rpyforth-c-novirt PYTHONPATH=. $(PYTHON2) $(RPYTHON) -Ojit $(RPYTHON_ARGS) rpyforth/$(TARGET).py
@@ -43,8 +63,8 @@ build-jit-novirt: _pypy_binary/bin/python setup-pypy
 # RPyFactor / Joy builds (build only; no test/bench Makefile entries)
 # ---------------------------------------------------------------------------
 
-.PHONY: build-joy
-build-joy: build-factor build-factor-stkfrag build-factor-stkfrag-vable
+.PHONY: build-factor-all
+build-factor-all: build-factor build-factor-stkfrag build-factor-stkfrag-vable
 
 .PHONY: build-factor
 build-factor: _pypy_binary/bin/python setup-pypy
@@ -215,7 +235,6 @@ setup-baselines: setup-gforth setup-vfxforth setup-swiftforth
 SHOOTOUT_COMPARE = \
 	--compare ./rpyforth-c-stkfrag \
 	--compare $(GFORTH_FAST) \
-	--compare $(GFORTH) \
 	--compare $(VFXFORTH) \
 	--compare $(SWIFTFORTH)
 
@@ -236,11 +255,13 @@ bench-shootout-curve: #build-jit-stkfrag setup-baselines $(PLOT_PY)
 .PHONY: bench-appbench
 bench-appbench: #build-jit-stkfrag setup-baselines setup-appbench $(PLOT_PY)
 	@$(PLOT_PY) benchmark/run_appbench.py func \
+		--engines rpyforth gforth-fast vfxforth swiftforth \
 		--iterations 5 --chart appbench.pdf
 
 .PHONY: bench-appbench-curve
 bench-appbench-curve: #build-jit-stkfrag setup-baselines setup-appbench $(PLOT_PY)
 	@$(PLOT_PY) benchmark/run_appbench.py steady \
+		--engines rpyforth gforth-fast vfxforth swiftforth \
 		--iterations 50 --pin 3 --pdf appbench-curve.pdf
 
 .PHONY: bench-factor

@@ -51,6 +51,17 @@ SHOOTOUT_DIR = REPO_ROOT / "shootout"
 # read an argument from the command line.
 DEFAULT_ARGS: Dict[str, List[str]] = {}
 
+# Benchmarks that read stdin. Values are paths relative to the repo root;
+# run_benchmark opens them and passes the file as the process stdin.
+STDIN_FILES: Dict[str, str] = {
+    "shootout/sumcol.fs": "shootout/data/sumcol.txt",
+    "shootout/wc.fs": "shootout/data/wc.txt",
+    "shootout/reversefile.fs": "shootout/data/reversefile.txt",
+    "shootout/spellcheck.fs": "shootout/data/spellcheck.txt",
+    "shootout/moments.fs": "shootout/data/moments.txt",
+    "shootout/wordfreq.fs": "shootout/data/wordfreq.txt",
+}
+
 # How long we are willing to wait for a single benchmark run.
 DEFAULT_TIMEOUT = 300
 
@@ -240,36 +251,45 @@ def run_benchmark(
     )
 
     cmd = list(wrapper or []) + list(cmd_prefix) + [str(benchmark)] + args
+    stdin_path = STDIN_FILES.get(result.name)
+    stdin_fh = None
     start = time.perf_counter()
     try:
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            env=env,
-            cwd=repo_root,
-        )
-    except subprocess.TimeoutExpired as exc:
-        result.status = "timeout"
-        result.returncode = -1
-        # PyPy may provide bytes even with text=True; decode defensively.
-        if isinstance(exc.stdout, bytes):
-            result.stdout = exc.stdout.decode("utf-8", errors="replace")
-        else:
-            result.stdout = exc.stdout or ""
-        if isinstance(exc.stderr, bytes):
-            result.stderr = exc.stderr.decode("utf-8", errors="replace")
-        else:
-            result.stderr = exc.stderr or ""
-        result.error_message = f"timed out after {timeout}s"
-        result.wall_seconds = time.perf_counter() - start
-        return result
-    except FileNotFoundError as exc:
-        result.status = "error"
-        result.returncode = -1
-        result.error_message = f"binary not found: {exc.filename}"
-        return result
+        if stdin_path is not None:
+            stdin_fh = open(repo_root / stdin_path, "rb")
+        try:
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                env=env,
+                cwd=repo_root,
+                stdin=stdin_fh if stdin_fh is not None else subprocess.DEVNULL,
+            )
+        except subprocess.TimeoutExpired as exc:
+            result.status = "timeout"
+            result.returncode = -1
+            # PyPy may provide bytes even with text=True; decode defensively.
+            if isinstance(exc.stdout, bytes):
+                result.stdout = exc.stdout.decode("utf-8", errors="replace")
+            else:
+                result.stdout = exc.stdout or ""
+            if isinstance(exc.stderr, bytes):
+                result.stderr = exc.stderr.decode("utf-8", errors="replace")
+            else:
+                result.stderr = exc.stderr or ""
+            result.error_message = f"timed out after {timeout}s"
+            result.wall_seconds = time.perf_counter() - start
+            return result
+        except FileNotFoundError as exc:
+            result.status = "error"
+            result.returncode = -1
+            result.error_message = f"binary not found: {exc.filename}"
+            return result
+    finally:
+        if stdin_fh is not None:
+            stdin_fh.close()
 
     result.wall_seconds = time.perf_counter() - start
     result.returncode = proc.returncode

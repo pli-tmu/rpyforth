@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import statistics
 import sys
 from pathlib import Path
@@ -145,8 +146,18 @@ def _short(name: str) -> str:
     return name.replace("shootout/", "")
 
 
+def _geomean(values: List[float]) -> Optional[float]:
+    vals = [v for v in values if v is not None and v > 0]
+    if not vals:
+        return None
+    return math.exp(sum(math.log(v) for v in vals) / len(vals))
+
+
 def draw_grouped_elapsed(ax, names, data, plan, colors, logx: bool = False) -> None:
-    """Horizontal grouped bars: one bar per config, grouped by benchmark."""
+    """Horizontal grouped bars: one bar per config, grouped by benchmark, with a
+    geomean summary row appended at the bottom."""
+    names = list(names) + ["geomean"]
+    data = {cid: vals + [_geomean(vals)] for cid, vals in data.items()}
     n_cfg = max(1, len(data))
     group = 0.8
     width = group / n_cfg
@@ -155,6 +166,7 @@ def draw_grouped_elapsed(ax, names, data, plan, colors, logx: bool = False) -> N
         offsets = [i - group / 2 + width * (j + 0.5) for i in y]
         heights = [v if v is not None else 0 for v in data[cid]]
         ax.barh(offsets, heights, width, label=plan.label_for(cid), color=colors[cid])
+    ax.axhline(len(names) - 1.5, color="gray", linewidth=0.8, linestyle=":")
     if logx:
         ax.set_xscale("log")
     ax.set_yticks(list(y))
@@ -166,28 +178,35 @@ def draw_grouped_elapsed(ax, names, data, plan, colors, logx: bool = False) -> N
 
 
 def draw_normalized(ax, names, data, plan, colors, errs=None) -> None:
-    """Horizontal grouped bars normalized to the reference config (=1.0)."""
+    """Horizontal grouped bars normalized to the reference config (=1.0), with a
+    geomean summary row appended at the bottom."""
     ref = plan.reference_config
     ref_vals = data.get(ref, [None] * len(names))
+    norm_by_cid = {}
+    for cid in data:
+        norm_by_cid[cid] = [
+            (v / r) if (v is not None and r) else None
+            for v, r in zip(data[cid], ref_vals)
+        ]
+    names = list(names) + ["geomean"]
     n_cfg = max(1, len(data))
     group = 0.8
     width = group / n_cfg
     y = range(len(names))
     for j, cid in enumerate(data):
         offsets = [i - group / 2 + width * (j + 0.5) for i in y]
-        norm = [
-            (v / r) if (v is not None and r) else 0
-            for v, r in zip(data[cid], ref_vals)
-        ]
+        norm = norm_by_cid[cid] + [_geomean(norm_by_cid[cid])]
+        heights = [v if v is not None else 0 for v in norm]
         xerr = None
         if errs:
             xerr = [
                 (errs[cid][i] / ref_vals[i]) if (ref_vals[i] and data[cid][i] is not None) else 0
-                for i in y
-            ]
-        ax.barh(offsets, norm, width, label=plan.label_for(cid), color=colors[cid],
+                for i in range(len(ref_vals))
+            ] + [0]
+        ax.barh(offsets, heights, width, label=plan.label_for(cid), color=colors[cid],
                 xerr=xerr, error_kw={"elinewidth": 0.8, "capsize": 2})
     ax.axvline(1.0, color="black", linestyle="--", linewidth=1)
+    ax.axhline(len(names) - 1.5, color="gray", linewidth=0.8, linestyle=":")
     ax.set_yticks(list(y))
     ax.set_yticklabels([_short(n) for n in names])
     ax.set_xlabel(f"Elapsed relative to {plan.label_for(ref)} (lower = faster)")
@@ -443,9 +462,15 @@ def generate_pdf_report(
                 plt.close(fig)
 
             if names:
-                fig, ax = plt.subplots(figsize=(10, max(6, len(names) * 0.4)))
-                colors = ["green" if s > 1 else "red" for s in speedups]
-                ax.barh(names, speedups, color=colors, alpha=0.7)
+                gm = _geomean(speedups)
+                bar_names = names + (["geomean"] if gm else [])
+                bar_speedups = speedups + ([gm] if gm else [])
+                fig, ax = plt.subplots(figsize=(10, max(6, len(bar_names) * 0.4)))
+                colors = ["green" if s > 1 else "red" for s in bar_speedups]
+                ax.barh(bar_names, bar_speedups, color=colors, alpha=0.7)
+                if gm:
+                    ax.axhline(len(bar_names) - 1.5, color="gray",
+                               linewidth=0.8, linestyle=":")
                 ax.axvline(1.0, color="black", linestyle="--", linewidth=1)
                 ax.set_xlabel(speedup_xlabel)
                 ax.set_title(speedup_title)

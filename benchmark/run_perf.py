@@ -74,7 +74,7 @@ def perf_available():
 def run_engine(engine, spec, iterations, pin, timeout, extra_env=None,
                wrapper=None):
     """Run one steady driver; return (rc, stdout_text, wrapper_file_text)."""
-    driver = build_driver(spec, iterations)
+    driver = build_driver(spec, iterations, engine)
     env = dict(os.environ)
     if engine == ENGINE_RPYFORTH:
         env.update(spec.rpy_env)

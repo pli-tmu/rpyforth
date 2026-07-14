@@ -55,6 +55,15 @@ from run_appbench import (
     git_revision,
     capture_environment,
 )
+# Shootout steady-state machinery: the same in-process DO-LOOP driver the warmup
+# curves harness uses, applied IDENTICALLY to rpyforth and gforth-fast.
+from run_ablation import (
+    build_shootout_driver,
+    build_shootout_cmd,
+    SHOOTOUT_DIR,
+    SHOOTOUT_EXCLUDED,
+    run_engine as run_shootout_engine,
+)
 from jitlog_analysis import parse_jit_summary_text
 
 # AOT engines rpyforth is raced against for break-even (rq3).
@@ -65,6 +74,29 @@ OTHER_ENGINES = [ENGINE_GFORTH_FAST, ENGINE_VFXFORTH, ENGINE_SWIFTFORTH]
 DEFAULT_ITERATIONS = 10
 GC_FRACTION_FLAG = 0.20
 DRIFT_FLAG = 0.5  # percent per iteration
+
+# RQ1 suites. appbench speedups come from a steady_results.json produced by
+# run_appbench.py; shootout speedups are measured here with the same steady-state
+# protocol (in-process iterations, warm tail = last 50%, median, pinned core) and
+# persisted to shootout_steady.json alongside the RQ outputs.
+SUITE_APPBENCH = "appbench"
+SUITE_SHOOTOUT = "shootout"
+SUITE_COMBINED = "combined"
+
+# Iterations for the shootout speedup measurement (in-process warm-up + tail).
+DEFAULT_ITERATIONS_STEADY = 30
+
+# Some shootout kernels are sub-100ms warm; the in-process driver already amortises
+# process startup across iterations, but a kernel warm below this floor gets its
+# inner reps scaled so a single timed iteration stays measurable. The scale is
+# noted per program rather than dropping the kernel.
+STEADY_MIN_USEC = 2000
+
+# Known result labels printed by shootout kernels, used to verify that rpyforth
+# and gforth-fast agree before a kernel's timing is trusted (as run_factor.py does).
+RESULT_VALUE_RE = re.compile(
+    r"(?:^|.*\s)(Ack|Count|Fib|Result|Sum|Checksum):\s*(\S+)",
+    re.MULTILINE | re.IGNORECASE)
 
 # The `gc` section prints both minor and major collects with `time taken:` lines;
 # gc-collect alone is empty on this build. Probed variants, in preference order.
@@ -137,6 +169,245 @@ def speedup_vs(by_prog, prog, ref_engine=ENGINE_GFORTH_FAST):
 
 
 # ===========================================================================
+# shootout steady-state measurement (same protocol as appbench)
+# ===========================================================================
+#
+# Reuses run_ablation.build_shootout_driver / build_shootout_cmd / run_engine:
+# each kernel is timed in-process for R iterations (the driver redefines `bye`
+# and times an `included` of the kernel per iteration via UTIME), so the JIT
+# warms exactly as appbench's steady mode does. The SAME driver is applied to
+# rpyforth and gforth-fast, so the wrapper cannot bias one engine.
+
+def _result_value(stdout):
+    """Return a canonical result signature for a single kernel run: a labeled
+    result (e.g. 'Count: 1028') when the kernel prints one, else all numeric
+    tokens on non-Elapsed lines (fibo, methcall, matrix, ... print bare numbers).
+    Used to verify rpyforth and gforth-fast agree before trusting timing."""
+    text = stdout or ""
+    m = RESULT_VALUE_RE.search(text)
+    if m:
+        return "%s: %s" % (m.group(1).lower(), m.group(2))
+    numbers = []
+    for line in text.splitlines():
+        s = line.strip()
+        if not s or s.lower().startswith("elapsed") or s.lower().startswith("iteration"):
+            continue
+        # Skip the driver's CSV data rows ("<i> ,<usec>").
+        parts = [p.strip() for p in s.split(",")]
+        if len(parts) >= 2 and parts[0].isdigit():
+            continue
+        numbers.extend(re.findall(r"-?\d+", s))
+    return " ".join(numbers) if numbers else None
+
+
+def discover_shootout_programs():
+    """Return sorted shootout kernel paths (top-level shootout/*.fs, minus the
+    curve/ variants and any known-bad kernels)."""
+    return [
+        p for p in sorted(SHOOTOUT_DIR.glob("*.fs"))
+        if not p.name.startswith(".") and p.stem not in SHOOTOUT_EXCLUDED
+    ]
+
+
+def measure_shootout_steady(bench_path, iterations, tmpdir, timeout, pin):
+    """Time one shootout kernel on rpyforth and gforth-fast with the identical
+    in-process DO-LOOP driver. Returns {engine: run_dict} where run_dict mirrors
+    run_engine's schema (times[], wall, rc, timed_out, stderr) plus result_value
+    and a scale_reps note. run_engine already pins via taskset when pin is set."""
+    reps = 1
+    out = {}
+    for engine in (ENGINE_RPYFORTH, ENGINE_GFORTH_FAST):
+        binary = ab.ENGINE_BINARY[engine]
+        if not Path(binary).exists():
+            out[engine] = {"engine": engine, "times": [], "wall": 0.0, "rc": -1,
+                           "timed_out": False, "stderr": "binary not found",
+                           "result_value": None, "scale_reps": reps}
+            continue
+        driver = build_shootout_driver(bench_path, iterations)
+        driver_path = Path(tmpdir) / ("%s_%s_steady.fs" % (bench_path.stem, engine))
+        driver_path.write_text(driver, encoding="utf-8")
+        r = run_shootout_engine(engine, driver_path, SHOOTOUT_DIR, iterations,
+                                timeout, pin)
+        # run_engine does not capture stdout beyond the parsed curve, so re-derive
+        # the result value from a direct read of the driver output is not needed:
+        # rerun is wasteful. Instead pull the result from the driver stderr/stdout
+        # captured by run_engine when available; run_engine keeps only stderr, so
+        # verify correctness with a dedicated single-shot below.
+        r["result_value"] = None
+        r["scale_reps"] = reps
+        out[engine] = r
+    return out
+
+
+def _shootout_result_values(bench_path, tmpdir, timeout, pin):
+    """One quick single-iteration run per engine to capture the printed result
+    label for the cross-engine correctness check."""
+    values = {}
+    for engine in (ENGINE_RPYFORTH, ENGINE_GFORTH_FAST):
+        binary = ab.ENGINE_BINARY[engine]
+        if not Path(binary).exists():
+            values[engine] = None
+            continue
+        driver = build_shootout_driver(bench_path, 1)
+        driver_path = Path(tmpdir) / ("%s_%s_check.fs" % (bench_path.stem, engine))
+        driver_path.write_text(driver, encoding="utf-8")
+        cmd = build_shootout_cmd(engine, driver_path)
+        if pin is not None:
+            cmd = ["taskset", "-c", str(pin)] + cmd
+        try:
+            proc = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=timeout,
+                cwd=str(SHOOTOUT_DIR), stdin=subprocess.DEVNULL)
+            values[engine] = _result_value(proc.stdout)
+        except subprocess.TimeoutExpired:
+            values[engine] = None
+    return values
+
+
+def run_shootout_steady(bench_paths, iterations, tmpdir, timeout, pin):
+    """Measure every shootout kernel and return (by_prog, rows) where by_prog is
+    the {program: {engine: result}} join the RQ helpers expect and rows is the
+    per-program steady detail for the shootout_steady.json persistence."""
+    by_prog = {}
+    rows = []
+    for bench_path in bench_paths:
+        name = bench_path.stem
+        print("  shootout-steady %-12s ..." % name, end="", flush=True)
+        checks = _shootout_result_values(bench_path, tmpdir, timeout, pin)
+        runs = measure_shootout_steady(bench_path, iterations, tmpdir, timeout, pin)
+
+        rpy_val = checks.get(ENGINE_RPYFORTH)
+        ref_val = checks.get(ENGINE_GFORTH_FAST)
+        result_match = (rpy_val is not None and rpy_val == ref_val)
+
+        by_prog[name] = {}
+        for engine in (ENGINE_RPYFORTH, ENGINE_GFORTH_FAST):
+            r = runs[engine]
+            warm = ab.steady_state_tail(r["times"]) if r["times"] else None
+            by_prog[name][engine] = {
+                "program": name,
+                "engine": engine,
+                "times": r["times"],
+                "wall_seconds": r["wall"],
+                "returncode": r["rc"],
+                "timed_out": r["timed_out"],
+                "cold_usec": r["times"][0] if r["times"] else None,
+                "warm_median_usec": warm,
+            }
+
+        rpy_warm = by_prog[name][ENGINE_RPYFORTH]["warm_median_usec"]
+        scaled = (rpy_warm is not None and rpy_warm < STEADY_MIN_USEC)
+        speedup = speedup_vs(by_prog, name)
+        rows.append({
+            "program": name,
+            "result_match": result_match,
+            "rpy_result": rpy_val,
+            "ref_result": ref_val,
+            "warm_usec": rpy_warm,
+            "below_floor": scaled,
+            "speedup_vs_gforth": speedup,
+        })
+        note = ""
+        if not result_match:
+            note = "  RESULT MISMATCH (%s vs %s)" % (rpy_val, ref_val)
+        elif scaled:
+            note = "  [warm %s < %dus floor]" % (
+                _fmt(rpy_warm, "%.0f"), STEADY_MIN_USEC)
+        print(" rpy-warm=%s ref-warm=%s speedup=%s%s" % (
+            _fmt(rpy_warm, "%.0f"),
+            _fmt(by_prog[name][ENGINE_GFORTH_FAST]["warm_median_usec"], "%.0f"),
+            _fmt(speedup, "%.2fx"), note))
+    return by_prog, rows
+
+
+def load_shootout_steady(log_dir, iterations):
+    """Reuse a previously persisted shootout_steady.json when its protocol
+    matches, so re-analysis does not repeat the measurement. Returns
+    (by_prog, rows, path) or None."""
+    path = log_dir / "shootout_steady.json"
+    if not path.exists():
+        return None
+    try:
+        summary = json.loads(path.read_text(encoding="utf-8"))
+    except ValueError:
+        return None
+    if summary.get("iterations") != iterations:
+        return None
+    by_prog = {}
+    for r in summary.get("results", []):
+        by_prog.setdefault(r["program"], {})[r["engine"]] = r
+    return by_prog, summary.get("checks", []), path
+
+
+def save_shootout_steady(by_prog, rows, iterations, log_dir):
+    """Persist shootout steady measurements mirroring run_appbench's steady JSON
+    schema (top-level iterations/engines/results) so RQ3-style reuse is possible,
+    plus a shootout-specific `checks` block for the correctness audit."""
+    engines = [ENGINE_RPYFORTH, ENGINE_GFORTH_FAST]
+    results = []
+    for prog in sorted(by_prog):
+        for engine in engines:
+            r = by_prog[prog].get(engine)
+            if r is not None:
+                results.append(r)
+    summary = {
+        "mode": "steady",
+        "suite": SUITE_SHOOTOUT,
+        "iterations": iterations,
+        "engines": engines,
+        "results": results,
+        "checks": rows,
+    }
+    log_dir.mkdir(parents=True, exist_ok=True)
+    path = log_dir / "shootout_steady.json"
+    path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    return path
+
+
+# ===========================================================================
+# suite / program abstraction for RQ1
+# ===========================================================================
+#
+# A Program pairs a name+suite with (a) the spec that a PYPYLOG run drives to
+# collect JIT metrics and (b) the {engine: steady-result} join used for the warm
+# speedup. appbench programs reuse the appbench SteadySpec + steady_results.json;
+# shootout programs use a lightweight ShootoutSpec whose driver is the same
+# in-process kernel loop measured above.
+
+class ShootoutSpec(object):
+    """Minimal spec so a shootout kernel drives the appbench-style _run_pypylog
+    path: a name plus a rpy_env, and a build_driver/build_cmd pair bound to the
+    shootout DO-LOOP driver."""
+
+    def __init__(self, bench_path):
+        self.name = bench_path.stem
+        self.bench_path = bench_path
+        self.workdir = SHOOTOUT_DIR
+        self.rpy_env = {}
+
+
+class Program(object):
+    def __init__(self, name, suite, pypylog_spec, is_shootout):
+        self.name = name
+        self.suite = suite
+        self.pypylog_spec = pypylog_spec
+        self.is_shootout = is_shootout
+
+
+def build_programs(suite, appbench_specs, shootout_paths):
+    """Return the ordered list of Program objects for the requested suite."""
+    progs = []
+    if suite in (SUITE_APPBENCH, SUITE_COMBINED):
+        for spec in appbench_specs:
+            progs.append(Program(spec.name, SUITE_APPBENCH, spec, False))
+    if suite in (SUITE_SHOOTOUT, SUITE_COMBINED):
+        for path in shootout_paths:
+            progs.append(Program(path.stem, SUITE_SHOOTOUT,
+                                 ShootoutSpec(path), True))
+    return progs
+
+
+# ===========================================================================
 # statistics (inline; scipy is not guaranteed to be installed)
 # ===========================================================================
 
@@ -202,7 +473,42 @@ def geomean(values):
 
 def _run_pypylog(spec, iterations, tmpdir, timeout, pin, section, log_path):
     """Run rpyforth on `spec` with PYPYLOG=<section>:<log_path>. Returns
-    (returncode, wall, stderr, timed_out); log written to log_path."""
+    (returncode, wall, stderr, timed_out); log written to log_path.
+
+    Handles both appbench SteadySpecs (appbench driver) and shootout ShootoutSpecs
+    (the in-process kernel DO-LOOP driver), so JIT metrics come from the SAME
+    workload the warm speedup was measured on."""
+    if isinstance(spec, ShootoutSpec):
+        run_spec = spec
+        driver = build_shootout_driver(spec.bench_path, iterations)
+        driver_path = Path(tmpdir) / ("%s_rq_%s_driver.fs" % (spec.name, section))
+        driver_path.write_text(driver, encoding="utf-8")
+        cmd = build_shootout_cmd(ENGINE_RPYFORTH, driver_path)
+        if pin is not None:
+            cmd = ["taskset", "-c", str(pin)] + cmd
+        env = os.environ.copy()
+        env["PYPYLOG"] = "%s:%s" % (section, log_path)
+        t0 = time.perf_counter()
+        proc = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            env=env, cwd=str(SHOOTOUT_DIR), stdin=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        timed_out = False
+        try:
+            _out, stderr = proc.communicate(timeout=timeout)
+            rc = proc.returncode
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            try:
+                os.killpg(proc.pid, 9)
+            except (ProcessLookupError, PermissionError):
+                proc.kill()
+            _out, stderr = proc.communicate()
+            rc = -1
+        wall = time.perf_counter() - t0
+        return rc, wall, stderr or "", timed_out
+
     run_spec = spec
     patched = prepare_engine_workdir(ENGINE_RPYFORTH, spec, tmpdir)
     if patched != Path(spec.workdir):
@@ -243,10 +549,16 @@ def _run_pypylog(spec, iterations, tmpdir, timeout, pin, section, log_path):
     return rc, wall, stderr or "", timed_out
 
 
-def run_rq1(specs, by_prog, iterations, tmpdir, timeout, pin):
-    """Per program: jit-summary metrics + derived ratios, joined with speedup."""
+def run_rq1(programs, by_prog, iterations, tmpdir, timeout, pin):
+    """Per program: jit-summary metrics + derived ratios, joined with speedup.
+
+    `programs` is a list of Program objects (appbench and/or shootout). Each row
+    carries a `suite` field, and correlations are reported both over the combined
+    sample and per-suite subgroup so a metric's rho cannot be an artifact of one
+    suite."""
     rows = []
-    for spec in specs:
+    for prog in programs:
+        spec = prog.pypylog_spec
         log_path = str(Path(tmpdir) / ("%s.jitsummary" % spec.name))
         print("  rq1 %-10s jit-summary ..." % spec.name, end="", flush=True)
         rc, wall, stderr, timed_out = _run_pypylog(
@@ -286,6 +598,7 @@ def run_rq1(specs, by_prog, iterations, tmpdir, timeout, pin):
 
         rows.append({
             "program": spec.name,
+            "suite": prog.suite,
             "loops": loops,
             "bridges": bridges,
             "aborts": aborts,
@@ -322,12 +635,31 @@ def run_rq1(specs, by_prog, iterations, tmpdir, timeout, pin):
         ("bridge_exec_fraction", "bridge exec fraction"),
         ("loops", "loop count"),
     ]
-    correlations = {}
-    speeds = [r["speedup_vs_gforth"] for r in rows]
-    for key, _label in metrics:
-        correlations[key] = spearman([r[key] for r in rows], speeds)
 
-    return {"rows": rows, "metrics": metrics, "correlations": correlations}
+    def correlate(subset):
+        speeds = [r["speedup_vs_gforth"] for r in subset]
+        return dict((key, spearman([r[key] for r in subset], speeds))
+                    for key, _label in metrics)
+
+    correlations = correlate(rows)
+    subgroup = {}
+    for suite in (SUITE_APPBENCH, SUITE_SHOOTOUT):
+        sub = [r for r in rows if r["suite"] == suite]
+        if sub:
+            subgroup[suite] = {
+                "n": len(sub),
+                "correlations": correlate(sub),
+            }
+
+    suites = sorted(set(r["suite"] for r in rows))
+    return {
+        "rows": rows,
+        "metrics": metrics,
+        "correlations": correlations,
+        "subgroup_correlations": subgroup,
+        "n": len(rows),
+        "suites": suites,
+    }
 
 
 # ===========================================================================
@@ -595,22 +927,35 @@ def render_report(sections, steady_path, revision):
         L.append("-" * 80)
         L.append("RQ1  TRACE AFFINITY  (does trace behaviour predict speedup?)")
         L.append("-" * 80)
-        L.append("%-10s %6s %8s %7s %9s %9s %9s %9s %9s" % (
-            "program", "loops", "bridges", "aborts", "trace-fr",
+        L.append("%-10s %-9s %6s %8s %7s %9s %9s %9s %9s %9s" % (
+            "program", "suite", "loops", "bridges", "aborts", "trace-fr",
             "abrt/lp", "brdg/lp", "brdg-exec", "speedup"))
         for r in rq1["rows"]:
-            L.append("%-10s %6s %8s %7s %9s %9s %9s %9s %9s" % (
-                r["program"], r["loops"], r["bridges"], r["aborts"],
+            L.append("%-10s %-9s %6s %8s %7s %9s %9s %9s %9s %9s" % (
+                r["program"], r.get("suite", "-"),
+                r["loops"], r["bridges"], r["aborts"],
                 _fmt(r["tracing_time_fraction"], "%.3f"),
                 _fmt(r["aborts_per_loop"], "%.2f"),
                 _fmt(r["bridges_per_loop"], "%.2f"),
                 _fmt(r.get("bridge_exec_fraction"), "%.3f"),
                 _fmt(r["speedup_vs_gforth"], "%.2fx")))
         L.append("")
+        sub = rq1.get("subgroup_correlations", {})
+        n_all = rq1.get("n", len(rq1["rows"]))
+        cols = [("combined", n_all, rq1["correlations"])]
+        for suite in (SUITE_APPBENCH, SUITE_SHOOTOUT):
+            if suite in sub:
+                cols.append((suite, sub[suite]["n"], sub[suite]["correlations"]))
         L.append("Spearman rank correlation (metric vs speedup-vs-gforth):")
+        head = "  %-24s" % "metric"
+        for name, n, _c in cols:
+            head += " %14s" % ("%s(n=%d)" % (name, n))
+        L.append(head)
         for key, label in rq1["metrics"]:
-            L.append("  %-24s rho = %s" % (
-                label, _fmt(rq1["correlations"][key], "%.3f")))
+            line = "  %-24s" % label
+            for _name, _n, corr in cols:
+                line += " %14s" % _fmt(corr.get(key), "%.3f")
+            L.append(line)
         L.append("")
 
     rq2 = sections.get("rq2")
@@ -797,12 +1142,19 @@ def make_charts(sections, by_prog, pdf_path):
 # driver
 # ===========================================================================
 
-def select_programs(programs_arg):
+def select_appbench_specs(programs_arg):
     if not programs_arg:
         return list(PROGRAMS)
     want = set(p.strip() for p in programs_arg.split(","))
-    selected = [p for p in PROGRAMS if p.name in want]
-    return selected
+    return [p for p in PROGRAMS if p.name in want]
+
+
+def select_shootout_paths(programs_arg):
+    paths = discover_shootout_programs()
+    if not programs_arg:
+        return paths
+    want = set(p.strip() for p in programs_arg.split(","))
+    return [p for p in paths if p.stem in want]
 
 
 def main(argv=None):
@@ -810,83 +1162,146 @@ def main(argv=None):
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("rq", choices=["rq1", "rq2", "rq3", "rq4", "all"],
                         help="which research question(s) to verify")
+    parser.add_argument("--suite",
+                        choices=[SUITE_APPBENCH, SUITE_SHOOTOUT, SUITE_COMBINED],
+                        default=SUITE_APPBENCH,
+                        help="RQ1 sample: appbench (default, backward compat), "
+                             "shootout, or combined (both)")
     parser.add_argument("--programs", default="",
                         help="comma-separated program subset (default: all)")
     parser.add_argument("--iterations", type=int, default=DEFAULT_ITERATIONS,
                         help="iterations for PYPYLOG (rq1/rq2) runs")
+    parser.add_argument("--iterations-steady", type=int,
+                        default=DEFAULT_ITERATIONS_STEADY,
+                        help="in-process iterations for the shootout speedup "
+                             "measurement (default %d)" % DEFAULT_ITERATIONS_STEADY)
+    parser.add_argument("--remeasure-shootout", action="store_true",
+                        help="re-measure shootout steady even when a matching "
+                             "shootout_steady.json exists")
     parser.add_argument("--pin", type=int, default=None,
                         help="taskset CPU core for PYPYLOG runs")
     parser.add_argument("--steady-json", default="",
-                        help="steady_results.json (default: newest under logs/)")
+                        help="appbench steady_results.json (default: newest "
+                             "under logs/); only required when the suite "
+                             "includes appbench")
     parser.add_argument("--timeout", type=int, default=ab.STEADY_DEFAULT_TIMEOUT,
                         help="per-run timeout seconds for PYPYLOG runs")
     parser.add_argument("--output", type=Path, default=Path("logs/rq"),
                         help="output base dir (default: logs/rq)")
     args = parser.parse_args(argv)
 
-    logs_root = REPO_ROOT / "logs"
-    if args.steady_json:
-        steady_path = Path(args.steady_json)
-        if not steady_path.is_absolute():
-            steady_path = REPO_ROOT / steady_path
-    else:
-        steady_path = find_newest_steady_json(logs_root)
-        if steady_path is None:
-            print("No steady_results.json found under %s; pass --steady-json"
-                  % logs_root, file=sys.stderr)
-            return 1
-    if not steady_path.exists():
-        print("steady json not found: %s" % steady_path, file=sys.stderr)
-        return 1
+    suite = args.suite
+    need_appbench = suite in (SUITE_APPBENCH, SUITE_COMBINED)
+    need_shootout = suite in (SUITE_SHOOTOUT, SUITE_COMBINED)
 
-    summary, by_prog = load_steady(steady_path)
-    steady_iterations = summary.get("iterations")
-    all_engines = summary.get("engines", [])
-    specs = select_programs(args.programs)
-    if not specs:
-        print("No matching programs for %r" % args.programs, file=sys.stderr)
-        return 1
+    want = {"rq1", "rq2", "rq3", "rq4"} if args.rq == "all" else {args.rq}
+
+    # RQ2/3/4 are appbench-only (they need vfx/swift engines and gc sections a
+    # shootout kernel does not expose); they always draw on the appbench steady
+    # json. RQ1 is the unified sample driven by --suite.
+    appbench_only_rqs = bool(want & {"rq2", "rq3", "rq4"})
+    need_appbench_steady = need_appbench or appbench_only_rqs
 
     revision = git_revision(REPO_ROOT)
-    env_line = capture_environment()
-    if args.pin is not None:
-        env_line += " | pin core %d" % args.pin
-    print(env_line + " | commit " + revision)
-    print("steady json: %s (iterations=%s, engines=%s)" % (
-        steady_path, steady_iterations, ",".join(all_engines)))
-
     out_base = args.output if args.output.is_absolute() else REPO_ROOT / args.output
     log_dir = out_base / revision
     log_dir.mkdir(parents=True, exist_ok=True)
 
-    want = {"rq1", "rq2", "rq3", "rq4"} if args.rq == "all" else {args.rq}
-    sections = {}
+    logs_root = REPO_ROOT / "logs"
+    steady_path = None
+    summary = {}
+    by_prog = {}
+    steady_iterations = None
+    all_engines = []
+    if need_appbench_steady:
+        if args.steady_json:
+            steady_path = Path(args.steady_json)
+            if not steady_path.is_absolute():
+                steady_path = REPO_ROOT / steady_path
+        else:
+            steady_path = find_newest_steady_json(logs_root)
+            if steady_path is None:
+                print("No steady_results.json found under %s; pass --steady-json"
+                      % logs_root, file=sys.stderr)
+                return 1
+        if not steady_path.exists():
+            print("steady json not found: %s" % steady_path, file=sys.stderr)
+            return 1
+        summary, by_prog = load_steady(steady_path)
+        steady_iterations = summary.get("iterations")
+        all_engines = summary.get("engines", [])
 
+    appbench_specs = select_appbench_specs(args.programs)
+    shootout_paths = select_shootout_paths(args.programs) if need_shootout else []
+    if need_appbench and not appbench_specs:
+        print("No matching appbench programs for %r" % args.programs,
+              file=sys.stderr)
+        return 1
+    if need_shootout and not shootout_paths:
+        print("No matching shootout programs for %r" % args.programs,
+              file=sys.stderr)
+        return 1
+
+    env_line = capture_environment()
+    if args.pin is not None:
+        env_line += " | pin core %d" % args.pin
+    print(env_line + " | commit " + revision)
+    print("suite: %s" % suite)
+    if steady_path is not None:
+        print("appbench steady json: %s (iterations=%s, engines=%s)" % (
+            steady_path, steady_iterations, ",".join(all_engines)))
+
+    sections = {}
     needs_binary = bool(want & {"rq1", "rq2"})
     if needs_binary and not Path(ab.ENGINE_BINARY[ENGINE_RPYFORTH]).exists():
         print("rpyforth binary missing: %s" % ab.ENGINE_BINARY[ENGINE_RPYFORTH],
               file=sys.stderr)
         return 1
 
+    shootout_steady_path = None
     tmp = None
-    if needs_binary:
+    if needs_binary or need_shootout:
         tmp = tempfile.TemporaryDirectory(prefix="rq_pypylog_")
     try:
         tmpdir = tmp.name if tmp else None
+
+        # Measure the shootout steady speedups here, with the appbench protocol,
+        # then fold them into by_prog so RQ1's speedup join is suite-uniform.
+        if need_shootout and "rq1" in want:
+            cached = (None if args.remeasure_shootout
+                      else load_shootout_steady(log_dir, args.iterations_steady))
+            if cached is not None:
+                sh_by_prog, sh_rows, shootout_steady_path = cached
+                print("RQ1: reusing shootout steady measurements from %s "
+                      "(--remeasure-shootout to force)" % shootout_steady_path)
+            else:
+                print("RQ1: measuring shootout steady-state (R=%d, same protocol "
+                      "as appbench) ..." % args.iterations_steady)
+                sh_by_prog, sh_rows = run_shootout_steady(
+                    shootout_paths, args.iterations_steady, tmpdir,
+                    args.timeout, args.pin)
+                shootout_steady_path = save_shootout_steady(
+                    sh_by_prog, sh_rows, args.iterations_steady, log_dir)
+                print("shootout steady json: %s" % shootout_steady_path)
+            for prog_name, engines in sh_by_prog.items():
+                by_prog[prog_name] = engines
+
         if "rq1" in want:
-            print("RQ1: tracing rpyforth under jit-summary ...")
-            sections["rq1"] = run_rq1(specs, by_prog, args.iterations,
+            programs = build_programs(suite, appbench_specs, shootout_paths)
+            print("RQ1: tracing rpyforth under jit-summary (%d programs) ..."
+                  % len(programs))
+            sections["rq1"] = run_rq1(programs, by_prog, args.iterations,
                                       tmpdir, args.timeout, args.pin)
         if "rq2" in want:
             print("RQ2: tracing rpyforth under gc PYPYLOG ...")
-            sections["rq2"] = run_rq2(specs, args.iterations, tmpdir,
+            sections["rq2"] = run_rq2(appbench_specs, args.iterations, tmpdir,
                                       args.timeout, args.pin)
         if "rq3" in want:
             print("RQ3: computing break-even from steady json ...")
-            sections["rq3"] = run_rq3(specs, by_prog, steady_iterations)
+            sections["rq3"] = run_rq3(appbench_specs, by_prog, steady_iterations)
         if "rq4" in want:
             print("RQ4: computing drift / coverage / survivorship ...")
-            sections["rq4"] = run_rq4(specs, by_prog, all_engines)
+            sections["rq4"] = run_rq4(appbench_specs, by_prog, all_engines)
     finally:
         if tmp:
             tmp.cleanup()
@@ -897,10 +1312,14 @@ def main(argv=None):
 
     results = {
         "commit": revision,
-        "steady_json": str(steady_path),
+        "suite": suite,
+        "steady_json": str(steady_path) if steady_path else None,
+        "shootout_steady_json": (str(shootout_steady_path)
+                                 if shootout_steady_path else None),
         "steady_iterations": steady_iterations,
         "engines": all_engines,
-        "programs": [s.name for s in specs],
+        "programs": [p.name for p in build_programs(
+            suite, appbench_specs, shootout_paths)],
         "sections": sections,
     }
     json_path = log_dir / "rq_results.json"

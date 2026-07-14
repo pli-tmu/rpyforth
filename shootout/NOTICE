@@ -56,3 +56,20 @@ Related homolog trees (separate NOTICEs)
 
   benchmark/joy/NOTICE     — Joy homologs of these .fs programs
   benchmark/factor/NOTICE  — Factor homologs of these .fs programs
+
+
+---------------------------------------------------------------------------
+Additional programs / fixtures in this tree
+---------------------------------------------------------------------------
+
+Programs added as portable ports of Bagley gforth shootout sources
+(hello, strcat, sumcol, wc, reversefile, hash, hash2, lists, moments,
+spellcheck, wordfreq, objinst). Several are rewritten to avoid
+gforth-only words (objects.fs, wordlist-id, LASTXT, F$) while keeping
+the same algorithmic intent. prodcons and regexmatch remain absent
+(out of scope: threads / Gray).
+
+shootout/data/ holds stdin fixtures (sumcol.txt from the archived
+Bagley sumcol input; other small fixtures generated for harness use).
+Those fixture files contain no separate license grant beyond being
+benchmark input data for this suite.
