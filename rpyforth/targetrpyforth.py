@@ -11,6 +11,8 @@ from rpython.rlib import jit
 from rpython.rlib.streamio import open_file_as_stream
 
 def entry_point(argv):
+    # set default parameter values
+    jit.set_user_param(None, "trace_limit=200000,retrace_limit=10")
     for i in range(len(argv)):
         if argv[i] == "--jit":
             if len(argv) == i + 1:
@@ -24,8 +26,6 @@ def entry_point(argv):
     if len(argv) < 2:
         print("Usage: %s filename x" % (argv[0],))
         return 2
-
-    jit.set_user_param(None, "trace_limit=200000")
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
     load_prelude(outer)
