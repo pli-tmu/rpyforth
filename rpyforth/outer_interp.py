@@ -1247,13 +1247,16 @@ class OuterInterpreter(object):
         return thread.lits[0]
 
     def _inlinable_colon_body(self, w):
-        """Return w's CodeThread if it is a small straight-line colon word that can
-        be spliced inline, else None.
+        """Return w's CodeThread if it is a small colon word that can be
+        spliced inline, else None.
 
-        Straight-line = ends in EXIT and contains none of the ip-altering words
-        (BRANCH, 0BRANCH, (DO), (LOOP), (+LOOP), LEAVE, UNLOOP, interior EXIT,
-        TAILCALL). The branch/loop ones encode an absolute target into their own
-        thread and cannot be relocated; everything else is position independent."""
+        Control flow inside the body is fine: branch/loop words carry an
+        absolute instruction index in their literal slot and are relocated at
+        splice time, and interior EXITs become branches past the spliced body
+        (same discipline as the recursive self-call inliner). What cannot be
+        spliced: primitives, immediate words, DOES>-carved words, and
+        tail-call-optimized bodies (a mid-thread TAILCALL would misread its
+        length-anchored literal)."""
         if w.prim is not None:
             return None
         if w.immediate:
@@ -1274,26 +1277,49 @@ class OuterInterpreter(object):
         body_len = n - 1
         if body_len > MAX_INLINE_BODY:
             return None
+        wTAILCALL = self.forth_wl.get("TAILCALL", None)
         i = 0
         while i < body_len:
             cw = code[i]
-            if (cw is self.wEXIT or cw is self.wBR or cw is self.w0BR or
-                    cw is self.wDO or cw is self.wQDO or cw is self.wLOOP or
-                    cw is self.wLOOPNP or cw is self.wPLUSLOOP or
-                    cw is self.wLEAVE or cw is self.wUNLOOP):
+            if wTAILCALL is not None and cw is wTAILCALL:
                 return None
+            if self._is_branch_target_word(cw):
+                # Reject a malformed target rather than splice a wild branch.
+                lit = thread.lits[i]
+                if not isinstance(lit, W_IntObject):
+                    return None
+                if lit.intval < 0 or lit.intval > n:
+                    return None
             i += 1
         return thread
 
     def _emit_inline(self, thread):
-        """Splice a callee body (all but its trailing EXIT) into the current def."""
+        """Splice a callee body (all but its trailing EXIT) into the current
+        def, relocating branch targets by the insertion offset. A target at or
+        past the callee's EXIT slot means "leave the body": it is clamped to
+        land just after the spliced code, which is also where interior EXITs
+        branch to."""
         code = thread.code
         lits = thread.lits
         body_len = len(code) - 1
+        base = self.cc_ptr
         i = 0
         while i < body_len:
-            self.push_code(code[i])
-            self.push_lit(lits[i])
+            cw = code[i]
+            if cw is self.wEXIT:
+                self.push_code(self.wBR)
+                self.push_lit(W_IntObject(base + body_len))
+            elif self._is_branch_target_word(cw):
+                lit = lits[i]
+                assert isinstance(lit, W_IntObject)
+                t = lit.intval
+                if t > body_len:
+                    t = body_len
+                self.push_code(cw)
+                self.push_lit(W_IntObject(base + t))
+            else:
+                self.push_code(cw)
+                self.push_lit(lits[i])
             i += 1
 
     def _compile_word_or_literal(self, w, t):
@@ -3081,7 +3107,8 @@ class OuterInterpreter(object):
         """True for words whose literal is an instruction index in the current
         thread (must be relocated when code is spliced)."""
         return (w is self.wBR or w is self.w0BR or w is self.wQDO or
-                w is self.wLOOP or w is self.wLOOPNP or w is self.wPLUSLOOP)
+                w is self.wLOOP or w is self.wLOOPNP or w is self.wPLUSLOOP or
+                w is self.wLEAVE)
 
     def _inline_self_calls(self, code, lits, selfword):
         """Splice one copy of the body into each non-tail self-call site, so a
