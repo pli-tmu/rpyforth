@@ -121,6 +121,12 @@ class OuterInterpreter(object):
         # the current line: each spelling scans for its own nth occurrence.
         self.string_token_counts = {}
 
+        # NEXTNAME ( c-addr u -- ) (gforth): overrides the name the *next*
+        # defining word (CREATE, :, CONSTANT, VALUE, ...) parses for itself.
+        # Consumed once, then cleared, so it never leaks into later defs.
+        self.nextname_str = ''
+        self.has_nextname = False
+
         # Runtime parse cursor. Defining words (CONSTANT/CREATE/VARIABLE/DEFER/')
         # can execute inside a colon body; when they do, they consume the next
         # token of the line currently being interpreted. self.toks holds that
@@ -457,6 +463,52 @@ class OuterInterpreter(object):
         t = toks[i]
         return t, i+1
 
+    def _take_defining_name(self, toks, i):
+        """Read the name for a defining word from the token stream, unless
+        NEXTNAME left a pending override -- then use that instead and leave
+        the token cursor untouched (NEXTNAME's string is not itself a
+        token in the current line)."""
+        if self.has_nextname:
+            name = self.nextname_str
+            self.has_nextname = False
+            self.nextname_str = ''
+            return name, i
+        return self._read_tok(toks, i)
+
+    def _take_defining_name_rt(self):
+        """Like _take_defining_name, but for defining words executed via the
+        runtime parse cursor (parse_next_token), e.g. CREATE/CONSTANT/VARIABLE
+        executed as ordinary dictionary words."""
+        if self.has_nextname:
+            name = self.nextname_str
+            self.has_nextname = False
+            self.nextname_str = ''
+            return name
+        return self.parse_next_token()
+
+    def _string_from_c_addr(self, c_addr, length):
+        """Read length bytes starting at c_addr as a str. Prefers the boxed
+        buffer parked by alloc_buf (S", etc.) when it is long enough, else
+        falls back to raw char memory (mirrors _handle_evaluate)."""
+        if length < 0:
+            length = 0
+        buf_str = self.inner.buf_get(c_addr)
+        if isinstance(buf_str, W_StringObject) and len(buf_str.strval) >= length:
+            return buf_str.strval[:length]
+        chars = []
+        for k in range(length):
+            chars.append(chr(self.inner.char_fetch(c_addr + k)))
+        return "".join(chars)
+
+    def runtime_nextname(self):
+        """NEXTNAME ( c-addr u -- ) (gforth): set the pending name used by the
+        next defining word (CREATE, :, CONSTANT, VALUE, ...). Consumed once,
+        then cleared automatically by the defining word that picks it up."""
+        length = self.inner.pop_ds_int()
+        c_addr = self.inner.pop_ds_int()
+        self.nextname_str = self._string_from_c_addr(c_addr, length)
+        self.has_nextname = True
+
     # Helper methods for interpret_line refactoring
 
     @unroll_safe
@@ -621,10 +673,10 @@ class OuterInterpreter(object):
     def _handle_variable(self, toks, i):
         """Handle VARIABLE and FVARIABLE."""
         toks_len = len(toks)
-        if i >= toks_len:
+        if not self.has_nextname and i >= toks_len:
             print "VARIABLE/FVARIABLE requires a name"
             return -1
-        name, i = self._read_tok(toks, i)
+        name, i = self._take_defining_name(toks, i)
         addr = self.inner.here
         self.inner.here += self.inner.cell_size_bytes
         self._define_simple_word(name, W_IntObject(addr))
@@ -633,10 +685,10 @@ class OuterInterpreter(object):
     def _handle_2variable(self, toks, i):
         """Handle 2VARIABLE."""
         toks_len = len(toks)
-        if i >= toks_len:
+        if not self.has_nextname and i >= toks_len:
             print "2VARIABLE requires a name"
             return -1
-        name, i = self._read_tok(toks, i)
+        name, i = self._take_defining_name(toks, i)
         addr = self.inner.here
         self.inner.here += self.inner.cell_size_bytes
         self.inner.here += self.inner.cell_size_bytes  # allocate 2 cells
@@ -646,16 +698,16 @@ class OuterInterpreter(object):
     def _handle_constant(self, toks, i):
         """Handle CONSTANT and FCONSTANT."""
         toks_len = len(toks)
-        if i >= toks_len:
+        if not self.has_nextname and i >= toks_len:
             print "CONSTANT requires a name"
             return -1
-        name, i = self._read_tok(toks, i)
+        name, i = self._take_defining_name(toks, i)
         # Check which stack has data and pop from it
         if self.inner.ds_int_size() > 0:
             # Unboxed integer
             intval = self.inner.pop_ds_int()
             val = W_IntObject(intval)
-        elif self.inner.ds_ptr_floats > 0:
+        elif self.inner.depth_ds_float() > 0:
             # Unboxed float
             floatval = self.inner.pop_ds_float()
             val = W_FloatObject(floatval)
@@ -718,10 +770,10 @@ class OuterInterpreter(object):
     def _handle_2constant(self, toks, i):
         """Handle 2CONSTANT ( x1 x2 "name" -- ): name pushes x1 x2."""
         toks_len = len(toks)
-        if i >= toks_len:
+        if not self.has_nextname and i >= toks_len:
             print "2CONSTANT requires a name"
             return -1
-        name, i = self._read_tok(toks, i)
+        name, i = self._take_defining_name(toks, i)
         if self.inner.ds_int_size() < 2:
             print "2CONSTANT: stack underflow"
             return -1
@@ -735,10 +787,10 @@ class OuterInterpreter(object):
     def _handle_create(self, toks, i):
         """Handle CREATE."""
         toks_len = len(toks)
-        if i >= toks_len:
+        if not self.has_nextname and i >= toks_len:
             print "CREATE requires a name"
             return -1
-        name, i = self._read_tok(toks, i)
+        name, i = self._take_defining_name(toks, i)
         addr = self.inner.here
         self._define_simple_word(name, W_IntObject(addr))
         return i
@@ -747,10 +799,10 @@ class OuterInterpreter(object):
         """Handle VALUE: a cell-backed mutable constant. The word fetches its cell
         (LIT addr @); TO stores into the cell."""
         toks_len = len(toks)
-        if i >= toks_len:
+        if not self.has_nextname and i >= toks_len:
             print "VALUE requires a name"
             return -1
-        name, i = self._read_tok(toks, i)
+        name, i = self._take_defining_name(toks, i)
         if self.inner.ds_int_size() <= 0:
             print "VALUE: stack underflow"
             return -1
@@ -839,10 +891,10 @@ class OuterInterpreter(object):
     def _handle_defer(self, toks, i):
         """Handle DEFER: define a word that executes a later-bound xt."""
         toks_len = len(toks)
-        if i >= toks_len:
+        if not self.has_nextname and i >= toks_len:
             print "DEFER requires a name"
             return -1
-        name, i = self._read_tok(toks, i)
+        name, i = self._take_defining_name(toks, i)
         slot = len(self.inner.deferred_words)
         self.inner.deferred_words.append(None)
         self.defer_ids[to_upper(name)] = slot
@@ -1418,13 +1470,11 @@ class OuterInterpreter(object):
     # SEARCH-WORDLIST ( c-addr u wid -- 0 | xt 1 | xt -1 )
     def _handle_search_wordlist(self):
         wid = self.inner.pop_ds_int()
-        self.inner.pop_ds_int()            # length (name held whole in the buf slot)
+        length = self.inner.pop_ds_int()
         c_addr = self.inner.pop_ds_int()
-        buf_entry = self.inner.buf_get(c_addr)
-        if buf_entry is None or not isinstance(buf_entry, W_StringObject):
-            self.inner.push_ds_int(0)
-            return
-        name_upper = to_upper(buf_entry.strval)
+        # Honour u against S" boxed strings *and* raw char memory (READ-LINE /
+        # MOVE into CREATE buffers — spellcheck, wordfreq, hash2).
+        name_upper = to_upper(self._string_from_c_addr(c_addr, length))
         if 0 <= wid < len(self.wordlists):
             wl = self.wordlists[wid]
             w = wl.get(name_upper, None)
@@ -1645,7 +1695,7 @@ class OuterInterpreter(object):
         a defined word's literal (mirrors _handle_constant)."""
         if self.inner.ds_int_size() > 0:
             return W_IntObject(self.inner.pop_ds_int())
-        elif self.inner.ds_ptr_floats > 0:
+        elif self.inner.depth_ds_float() > 0:
             return W_FloatObject(self.inner.pop_ds_float())
         elif self.inner.ds_ptr_locals > 0:
             return self.inner.pop_ds()
@@ -1653,14 +1703,14 @@ class OuterInterpreter(object):
 
     def runtime_constant(self):
         """CONSTANT executed from a colon body: name the next token, bind value."""
-        name = self.parse_next_token()
+        name = self._take_defining_name_rt()
         if name == '':
             print "CONSTANT requires a name"
             return
         self._define_simple_word(name, self._runtime_pop_value())
 
     def runtime_variable(self):
-        name = self.parse_next_token()
+        name = self._take_defining_name_rt()
         if name == '':
             print "VARIABLE requires a name"
             return
@@ -1671,7 +1721,7 @@ class OuterInterpreter(object):
     def runtime_2constant(self):
         """2CONSTANT executed from a colon body: name the next token, bind a
         double-cell value. The child word pushes x1 then x2."""
-        name = self.parse_next_token()
+        name = self._take_defining_name_rt()
         if name == '':
             print "2CONSTANT requires a name"
             return
@@ -1686,7 +1736,7 @@ class OuterInterpreter(object):
 
     def runtime_2variable(self):
         """2VARIABLE executed from a colon body: allocate two cells, name it."""
-        name = self.parse_next_token()
+        name = self._take_defining_name_rt()
         if name == '':
             print "2VARIABLE requires a name"
             return
@@ -1712,7 +1762,7 @@ class OuterInterpreter(object):
         """CREATE executed from a colon body. The child word pushes its data
         field address; if the enclosing definition had a DOES>, does_word runs
         after the push."""
-        name = self.parse_next_token()
+        name = self._take_defining_name_rt()
         if name == '':
             print "CREATE requires a name"
             return
@@ -1746,7 +1796,7 @@ class OuterInterpreter(object):
         w.thread = CodeThread(code, lits)
 
     def runtime_defer(self):
-        name = self.parse_next_token()
+        name = self._take_defining_name_rt()
         if name == '':
             print "DEFER requires a name"
             return
@@ -2326,7 +2376,7 @@ class OuterInterpreter(object):
         if flag != 0:
             print "ABORT:", abort_msg
             self.inner.clear_ds_int()
-            self.inner.ds_ptr_floats = 0
+            self.inner.reset_ds_float()
             self.inner.ds_ptr_locals = 0
             self.inner.rs_ptr = 0
             self.state = INTERPRET
@@ -2839,10 +2889,10 @@ class OuterInterpreter(object):
             # optimization is dropped). A dict stub for :INLINE is installed so
             # fcp's [UNDEFINED] :inline guard skips its metaprogramming variant.
             if tup == ":INLINE":
-                if i >= toks_len:
+                if not self.has_nextname and i >= toks_len:
                     print ":inline requires a name"
                     return
-                self.current_name, i = self._read_tok(toks, i)
+                self.current_name, i = self._take_defining_name(toks, i)
                 self.noname_mode = False
                 self.state = COMPILE
                 self.does_ip_mark = -1
@@ -2870,10 +2920,10 @@ class OuterInterpreter(object):
                     self.current_name = "NONAME"
                     self.noname_mode = True
                 else:
-                    if i >= toks_len:
+                    if not self.has_nextname and i >= toks_len:
                         print ": requires a name"
                         return
-                    self.current_name, i = self._read_tok(toks, i)
+                    self.current_name, i = self._take_defining_name(toks, i)
                     self.noname_mode = to_upper(self.current_name) == "NONAME"
                 self.state = COMPILE
                 self.does_ip_mark = -1

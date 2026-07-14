@@ -34,15 +34,45 @@ USE_STACK_FRAGMENT = bool(os.environ.get("RPYFORTH_STACK_FRAGMENT"))
 
 from rpyforth.metastack import (
     FRAME_SIZE,
+    ACTIVE_MAX,
+    SWEEP_NTOP,
+    USE_FLOAT_FRAGMENT,
+    USE_FRAME_ONLY,
+    USE_NTOP_SWEEP,
     STACK_FRAGMENT_VIRTUALIZABLES,
     push_ds_fragments,
     pop_ds_fragments_commit,
     reset_ds_fragments,
 )
 
+# CATCH saves a full copy of the int cache. In the flagship the frame holds
+# FRAME_SIZE cells (the two scalar tops are saved separately in ca_t0/ca_t1);
+# in the frame-only ablation the whole cache is the frame, so its rows are
+# ACTIVE_MAX wide. In the parametric-NTOP ablation the SWEEP_NTOP scalar tops
+# have no dedicated ca_t* arrays -- they are folded into the ca_frames row,
+# stored at offsets 0..SWEEP_NTOP-1 with the frame cells at SWEEP_NTOP.., so the
+# row is SWEEP_NTOP + FRAME_SIZE wide. A flag-constant width keeps every path a
+# single sized array.
+if USE_FRAME_ONLY:
+    CA_FRAME_WIDTH = ACTIVE_MAX
+elif USE_NTOP_SWEEP:
+    CA_FRAME_WIDTH = SWEEP_NTOP + FRAME_SIZE
+else:
+    CA_FRAME_WIDTH = FRAME_SIZE
+
 if USE_STACK_FRAGMENT:
-    from rpyforth.metastack_int import DSIntMetaStack
-    InterpBase = DSIntMetaStack
+    if USE_FRAME_ONLY:
+        from rpyforth.metastack_int_frameonly import DSIntMetaStackFrameOnly
+        InterpBase = DSIntMetaStackFrameOnly
+    elif USE_NTOP_SWEEP:
+        from rpyforth.metastack_int_ntop import DSIntMetaStackN
+        InterpBase = DSIntMetaStackN
+    elif USE_FLOAT_FRAGMENT:
+        from rpyforth.metastack_float import DSFloatMetaStack
+        InterpBase = DSFloatMetaStack
+    else:
+        from rpyforth.metastack_int import DSIntMetaStack
+        InterpBase = DSIntMetaStack
 else:
     class InterpBase(object):
         pass
@@ -58,7 +88,7 @@ TAILCALL_SENTINEL = -2
 
 # Sentinel value for a primitive-initiated call (EXECUTE, CATCH): the primitive
 # has already pushed the return frame(s); the dispatch loop transfers control to
-# self.pending_word's thread, keeping the call inside the traced loop.
+# self.pending_box's thread, keeping the call inside the traced loop.
 CALL_SENTINEL = -3
 
 # Maximum number of simultaneously active CATCH frames.
@@ -68,6 +98,7 @@ CATCH_DEPTH = 16384
 # bound the ip within one code thread; tids are bounded by MAX_THREADS.
 CS_IP_BITS = 24
 CS_IP_MASK = (1 << CS_IP_BITS) - 1
+
 
 class Exit(Exception):
     pass
@@ -113,7 +144,7 @@ else:
 
 
 class InnerInterpreter(InterpBase, object):
-    # The metastack arena is allocated once and never reassigned, so its
+    # The metastack spill is allocated once and never reassigned, so its
     # reference is immutable even though its elements are mutated in place; this
     # lets the JIT hoist the array-pointer load to the loop header instead of
     # reloading it on every spill/refill.
@@ -122,7 +153,9 @@ class InnerInterpreter(InterpBase, object):
                           "ca_tids", "ca_ips", "ca_dsi", "ca_dsf", "ca_dsl",
                           "ca_rs", "ca_li", "ca_lc", "ca_cs",
                           "ca_t0", "ca_t1", "ca_d", "ca_frag", "ca_spill",
-                          "ca_frames"]
+                          "ca_frames",
+                          "ca_fft0", "ca_fft1", "ca_ffd", "ca_ffrag",
+                          "ca_fspill", "ca_fframes", "pending_box"]
 
     if USE_VIRTUALIZATION:
         _virtualizable_ = ["ds_ints", "ds_floats",
@@ -222,14 +255,28 @@ class InnerInterpreter(InterpBase, object):
         self.ca_d = [0] * CATCH_DEPTH
         self.ca_frag = [0] * CATCH_DEPTH
         self.ca_spill = [0] * CATCH_DEPTH
-        self.ca_frames = [0] * (CATCH_DEPTH * FRAME_SIZE)
+        self.ca_frames = [0] * (CATCH_DEPTH * CA_FRAME_WIDTH)
+        # Parallel float-cache save slots, mirroring the int ones above.
+        self.ca_fft0 = [0.0] * CATCH_DEPTH
+        self.ca_fft1 = [0.0] * CATCH_DEPTH
+        self.ca_ffd = [0] * CATCH_DEPTH
+        self.ca_ffrag = [0] * CATCH_DEPTH
+        self.ca_fspill = [0] * CATCH_DEPTH
+        self.ca_fframes = [0.0] * (CATCH_DEPTH * FRAME_SIZE)
         self.catch_ptr = 0
 
         # Target of a CALL_SENTINEL transfer, set by the initiating primitive.
-        self.pending_word = None
+        # Held in a one-element list whose reference never changes: writing the
+        # slot is an array store on a separate object, not a store to a field
+        # of the virtualizable self. A field store on the vable would force it
+        # to materialize at the handoff point; the stable box keeps that store
+        # off the vable so EXECUTE/CATCH dispatch cannot force an escape here.
+        self.pending_box = [None]
 
         if USE_STACK_FRAGMENT:
             self.init_fields()
+            if USE_FLOAT_FRAGMENT:
+                self.init_float_fields()
         else:
             # Placeholders so the attribute set is consistent; unused on the
             # fixed path (the translator folds the dead USE_STACK_FRAGMENT
@@ -265,7 +312,11 @@ class InnerInterpreter(InterpBase, object):
         # Promote only the thread id: the registry lookup folds and the return
         # thread inlines, while the return ip stays a runtime value so a
         # polymorphic caller (EXECUTE/opcode dispatch) does not guard_value each
-        # return site into its own bridge.
+        # return site into its own bridge. An adaptive variant that skipped the
+        # promote for statically-megamorphic callees (>=8 compiled call sites)
+        # was measured 2x SLOWER on cd16sim: ending the trace at every such
+        # return and re-entering through the green-keyed trace map costs more
+        # than the guard_value bridge chain it replaces.
         tid = promote(pc >> CS_IP_BITS)
         ip = pc & CS_IP_MASK
         thread = THREAD_REGISTRY.threads[tid]
@@ -279,7 +330,7 @@ class InnerInterpreter(InterpBase, object):
         """Clear every machine stack. Runs at the Abort catch site, outside
         any portal, so compiled frames never see half-cleared state."""
         self.reset_ds_int()
-        self.ds_ptr_floats = 0
+        self.reset_ds_float()
         self.ds_ptr_locals = 0
         self.rs_ptr = 0
         self.lc_depth = 0
@@ -294,25 +345,47 @@ class InnerInterpreter(InterpBase, object):
         assert 0 <= cp < CATCH_DEPTH
         self.ca_tids[cp] = thread.tid
         self.ca_ips[cp] = ip
-        self.ca_dsf[cp] = self.ds_ptr_floats
+        self.ca_dsf[cp] = self.depth_ds_float()
         self.ca_dsl[cp] = self.ds_ptr_locals
         self.ca_rs[cp] = self.rs_ptr
         self.ca_li[cp] = self.li
         self.ca_lc[cp] = self.lc_depth
         self.ca_cs[cp] = self.cs_ptr
         if USE_STACK_FRAGMENT:
-            self.ca_t0[cp] = self.t0
-            self.ca_t1[cp] = self.t1
+            if not USE_FRAME_ONLY and not USE_NTOP_SWEEP:
+                self.ca_t0[cp] = self.t0
+                self.ca_t1[cp] = self.t1
             self.ca_d[cp] = self.d
             self.ca_frag[cp] = self.frag_ptr
             self.ca_spill[cp] = self.spill_ptr
-            fbase = cp * FRAME_SIZE
-            i = 0
-            while i < FRAME_SIZE:
-                self.ca_frames[fbase + i] = self.frame[i]
-                i += 1
+            fbase = cp * CA_FRAME_WIDTH
+            if USE_NTOP_SWEEP:
+                k = 0
+                while k < SWEEP_NTOP:
+                    self.ca_frames[fbase + k] = self._get_scalar(k)
+                    k += 1
+                i = 0
+                while i < FRAME_SIZE:
+                    self.ca_frames[fbase + SWEEP_NTOP + i] = self.frame[i]
+                    i += 1
+            else:
+                i = 0
+                while i < CA_FRAME_WIDTH:
+                    self.ca_frames[fbase + i] = self.frame[i]
+                    i += 1
         else:
             self.ca_dsi[cp] = self.ds_ptr_ints
+        if USE_FLOAT_FRAGMENT:
+            self.ca_fft0[cp] = self.ft0
+            self.ca_fft1[cp] = self.ft1
+            self.ca_ffd[cp] = self.fdep
+            self.ca_ffrag[cp] = self.ffrag_ptr
+            self.ca_fspill[cp] = self.fspill_ptr
+            ffbase = cp * FRAME_SIZE
+            i = 0
+            while i < FRAME_SIZE:
+                self.ca_fframes[ffbase + i] = self.fframe[i]
+                i += 1
         self.catch_ptr = cp + 1
 
     def catch_drop_frame(self):
@@ -332,25 +405,48 @@ class InnerInterpreter(InterpBase, object):
             raise ForthException(code)
         assert cp >= 0
         self.catch_ptr = cp
-        self.ds_ptr_floats = self.ca_dsf[cp]
+        if not USE_FLOAT_FRAGMENT:
+            self.ds_ptr_floats = self.ca_dsf[cp]
         self.ds_ptr_locals = self.ca_dsl[cp]
         self.rs_ptr = self.ca_rs[cp]
         self.li = self.ca_li[cp]
         self.lc_depth = self.ca_lc[cp]
         self.cs_ptr = self.ca_cs[cp]
         if USE_STACK_FRAGMENT:
-            self.t0 = self.ca_t0[cp]
-            self.t1 = self.ca_t1[cp]
+            if not USE_FRAME_ONLY and not USE_NTOP_SWEEP:
+                self.t0 = self.ca_t0[cp]
+                self.t1 = self.ca_t1[cp]
             self.d = self.ca_d[cp]
             self.frag_ptr = self.ca_frag[cp]
             self.spill_ptr = self.ca_spill[cp]
-            fbase = cp * FRAME_SIZE
-            i = 0
-            while i < FRAME_SIZE:
-                self.frame[i] = self.ca_frames[fbase + i]
-                i += 1
+            fbase = cp * CA_FRAME_WIDTH
+            if USE_NTOP_SWEEP:
+                k = 0
+                while k < SWEEP_NTOP:
+                    self._set_scalar(k, self.ca_frames[fbase + k])
+                    k += 1
+                i = 0
+                while i < FRAME_SIZE:
+                    self.frame[i] = self.ca_frames[fbase + SWEEP_NTOP + i]
+                    i += 1
+            else:
+                i = 0
+                while i < CA_FRAME_WIDTH:
+                    self.frame[i] = self.ca_frames[fbase + i]
+                    i += 1
         else:
             self.ds_ptr_ints = self.ca_dsi[cp]
+        if USE_FLOAT_FRAGMENT:
+            self.ft0 = self.ca_fft0[cp]
+            self.ft1 = self.ca_fft1[cp]
+            self.fdep = self.ca_ffd[cp]
+            self.ffrag_ptr = self.ca_ffrag[cp]
+            self.fspill_ptr = self.ca_fspill[cp]
+            ffbase = cp * FRAME_SIZE
+            i = 0
+            while i < FRAME_SIZE:
+                self.fframe[i] = self.ca_fframes[ffbase + i]
+                i += 1
         self.push_ds_int(code)
         thread = THREAD_REGISTRY.threads[self.ca_tids[cp]]
         ip = self.ca_ips[cp]
@@ -431,6 +527,12 @@ class InnerInterpreter(InterpBase, object):
         self.ds_ptr_ints = ds_ptr + 1
 
     def push_ds_float(self, floatval):
+        if USE_FLOAT_FRAGMENT:
+            self.fpush_on(floatval)
+        else:
+            self.push_ds_float_fixed(floatval)
+
+    def push_ds_float_fixed(self, floatval):
         ds_ptr = self.ds_ptr_floats
         self.ds_floats[ds_ptr] = floatval
         self.ds_ptr_floats = ds_ptr + 1
@@ -448,6 +550,11 @@ class InnerInterpreter(InterpBase, object):
         return intval
 
     def pop_ds_float(self):
+        if USE_FLOAT_FRAGMENT:
+            return self.fpop_on()
+        return self.pop_ds_float_fixed()
+
+    def pop_ds_float_fixed(self):
         ds_ptr = self.ds_ptr_floats - 1
         assert ds_ptr >= 0
         floatval = self.ds_floats[ds_ptr]
@@ -465,9 +572,33 @@ class InnerInterpreter(InterpBase, object):
         return self.ds_ints[ptr]
 
     def peek_ds_float(self, depth=0):
+        if USE_FLOAT_FRAGMENT:
+            return self.fpeek_on(depth)
+        return self.peek_ds_float_fixed(depth)
+
+    def peek_ds_float_fixed(self, depth=0):
         ptr = self.ds_ptr_floats - 1 - depth
         assert ptr >= 0
         return self.ds_floats[ptr]
+
+    def poke_ds_float(self, depth, floatval):
+        if USE_FLOAT_FRAGMENT:
+            self.fpoke_on(depth, floatval)
+        else:
+            ptr = self.ds_ptr_floats - 1 - depth
+            assert ptr >= 0
+            self.ds_floats[ptr] = floatval
+
+    def depth_ds_float(self):
+        if USE_FLOAT_FRAGMENT:
+            return self.fdepth_on()
+        return self.ds_ptr_floats
+
+    def reset_ds_float(self):
+        if USE_FLOAT_FRAGMENT:
+            self.freset_on()
+        else:
+            self.ds_ptr_floats = 0
 
     def peek_ds(self, depth=0):
         ptr = self.ds_ptr_locals - 1 - depth
@@ -659,8 +790,8 @@ class InnerInterpreter(InterpBase, object):
                         break
                     continue
                 if ip == CALL_SENTINEL:
-                    target = promote(self.pending_word)
-                    self.pending_word = None
+                    target = promote(self.pending_box[0])
+                    self.pending_box[0] = None
                     thread = target.thread
                     ip = 0
                     jitdriver.can_enter_jit(ip=ip, thread=thread, self=self)

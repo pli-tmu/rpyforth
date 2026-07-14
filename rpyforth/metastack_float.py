@@ -1,90 +1,232 @@
-from rpyforth.metastack import FRAGMENT_SIZE, DSFragment, DSMetaStack
+from rpython.rlib.jit import promote, unroll_safe
+from rpython.rlib.debug import make_sure_not_resized
+
+from rpyforth.metastack import (
+    NTOP,
+    FRAME_SIZE,
+    ACTIVE_MAX,
+    SPILL_SIZE,
+    DataStackOverflow,
+)
+from rpyforth.metastack_int import DSIntMetaStack
 
 
-class DSFloatFragment(DSFragment):
-    _immutable_fields_ = ["parent", "cells"]
+def init_float_fields(host):
+    """Install the host-resident active float-fragment + metastack spill state.
+    Mirrors init_fields for the int stack: the top NTOP cells live in the scalar
+    fields ft0/ft1, the next cells in the small virtualizable fframe array, and
+    everything below in the shared fspill. fdep counts cells cached in ft0/ft1 +
+    fframe (0..ACTIVE_MAX)."""
+    host.ft0 = 0.0
+    host.ft1 = 0.0
+    host.fdep = 0
+    host.fframe = [0.0] * FRAME_SIZE
+    make_sure_not_resized(host.fframe)
 
-    def __init__(self, parent):
-        self.parent = parent
-        self.cells = [0.0] * FRAGMENT_SIZE
-        self.sp = 0
-        self.saved_parent_sp = 0
-        self.import_count = 0
-
-    def push_cell(self, v):
-        raise NotImplementedError
-
-    def pop_cell(self):
-        raise NotImplementedError
+    host.ffrag_ptr = 0
+    host.fspill = [0.0] * SPILL_SIZE
+    make_sure_not_resized(host.fspill)
+    host.fspill_ptr = 0
 
 
-class DSFloatMetaStack(DSMetaStack):
+class DSFloatCacheSnapshot(object):
+    """Immutable capture of the active float-fragment cache. Same discipline as
+    DSCacheSnapshot: private copy of fframe, spill buffer not copied."""
 
-    @classmethod
-    def init_fields(cls, host):
-        host.float_top0 = 0.0
-        host.float_top1 = 0.0
-        host.float_top2 = 0.0
-        host.float_top3 = 0.0
-        host.float_top_count = 0
-        host.ds_float_current = DSFloatFragment(None)
-        host.ds_float_sp = 0
+    _immutable_fields_ = ["ft0", "ft1", "fdep", "fframe[*]",
+                          "ffrag_ptr", "fspill_ptr"]
+
+    def __init__(self, ft0, ft1, fdep, fframe, ffrag_ptr, fspill_ptr):
+        self.ft0 = ft0
+        self.ft1 = ft1
+        self.fdep = fdep
+        self.fframe = fframe
+        self.ffrag_ptr = ffrag_ptr
+        self.fspill_ptr = fspill_ptr
+
+
+def snapshot_float_cache(host):
+    frame_copy = [0.0] * FRAME_SIZE
+    i = 0
+    while i < FRAME_SIZE:
+        frame_copy[i] = host.fframe[i]
+        i += 1
+    make_sure_not_resized(frame_copy)
+    return DSFloatCacheSnapshot(host.ft0, host.ft1, host.fdep, frame_copy,
+                                host.ffrag_ptr, host.fspill_ptr)
+
+
+def restore_float_cache(host, snap):
+    host.ft0 = snap.ft0
+    host.ft1 = snap.ft1
+    host.fdep = snap.fdep
+    i = 0
+    while i < FRAME_SIZE:
+        host.fframe[i] = snap.fframe[i]
+        i += 1
+    host.ffrag_ptr = snap.ffrag_ptr
+    host.fspill_ptr = snap.fspill_ptr
+
+
+class DSFloatMetaStack(DSIntMetaStack):
+    """Float data stack with the same three-tier metastack layout as the int
+    stack. Inherits from DSIntMetaStack so InnerInterpreter keeps a single
+    InterpBase chain; the float state lives in separate f-prefixed fields, so the
+    two stacks never alias."""
 
     def __init__(self):
-        self.init_fields(self)
+        self.init_fields()
+        self.init_float_fields()
 
-    def push(self, v):
-        self.push_on(self, v)
+    def init_float_fields(self):
+        init_float_fields(self)
 
-    def pop(self):
-        return self.pop_on(self)
+    # ------------------------------------------------------------------
+    # Hot path. NTOP scalar tops (ft0, ft1) keep FDUP/F+/FSWAP in registers.
+    # ------------------------------------------------------------------
+    def fpush_on(self, v):
+        dd = self.fdep
+        if dd >= ACTIVE_MAX:
+            self._fspill_bottom()
+            dd = self.fdep
+        if dd >= NTOP:
+            si = dd - NTOP
+            assert si >= 0
+            self.fframe[si] = self.ft1
+        self.ft1 = self.ft0
+        self.ft0 = v
+        self.fdep = dd + 1
 
-    def peek(self, depth):
-        return self.peek_on(self, depth)
+    def fpop_on(self):
+        dd = self.fdep
+        if dd <= 0:
+            return self._fpop_from_spill()
+        r = self.ft0
+        self.ft0 = self.ft1
+        if dd > NTOP:
+            si = dd - NTOP - 1
+            assert si >= 0
+            self.ft1 = self.fframe[si]
+        self.fdep = dd - 1
+        return r
 
-    def poke(self, depth, v):
-        self.poke_on(self, depth, v)
+    def _fpop_from_spill(self):
+        ap = self.fspill_ptr - 1
+        assert ap >= 0
+        r = self.fspill[ap]
+        self.fspill_ptr = ap
+        return r
 
-    def size(self):
-        return self.depth_on(self)
+    @unroll_safe
+    def _fspill_bottom(self):
+        ap = self.fspill_ptr
+        if ap >= SPILL_SIZE:
+            raise DataStackOverflow()
+        assert ap >= 0
+        self.fspill[ap] = self.fframe[0]
+        self.fspill_ptr = ap + 1
+        i = 0
+        while i < FRAME_SIZE - 1:
+            self.fframe[i] = self.fframe[i + 1]
+            i += 1
+        self.fdep = self.fdep - 1
 
-    def clear(self):
-        self.reset_on(self)
+    def fpeek_on(self, depth):
+        depth = promote(depth)
+        dd = self.fdep
+        if depth < dd:
+            if depth == 0:
+                return self.ft0
+            if depth == 1:
+                return self.ft1
+            si = dd - 1 - depth
+            assert si >= 0
+            return self.fframe[si]
+        ai = self.fspill_ptr - 1 - (depth - dd)
+        assert ai >= 0
+        return self.fspill[ai]
 
-    def push_fragment(self):
-        self.push_fragment_on(self)
+    def fpoke_on(self, depth, v):
+        depth = promote(depth)
+        dd = self.fdep
+        if depth < dd:
+            if depth == 0:
+                self.ft0 = v
+            elif depth == 1:
+                self.ft1 = v
+            else:
+                si = dd - 1 - depth
+                assert si >= 0
+                self.fframe[si] = v
+            return
+        ai = self.fspill_ptr - 1 - (depth - dd)
+        assert ai >= 0
+        self.fspill[ai] = v
 
-    def pop_fragment_commit(self):
-        self.pop_fragment_commit_on(self)
+    def fdepth_on(self):
+        return self.fdep + self.fspill_ptr
 
-    @classmethod
-    def push_on(cls, state, v):
-        raise NotImplementedError
+    def freset_on(self):
+        self.ft0 = 0.0
+        self.ft1 = 0.0
+        self.fdep = 0
+        self.ffrag_ptr = 0
+        self.fspill_ptr = 0
 
-    @classmethod
-    def pop_on(cls, state):
-        raise NotImplementedError
+    # ------------------------------------------------------------------
+    # Call entry / return: float cells nest at the same points as int cells.
+    # ------------------------------------------------------------------
+    @unroll_safe
+    def push_float_fragment_on(self):
+        self.ffrag_ptr = self.ffrag_ptr + 1
+        dd = self.fdep
+        if dd > NTOP:
+            n = dd - NTOP
+            ap = self.fspill_ptr
+            if ap + n > SPILL_SIZE:
+                raise DataStackOverflow()
+            assert ap >= 0
+            i = 0
+            while i < n:
+                self.fspill[ap + i] = self.fframe[i]
+                i += 1
+            self.fspill_ptr = ap + n
+            self.fdep = NTOP
 
-    @classmethod
-    def peek_on(cls, state, depth):
-        raise NotImplementedError
+    def pop_float_fragment_commit_on(self):
+        fp = self.ffrag_ptr - 1
+        assert fp >= 0
+        self.ffrag_ptr = fp
 
-    @classmethod
-    def poke_on(cls, state, depth, v):
-        raise NotImplementedError
+    # ------------------------------------------------------------------
+    # Public, test-facing wrappers for the float stack.
+    # ------------------------------------------------------------------
+    def fpush(self, v):
+        self.fpush_on(v)
 
-    @classmethod
-    def depth_on(cls, state):
-        raise NotImplementedError
+    def fpop(self):
+        return self.fpop_on()
 
-    @classmethod
-    def reset_on(cls, state):
-        raise NotImplementedError
+    def fpeek(self, depth):
+        return self.fpeek_on(depth)
 
-    @classmethod
-    def push_fragment_on(cls, state):
-        raise NotImplementedError
+    def fpoke(self, depth, v):
+        self.fpoke_on(depth, v)
 
-    @classmethod
-    def pop_fragment_commit_on(cls, state):
-        raise NotImplementedError
+    def fsize(self):
+        return self.fdepth_on()
+
+    def fclear(self):
+        self.freset_on()
+
+    def push_float_fragment(self):
+        self.push_float_fragment_on()
+
+    def pop_float_fragment_commit(self):
+        self.pop_float_fragment_commit_on()
+
+    def fsnapshot(self):
+        return snapshot_float_cache(self)
+
+    def frestore(self, snap):
+        restore_float_cache(self, snap)

@@ -14,12 +14,13 @@ class _Host(object):
     pass
 
 
-def test_float_metastack_not_implemented():
+def test_float_metastack_push_pop():
     s = DSFloatMetaStack()
-    with pytest.raises(NotImplementedError):
-        s.push(1.0)
-    with pytest.raises(NotImplementedError):
-        DSFloatMetaStack.push_on(s, 1.0)
+    s.fpush(1.0)
+    s.fpush(2.0)
+    assert s.fsize() == 2
+    assert s.fpop() == 2.0
+    assert s.fpop() == 1.0
 
 
 def test_obj_metastack_not_implemented():
@@ -31,10 +32,11 @@ def test_obj_metastack_not_implemented():
 
 
 def test_float_init_fields():
+    from rpyforth.metastack_float import init_float_fields
     host = _Host()
-    DSFloatMetaStack.init_fields(host)
-    assert host.ds_float_sp == 0
-    assert host.float_top_count == 0
+    init_float_fields(host)
+    assert host.fspill_ptr == 0
+    assert host.fdep == 0
 
 
 def test_obj_init_fields():

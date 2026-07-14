@@ -48,7 +48,7 @@ def test_deep_recursion_chain():
 
 
 def test_large_stack():
-    # Push well past the cache so the arena is exercised, then read it all back.
+    # Push well past the cache so the spill is exercised, then read it all back.
     s = DSIntMetaStack()
     n = 2 * ACTIVE_MAX
     for v in range(n):

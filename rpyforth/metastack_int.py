@@ -22,7 +22,7 @@ class DSIntFragment(DSFragment):
 
 
 def init_fields(host):
-    """Install the host-resident active-fragment + metastack arena state."""
+    """Install the host-resident active-fragment + metastack spill state."""
     # The active fragment caches the TOP of the data stack:
     #   * the top NTOP cells in scalar fields t0, t1 (hottest, in registers)
     #   * the next cells in the small virtualizable spill array ``frame``
@@ -33,12 +33,13 @@ def init_fields(host):
     host.frame = [0] * FRAME_SIZE
     make_sure_not_resized(host.frame)
 
-    # The metastack arena holds every cell BELOW the cached fragment -- the
-    # caller frames parked on a call plus the rare single-word overflow ("other
+    # The shared spill holds every cell BELOW the cached fragment -- the caller
+    # frames parked on a call plus the rare single-word overflow ("other
     # places"). Contiguous: spill[spill_ptr-1] is the cell just under the cache,
     # spill[0] the bottom of the stack. Plain heap (immutable reference): it is
-    # sized to the whole stack depth, too large to virtualize. frag_ptr just
-    # tracks call nesting for the metastack.
+    # sized to the whole stack depth, too large to virtualize. One spill per VM,
+    # allocated once here; every fragment is a window [0, spill_ptr) onto it, so
+    # nest/unnest allocates nothing. frag_ptr just tracks call nesting.
     host.frag_ptr = 0
     host.spill = [0] * SPILL_SIZE
     make_sure_not_resized(host.spill)
@@ -48,9 +49,9 @@ def init_fields(host):
 class DSCacheSnapshot(object):
     """Immutable capture of the active-fragment cache, for saving and restoring
     the data stack. Holds the scalar tops, the cached depth, a private copy of the
-    frame array, and the cache/arena pointers. The arena buffer is not copied:
-    restore rolls the spill pointer back (discarding cells parked above it) and
-    relies on the cells below it being undisturbed."""
+    frame array, and the cache/spill pointers. The shared spill buffer is not
+    copied: restore rolls the spill pointer back (discarding cells parked above
+    it) and relies on the cells below it being undisturbed."""
 
     _immutable_fields_ = ["t0", "t1", "d", "frame[*]", "frag_ptr", "spill_ptr"]
 
@@ -78,7 +79,7 @@ def snapshot_cache(host):
 
 def restore_cache(host, snap):
     """Roll host's stack back to a snapshot, discarding everything pushed since.
-    Restores the cache and the cache/arena pointers; the arena cells below the
+    Restores the cache and the cache/spill pointers; the spill cells below the
     saved spill pointer are left in place."""
     host.t0 = snap.t0
     host.t1 = snap.t1
@@ -92,18 +93,27 @@ def restore_cache(host, snap):
 
 
 class DSIntMetaStack(DSMetaStack):
+    """Integer data stack in the three-tier layout:
+
+        t0 t1 (vable scalars) | frame[FRAME_SIZE] (vable array) | spill (ONE
+        shared heap array, all fragments)
+
+    The spill is allocated once per VM (init_fields); a fragment is only the
+    scalar tops + frame + the two pointers (frag_ptr, spill_ptr), and is a
+    window [0, spill_ptr) onto the shared spill -- nest/unnest allocates
+    nothing."""
+
     def init_fields(self):
         init_fields(self)
 
     # ------------------------------------------------------------------
     # Hot path. The top NTOP cells are scalars, so dup/swap/+/- (which touch
     # only the top 1-2 cells) compile to pure register arithmetic. The frame
-    # array is reached only past depth NTOP, and the arena only past ACTIVE_MAX.
+    # array is reached only past depth NTOP, and the spill only past ACTIVE_MAX.
     # ------------------------------------------------------------------
     def push_on(self, v):
         dd = self.d
         if dd >= ACTIVE_MAX:
-            # cache full: evacuate its deepest cell to the arena to free a slot
             self._spill_bottom()
             dd = self.d
         if dd >= NTOP:
@@ -117,7 +127,7 @@ class DSIntMetaStack(DSMetaStack):
     def pop_on(self):
         dd = self.d
         if dd <= 0:
-            return self._pop_from_arena()
+            return self._pop_from_spill()
         r = self.t0
         self.t0 = self.t1
         if dd > NTOP:
@@ -127,8 +137,8 @@ class DSIntMetaStack(DSMetaStack):
         self.d = dd - 1
         return r
 
-    def _pop_from_arena(self):
-        # Cache empty: the top now lives in the arena (a callee consumed past its
+    def _pop_from_spill(self):
+        # Cache empty: the top now lives in the spill (a callee consumed past its
         # imported window into parent cells). Underflow is an interpreter bug,
         # checked by assert (no branch on the hot path).
         ap = self.spill_ptr - 1
@@ -139,7 +149,7 @@ class DSIntMetaStack(DSMetaStack):
 
     @unroll_safe
     def _spill_bottom(self):
-        # Move the deepest cached cell (frame[0]) to the arena and slide the
+        # Move the deepest cached cell (frame[0]) to the spill and slide the
         # frame down, leaving one free slot. Cold: only when the stack is deeper
         # than ACTIVE_MAX.
         ap = self.spill_ptr
@@ -187,7 +197,6 @@ class DSIntMetaStack(DSMetaStack):
         self.spill[ai] = v
 
     def depth_on(self):
-        # Full logical depth: cached cells plus everything parked in the arena.
         return self.d + self.spill_ptr
 
     def reset_on(self):
@@ -199,10 +208,10 @@ class DSIntMetaStack(DSMetaStack):
 
     # ------------------------------------------------------------------
     # Call entry / return. On a call the caller's below-NTOP cells are parked in
-    # the arena and the active depth is normalized to the NTOP scalar tops, so
+    # the spill and the active depth is normalized to the NTOP scalar tops, so
     # the callee runs with a small, call-local fragment. The tops themselves
     # flow into the callee for free (they are the conservative argument window).
-    # Return is O(1): the arena already holds the caller's cells in place.
+    # Return is O(1): the spill already holds the caller's cells in place.
     # ------------------------------------------------------------------
     @unroll_safe
     def push_fragment_on(self):
@@ -215,7 +224,7 @@ class DSIntMetaStack(DSMetaStack):
                 raise DataStackOverflow()
             assert ap >= 0
             # park the below-NTOP frame cells; frame[i] (deepest at i=0) lands at
-            # spill[ap+i], so the shallowest stays at the arena top (depth NTOP).
+            # spill[ap+i], so the shallowest stays at the spill top (depth NTOP).
             i = 0
             while i < n:
                 self.spill[ap + i] = self.frame[i]
@@ -225,7 +234,7 @@ class DSIntMetaStack(DSMetaStack):
 
     def pop_fragment_commit_on(self):
         # O(1): the callee's net result is already the cache top and the caller's
-        # parked cells are already the arena top, contiguously below it. Nothing
+        # parked cells are already the spill top, contiguously below it. Nothing
         # to move -- just unwind the call counter. Every poppable call-stack
         # entry was pushed with a paired push_fragment_on (and ABORT zeroes both
         # counters together), so the counter cannot underflow; assert instead of

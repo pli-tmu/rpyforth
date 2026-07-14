@@ -36,6 +36,8 @@ CREATE pad-buf 512 ALLOT
 : %size NIP ;
 : %align DROP NALIGNED DROP ;
 : %allot NIP ALLOT ;
+: %alloc NIP ALLOCATE THROW ;
+: RDROP R> DROP ;
 : BOUNDS OVER + SWAP ;
 : PERFORM @ EXECUTE ;
 : SEE ' xt>string type space ;

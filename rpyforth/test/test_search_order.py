@@ -45,6 +45,22 @@ def test_wordlist_and_search_wordlist():
     inner.pop_ds_int()    # drop xt (an integer wid)
 
 
+def test_search_wordlist_from_char_memory():
+    # shootout spellcheck/wordfreq: READ-LINE fills a CREATE buffer; SEARCH-WORDLIST
+    # must honour (c-addr u) against raw char memory, not only S" W_StringObject.
+    inner, outer = make()
+    outer.interpret_line("WORDLIST CONSTANT MY-WL")
+    outer.interpret_line("GET-CURRENT MY-WL SET-CURRENT")
+    outer.interpret_line('S" HELLO" NEXTNAME CREATE')
+    outer.interpret_line("SET-CURRENT")
+    outer.interpret_line("CREATE BUF 32 ALLOT")
+    outer.interpret_line('S" hello" BUF SWAP MOVE')
+    outer.interpret_line("BUF 5 MY-WL SEARCH-WORDLIST")
+    found = inner.pop_ds_int()
+    assert found != 0
+    inner.pop_ds_int()
+
+
 def test_also_previous_restore_order():
     inner, outer = make()
     outer.interpret_line("WORDLIST CONSTANT W2")

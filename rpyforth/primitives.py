@@ -34,7 +34,12 @@ from rpyforth.inner_interp import (
 )
 from rpyforth.heap import ALLOC_BASE, DICT_SIZE_BYTES
 from rpyforth.metastack import push_ds_fragments
-from rpyforth.metastack_int import snapshot_cache, restore_cache
+from rpyforth.metastack import USE_FLOAT_FRAGMENT, USE_FRAME_ONLY
+if USE_FRAME_ONLY:
+    from rpyforth.metastack_int_frameonly import snapshot_cache, restore_cache
+else:
+    from rpyforth.metastack_int import snapshot_cache, restore_cache
+from rpyforth.metastack_float import snapshot_float_cache, restore_float_cache
 from rpyforth.util import digit_to_char
 
 
@@ -1891,11 +1896,11 @@ def prim_FDUP(inner, cur, ip):
 def _call_word_inline(inner, cur, ip, word):
     """Transfer control to a colon word from inside a primitive without leaving
     the dispatch loop: push the return frame exactly like a compiled call, hand
-    the target to the loop via pending_word, and signal with CALL_SENTINEL.
+    the target to the loop via pending_box, and signal with CALL_SENTINEL.
     Keeps EXECUTE/CATCH/deferred calls traceable (no nested portal)."""
     inner.push_call(cur, ip)
     push_ds_fragments(inner)
-    inner.pending_word = word
+    inner.pending_box[0] = word
     return CALL_SENTINEL
 
 
@@ -2313,6 +2318,29 @@ def prim_PREVIOUS(inner, cur, ip):
     return ip
 
 
+# >ORDER ( wid -- ) -- SEARCH-EXT. A prim (not just an interpret-mode token)
+# so it also takes effect when compiled into a colon body.
+def prim_TO_ORDER(inner, cur, ip):
+    inner.outer._handle_to_order()
+    return ip
+
+
+# >NUMBER ( ud1 c-addr1 u1 -- ud2 c-addr2 u2 ) — CORE. Prim so colon bodies
+# (sumcol, moments, ARG parsing) can call it; interpret mode still uses
+# _dispatch_interpret.
+def prim_TO_NUMBER(inner, cur, ip):
+    inner.outer._handle_to_number()
+    return ip
+
+
+# NEXTNAME ( c-addr u -- ) (gforth): set the name the next defining word
+# (CREATE, :, CONSTANT, VALUE, ...) will use for itself instead of parsing
+# one from the input. Consumed once then cleared.
+def prim_NEXTNAME(inner, cur, ip):
+    inner.outer.runtime_nextname()
+    return ip
+
+
 def prim_DEFINITIONS(inner, cur, ip):
     inner.outer._handle_definitions()
     return ip
@@ -2441,7 +2469,7 @@ def prim_SOURCE(inner, cur, ip):
 # ABORT ( -- ) -- clear the stacks and unwind to the top level.
 def prim_ABORT(inner, cur, ip):
     inner.reset_ds_int()
-    inner.ds_ptr_floats = 0
+    inner.reset_ds_float()
     inner.ds_ptr_locals = 0
     inner.rs_ptr = 0
     inner.lc_depth = 0
@@ -2780,7 +2808,7 @@ def prim_FDROP(inner, cur, ip):
 
 # FDEPTH ( -- +n ) -- number of items on the float stack.
 def prim_FDEPTH(inner, cur, ip):
-    inner.push_ds_int(inner.ds_ptr_floats)
+    inner.push_ds_int(inner.depth_ds_float())
     return ip
 
 
@@ -3255,7 +3283,7 @@ def prim_CATCH(inner, cur, ip):
     push_ds_fragments(inner)
     inner.push_call(CATCH_EPILOGUE_THREAD, 0)
     push_ds_fragments(inner)
-    inner.pending_word = word
+    inner.pending_box[0] = word
     return CALL_SENTINEL
 
 
@@ -3266,6 +3294,10 @@ def _catch_primitive_xt(inner, cur, ip, word):
         snap = snapshot_cache(inner)
     else:
         snap = None
+    if USE_FLOAT_FRAGMENT:
+        fsnap = snapshot_float_cache(inner)
+    else:
+        fsnap = None
     s_dsi = inner.ds_ptr_ints
     s_dsf = inner.ds_ptr_floats
     s_dsl = inner.ds_ptr_locals
@@ -3279,8 +3311,11 @@ def _catch_primitive_xt(inner, cur, ip, word):
     except ForthException as e:
         if USE_STACK_FRAGMENT:
             restore_cache(inner, snap)
+        if USE_FLOAT_FRAGMENT:
+            restore_float_cache(inner, fsnap)
         inner.ds_ptr_ints = s_dsi
-        inner.ds_ptr_floats = s_dsf
+        if not USE_FLOAT_FRAGMENT:
+            inner.ds_ptr_floats = s_dsf
         inner.ds_ptr_locals = s_dsl
         inner.rs_ptr = s_rs
         inner.li = s_li
@@ -3490,7 +3525,7 @@ def prim_FROUND(inner, cur, ip):
 def prim_FLITERAL(inner, cur, ip):
     """Compile a float literal. At run-time, push the float onto the float stack."""
     # Pop float from float stack
-    if inner.ds_ptr_floats > 0:
+    if inner.depth_ds_float() > 0:
         floatval = inner.pop_ds_float()
         # Emit LIT <float> into the compilation buffer
         outer = inner.outer
@@ -3840,7 +3875,7 @@ def prim_LITERAL(inner, cur, ip):
         outer = inner.outer
         if outer is not None:
             outer._emit_lit(W_IntObject(intval))
-    elif inner.ds_ptr_floats > 0:
+    elif inner.depth_ds_float() > 0:
         floatval = inner.pop_ds_float()
         outer = inner.outer
         if outer is not None:
@@ -4122,10 +4157,13 @@ def install_primitives(outer):
     outer.define_prim("SET-ORDER", prim_SET_ORDER)
     outer.define_prim("ALSO", prim_ALSO)
     outer.define_prim("PREVIOUS", prim_PREVIOUS)
+    outer.define_prim(">ORDER", prim_TO_ORDER)
+    outer.define_prim(">NUMBER", prim_TO_NUMBER)
     outer.define_prim("DEFINITIONS", prim_DEFINITIONS)
     outer.define_prim("FORTH", prim_FORTH)
     outer.define_prim("CS-ROLL", prim_CS_ROLL)
     outer.define_prim("DEFER", prim_DEFER)
+    outer.define_prim("NEXTNAME", prim_NEXTNAME)
     outer.define_prim("'", prim_TICK)
     outer.define_prim("WORD", prim_WORD)
     outer.define_prim("PARSE", prim_PARSE)

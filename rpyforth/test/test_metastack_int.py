@@ -1,3 +1,5 @@
+import pytest
+
 from rpyforth.metastack import (
     NTOP,
     FRAME_SIZE,
@@ -5,6 +7,7 @@ from rpyforth.metastack import (
     CALL_WINDOW,
     SPILL_SIZE,
     STACK_FRAGMENT_VIRTUALIZABLES,
+    USE_FRAME_ONLY,
 )
 from rpyforth.metastack_int import DSIntMetaStack, init_fields
 
@@ -25,6 +28,8 @@ def test_init_fields_sets_virtualizable_host_slots():
     assert len(host.spill) == SPILL_SIZE
 
 
+@pytest.mark.skipif(USE_FRAME_ONLY,
+                    reason="frame-only (NTOP=0) ablation drops the scalar tops")
 def test_stack_fragment_virtualizables_include_tops_and_frame():
     # Tops, cache depth, frame array and the changing stack pointers.
     for name in (
@@ -33,7 +38,7 @@ def test_stack_fragment_virtualizables_include_tops_and_frame():
         "rs_ptr", "cs_pcs", "cs_ptr", "cs_base",
     ):
         assert name in STACK_FRAGMENT_VIRTUALIZABLES
-    # The arena and the immutable array references stay out.
+    # The spill and the immutable array references stay out.
     for name in ("spill", "spill[*]", "rs", "ds_locals"):
         assert name not in STACK_FRAGMENT_VIRTUALIZABLES
 
@@ -66,9 +71,9 @@ def test_int_deep_peek_poke():
     assert out[-1] == 424242
 
 
-def test_int_arena_spill_beyond_active_max():
-    # Pushing past the cache spills the deepest cells into the arena -- no error,
-    # and the values survive peek/pop through the cache/arena boundary.
+def test_int_spill_beyond_active_max():
+    # Pushing past the cache spills the deepest cells into the spill -- no error,
+    # and the values survive peek/pop through the cache/spill boundary.
     s = DSIntMetaStack()
     n = 2 * ACTIVE_MAX + 3
     for v in range(n):
@@ -78,7 +83,7 @@ def test_int_arena_spill_beyond_active_max():
     assert s.spill_ptr == n - ACTIVE_MAX
     assert s.peek(0) == n - 1            # top, in the cache
     assert s.peek(ACTIVE_MAX) == n - 1 - ACTIVE_MAX   # just below the cache
-    assert s.peek(n - 1) == 0            # bottom, deep in the arena
+    assert s.peek(n - 1) == 0            # bottom, deep in the spill
     assert [s.pop() for _ in range(n)] == list(range(n - 1, -1, -1))
     assert s.size() == 0
     assert s.spill_ptr == 0
@@ -119,7 +124,7 @@ def test_int_fragment_call_commit_within_window():
 
 
 def test_int_fragment_call_commit_beyond_window():
-    # Caller deeper than NTOP: the below-top cells are parked in the arena; the
+    # Caller deeper than NTOP: the below-top cells are parked in the spill; the
     # callee runs with the cache normalized to NTOP, the total depth preserved.
     s = DSIntMetaStack()
     n = NTOP + 2
@@ -129,12 +134,12 @@ def test_int_fragment_call_commit_beyond_window():
     parked = n - NTOP
     assert s.frag_ptr == 1
     assert s.d == NTOP                   # cache normalized to the tops
-    assert s.spill_ptr == parked         # below-top cells parked in the arena
+    assert s.spill_ptr == parked         # below-top cells parked in the spill
     assert s.size() == n                 # total depth preserved
     # callee sees the top NTOP cells in the cache
     assert s.peek(0) == n - 1
     assert s.peek(NTOP - 1) == n - NTOP
-    # below the tops: fall through into the parked arena
+    # below the tops: fall through into the parked spill
     assert s.peek(NTOP) == n - NTOP - 1
     assert s.peek(n - 1) == 0
     s.pop_fragment_commit()
@@ -145,14 +150,14 @@ def test_int_fragment_call_commit_beyond_window():
 
 
 def test_int_below_window_poke_then_commit():
-    # Poking below the cache writes the parked arena, and the write must survive
+    # Poking below the cache writes the parked spill, and the write must survive
     # commit.
     s = DSIntMetaStack()
     n = NTOP + 2
     for v in range(n):
         s.push(v)
     s.push_fragment()
-    s.poke(n - 1, 777)           # deepest caller cell, parked in the arena
+    s.poke(n - 1, 777)           # deepest caller cell, parked in the spill
     assert s.peek(n - 1) == 777
     s.pop_fragment_commit()
     assert s.peek(n - 1) == 777
@@ -160,7 +165,7 @@ def test_int_below_window_poke_then_commit():
 
 def test_int_nested_fragments_bounded_entry_depth():
     # Deep nesting: every entry normalizes the cache to at most NTOP, so the
-    # active (virtualized) depth stays tiny while the arena absorbs the rest.
+    # active (virtualized) depth stays tiny while the spill absorbs the rest.
     s = DSIntMetaStack()
     depth = 40
     for v in range(depth):
@@ -172,7 +177,7 @@ def test_int_nested_fragments_bounded_entry_depth():
     for _ in range(depth):
         s.pop_fragment_commit()
     assert s.frag_ptr == 0
-    # the full stack is still intact, served from cache + arena
+    # the full stack is still intact, served from cache + spill
     assert s.size() == depth
     assert [s.pop() for _ in range(depth)] == list(range(depth - 1, -1, -1))
     assert s.spill_ptr == 0
@@ -195,8 +200,8 @@ def test_int_fragment_consume_all_args():
 
 # ------------------------------------------------------------------
 # snapshot / restore. snapshot() captures the active cache (scalar tops + frame
-# + the cache/arena pointers); restore() puts the stack back to that captured
-# state, discarding anything pushed since. The arena cells below the saved spill
+# + the cache/spill pointers); restore() puts the stack back to that captured
+# state, discarding anything pushed since. The spill cells below the saved spill
 # pointer are assumed undisturbed (true for code that does not pop below the
 # snapshot depth).
 # ------------------------------------------------------------------
@@ -211,7 +216,7 @@ def test_snapshot_restore_identity():
 
 
 def test_snapshot_restore_within_cache():
-    # Depth inside tops + frame (no arena). Mutate after snapshot, then restore.
+    # Depth inside tops + frame (no spill). Mutate after snapshot, then restore.
     s = DSIntMetaStack()
     for v in range(NTOP + 3):
         s.push(v)
@@ -251,9 +256,9 @@ def test_snapshot_is_independent_copy():
     assert [s.peek(i) for i in range(ACTIVE_MAX)] == [ACTIVE_MAX - 1 - i for i in range(ACTIVE_MAX)]
 
 
-def test_snapshot_restore_across_arena():
-    # Depth past ACTIVE_MAX so cells live in the arena. Churn (more spill + pops)
-    # then restore must rebuild the exact stack through the cache/arena boundary.
+def test_snapshot_restore_across_spill():
+    # Depth past ACTIVE_MAX so cells live in the spill. Churn (more spill + pops)
+    # then restore must rebuild the exact stack through the cache/spill boundary.
     s = DSIntMetaStack()
     n = 2 * ACTIVE_MAX + 5
     for v in range(n):

@@ -69,6 +69,30 @@ def test_throw_restores_return_stack():
     assert inner.rs_ptr == 0
 
 
+def test_execute_dispatch_in_tight_loop():
+    # Repeated EXECUTE dispatch (the CALL_SENTINEL/pending-target channel) in a
+    # loop, as OOP method dispatch does: every iteration hands a fresh colon-word
+    # target to the loop and must return the right result.
+    inner = InnerInterpreter()
+    outer = OuterInterpreter(inner)
+    prog = [
+        ": sq dup * ;",
+        "' sq constant XT",
+        ": go 0 100 0 do i XT execute + loop ;",
+        "go",
+    ]
+    for line in prog:
+        outer.interpret_line(line)
+    assert inner.pop_ds_int() == 328350
+
+
+def test_execute_reentrant_nested():
+    # EXECUTE of a word that itself EXECUTEs another: the pending-target channel
+    # must survive nesting without clobbering the outer call.
+    inner = run(": inner 3 * ;  : outer ['] inner execute 1+ ;  10 ' outer execute")
+    assert inner.pop_ds_int() == 31
+
+
 def test_nested_catch_in_loop_bounds_recursion():
     # Nested CATCH where an inner protected word returns normally after handling
     # a THROW, driven from a loop. execute_word_now must stop when its word is
