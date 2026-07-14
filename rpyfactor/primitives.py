@@ -1,12 +1,13 @@
-"""Built-in Joy words for rpyfactor (P1 naive interpreter)."""
+"""Built-in Factor-subset words for rpyfactor (P1 naive interpreter)."""
 
 import time
 
 from rpython.rlib.rfile import create_stdio
 
 from rpyfactor.values import (
-    W_Int, W_String, W_Symbol, W_List, W_Array, W_Quotation,
+    W_Int, W_String, W_Symbol, W_List, W_Cons, W_Nil, W_Array, W_Quotation,
     FactorError, truthy,
+    nil_list, w_list_from_items, list_is_empty, list_length,
 )
 from rpyfactor.program import item_to_value, LitQuot, CallWord
 
@@ -63,14 +64,12 @@ def _values_equal(a, b):
     if isinstance(a, W_Symbol) and isinstance(b, W_Symbol):
         return a.name == b.name
     if isinstance(a, W_List) and isinstance(b, W_List):
-        if len(a.items) != len(b.items):
-            return False
-        i = 0
-        while i < len(a.items):
-            if not _values_equal(a.items[i], b.items[i]):
+        while isinstance(a, W_Cons) and isinstance(b, W_Cons):
+            if not _values_equal(a.head, b.head):
                 return False
-            i += 1
-        return True
+            a = a.tail
+            b = b.tail
+        return list_is_empty(a) and list_is_empty(b)
     if isinstance(a, W_Quotation) and isinstance(b, W_Quotation):
         return a.program == b.program
     return False
@@ -225,6 +224,22 @@ def prim_over(st):
     st.push_parts(i, t, o)
 
 
+def prim_pick(st):
+    # pick ( x y z -- x y z x ): copy the third element from the top.
+    i, t, o = st.peek_parts(2)
+    st.push_parts(i, t, o)
+
+
+def prim_3dup(st):
+    # 3dup ( x y z -- x y z x y z )
+    i2, t2, o2 = st.peek_parts(2)
+    i1, t1, o1 = st.peek_parts(1)
+    i0, t0, o0 = st.peek_parts(0)
+    st.push_parts(i2, t2, o2)
+    st.push_parts(i1, t1, o1)
+    st.push_parts(i0, t0, o0)
+
+
 def prim_rot(st):
     i0, t0, o0 = st.peek_parts(0)
     st.pop()
@@ -284,26 +299,31 @@ def prim_swapd(st):
 
 
 def prim_stack(st):
-    st.push(W_List(st.snapshot_flat()))
+    st.push(w_list_from_items(st.snapshot_flat()))
 
 
 def prim_unstack(st):
     lst = _pop_list(st)
-    st.replace_items(list(lst.items))
+    items = []
+    node = lst
+    while isinstance(node, W_Cons):
+        items.append(node.head)
+        node = node.tail
+    st.replace_items(items)
 
 
 def prim_cons(st):
     lst = _pop_list(st)
     val = st.pop()
-    st.push(W_List([val] + lst.items))
+    st.push(W_Cons(val, lst))
 
 
 def prim_uncons(st):
     lst = _pop_list(st)
-    if not lst.items:
+    if not isinstance(lst, W_Cons):
         raise FactorError("uncons of empty list")
-    st.push(W_List(lst.items[1:]))
-    st.push(lst.items[0])
+    st.push(lst.tail)
+    st.push(lst.head)
 
 
 def prim_swons(st):
@@ -313,28 +333,38 @@ def prim_swons(st):
 
 def prim_first(st):
     lst = _pop_list(st)
-    if not lst.items:
+    if not isinstance(lst, W_Cons):
         raise FactorError("first of empty list")
-    st.push(lst.items[0])
+    st.push(lst.head)
 
 
 def prim_rest(st):
     lst = _pop_list(st)
-    if not lst.items:
+    if not isinstance(lst, W_Cons):
         raise FactorError("rest of empty list")
-    st.push(W_List(lst.items[1:]))
+    st.push(lst.tail)
 
 
 def prim_concat(st):
     b = _pop_list(st)
     a = _pop_list(st)
-    st.push(W_List(a.items + b.items))
+    heads = []
+    node = a
+    while isinstance(node, W_Cons):
+        heads.append(node.head)
+        node = node.tail
+    node = b
+    i = len(heads) - 1
+    while i >= 0:
+        node = W_Cons(heads[i], node)
+        i -= 1
+    st.push(node)
 
 
 def prim_size(st):
     v = st.pop()
     if isinstance(v, W_List):
-        _push_int(st, len(v.items))
+        _push_int(st, list_length(v))
     elif isinstance(v, W_Array):
         _push_int(st, len(v.items))
     else:
@@ -349,7 +379,7 @@ def prim_null(st):
     if isinstance(v, W_Int):
         _push_bool(st, v.val == 0)
     elif isinstance(v, W_List):
-        _push_bool(st, len(v.items) == 0)
+        _push_bool(st, list_is_empty(v))
     elif isinstance(v, W_String):
         _push_bool(st, len(v.s) == 0)
     else:
@@ -358,18 +388,20 @@ def prim_null(st):
 
 def prim_small(st):
     lst = _pop_list(st)
-    _push_bool(st, len(lst.items) <= 1)
+    if not isinstance(lst, W_Cons):
+        _push_bool(st, True)
+        return
+    _push_bool(st, list_is_empty(lst.tail))
 
 
 def prim_reverse(st):
     lst = _pop_list(st)
-    items = lst.items
-    out = []
-    i = len(items) - 1
-    while i >= 0:
-        out.append(items[i])
-        i -= 1
-    st.push(W_List(out))
+    out = nil_list()
+    node = lst
+    while isinstance(node, W_Cons):
+        out = W_Cons(node.head, out)
+        node = node.tail
+    st.push(out)
 
 
 def prim_succ(st):
@@ -395,19 +427,20 @@ def prim_dot(st):
         stdout.write("%s " % v.s)
     elif isinstance(v, W_List):
         stdout.write("[")
-        items = v.items
-        i = 0
-        while i < len(items):
-            if i:
+        node = v
+        first = True
+        while isinstance(node, W_Cons):
+            if not first:
                 stdout.write(" ")
-            it = items[i]
+            first = False
+            it = node.head
             if isinstance(it, W_Int):
                 stdout.write("%d" % it.val)
             elif isinstance(it, W_String):
                 stdout.write(it.s)
             else:
                 stdout.write("?")
-            i += 1
+            node = node.tail
         stdout.write("] ")
     else:
         stdout.write("? ")
@@ -433,7 +466,7 @@ def prim_putchars(st):
 
 
 def prim_nil(st):
-    st.push(W_List([]))
+    st.push(nil_list())
 
 
 def prim_new_array(st):
@@ -455,13 +488,22 @@ def prim_nth(st):
     n = _pop_int(st)
     if isinstance(seq, W_Array):
         items = seq.items
-    elif isinstance(seq, W_List):
-        items = seq.items
-    else:
-        raise FactorError("nth expects array or list")
-    if n < 0 or n >= len(items):
-        raise FactorError("nth index out of range")
-    st.push(items[n])
+        if n < 0 or n >= len(items):
+            raise FactorError("nth index out of range")
+        st.push(items[n])
+        return
+    if isinstance(seq, W_List):
+        if n < 0:
+            raise FactorError("nth index out of range")
+        node = seq
+        while n > 0 and isinstance(node, W_Cons):
+            node = node.tail
+            n -= 1
+        if not isinstance(node, W_Cons):
+            raise FactorError("nth index out of range")
+        st.push(node.head)
+        return
+    raise FactorError("nth expects array or list")
 
 
 def prim_set_nth(st):
@@ -504,6 +546,7 @@ def is_primitive(name):
             name == "and" or name == "or" or name == "not" or name == "dup" or
             name == "2dup" or name == "2drop" or name == "2over" or name == "swap" or
             name == "nip" or name == "pop" or name == "drop" or name == "over" or
+            name == "pick" or name == "3dup" or
             name == "rot" or name == "rolldown" or name == "-rot" or name == "rollup" or
             name == "dupd" or name == "swapd" or name == "stack" or name == "unstack" or
             name == "cons" or name == "uncons" or name == "swons" or name == "first" or

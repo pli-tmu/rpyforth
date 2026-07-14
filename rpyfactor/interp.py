@@ -17,10 +17,11 @@ from rpyfactor.metastack import (
     USE_STACK_VABLE,
     STACK_FRAGMENT_VIRTUALIZABLES,
 )
-from rpyfactor.program import CallWord, LitInt, LitBool, item_to_value, is_literal_item
+from rpyfactor.program import Word, CallWord, LitInt, LitBool, item_to_value, is_literal_item
 from rpyfactor.values import (
-    W_List, W_Quotation,
+    W_List, W_Cons, W_Quotation,
     FactorError,
+    nil_list, w_list_from_items,
 )
 from rpyfactor.primitives import (
     is_combinator, is_primitive, _pop_symbol,
@@ -29,7 +30,7 @@ from rpyfactor.primitives import (
     prim_and, prim_or, prim_not,
     prim_dup, prim_2dup, prim_2drop, prim_2over,
     prim_swap, prim_nip, prim_pop, prim_over,
-    prim_rot, prim_rolldown, prim_rollup, prim_dupd, prim_swapd,
+    prim_rot, prim_rolldown, prim_rollup, prim_dupd, prim_swapd, prim_pick, prim_3dup,
     prim_stack, prim_unstack,
     prim_cons, prim_uncons, prim_swons, prim_first, prim_rest,
     prim_concat, prim_size, prim_null, prim_small, prim_reverse,
@@ -117,6 +118,7 @@ class Interpreter(FragmentBase):
 
     def __init__(self):
         self.dict = {}
+        self.words = {}
         self._init_call_stack()
         if USE_STACK_FRAGMENT:
             self.init_fragment_fields()
@@ -164,6 +166,10 @@ class Interpreter(FragmentBase):
     def load_definitions(self, defs):
         for name, body in defs.items():
             self.dict[name] = body
+            if name in self.words:
+                self.words[name].redefine(body)
+            else:
+                self.words[name] = Word(body)
 
     def lookup(self, name):
         if name in self.dict:
@@ -171,6 +177,15 @@ class Interpreter(FragmentBase):
         if is_primitive(name) or is_combinator(name) or name == "body":
             return None
         raise FactorError("unknown word: %s" % name)
+
+    def _word_cell(self, name):
+        if name in self.words:
+            return self.words[name]
+        if name in self.dict:
+            cell = Word(self.dict[name])
+            self.words[name] = cell
+            return cell
+        return None
 
     def run(self, program):
         self.cs_ptr = 0
@@ -207,6 +222,11 @@ class Interpreter(FragmentBase):
         self.cs_out[ptr] = None
         self.cs_ptr = ptr + 1
         return ptr
+
+    def _enter_ret(self, body, program, ip):
+        if ip == _prog_len(program) and _prog_len(body) != 0:
+            return body, 0
+        return self._enter(body, program, ip, KIND_RET)
 
     def _execute_nested(self, body):
         """Run body as a top-level nested program (fragment + RET frame)."""
@@ -248,7 +268,7 @@ class Interpreter(FragmentBase):
             elif is_literal_item(item):
                 st.push(item_to_value(item))
             elif isinstance(item, CallWord):
-                program, ip = self._call_word(item.name, program, ip)
+                program, ip = self._call_word(item, program, ip)
                 # A call lands at ip 0 of the callee body: a loop header for
                 # the JIT. Without this, recursive words never start tracing
                 # (the return path only covers times/step-style iteration).
@@ -311,8 +331,8 @@ class Interpreter(FragmentBase):
             self.cs_ptr = ptr
             self._restore_stack(snap)
             if flag:
-                return self._enter(then_q, ret_prog, ret_ip, KIND_RET)
-            return self._enter(else_q, ret_prog, ret_ip, KIND_RET)
+                return self._enter_ret(then_q, ret_prog, ret_ip)
+            return self._enter_ret(else_q, ret_prog, ret_ip)
 
         if kind == KIND_WHILE:
             return self._while_continue(ptr)
@@ -341,7 +361,8 @@ class Interpreter(FragmentBase):
 
         raise FactorError("bad call-stack kind %d" % kind)
 
-    def _call_word(self, name, program, ip):
+    def _call_word(self, item, program, ip):
+        name = item.name
         if name == "body":
             self.prim_body()
             return program, ip
@@ -349,12 +370,13 @@ class Interpreter(FragmentBase):
             return self._dispatch_combinator(name, program, ip)
         if self._dispatch_prim(name):
             return program, ip
-        body = self.lookup(name)
-        if body is not None:
-            # Do not promote(body): program lists can be virtualized by the
-            # optimizer across quotation/ifte paths, and promote-of-virtual
-            # aborts the loop (callheavy storm).
-            return self._enter(body, program, ip, KIND_RET)
+        cell = item.cell
+        if cell is None:
+            cell = self._word_cell(name)
+            if cell is not None:
+                item.cell = cell
+        if cell is not None:
+            return self._enter_ret(cell.body, program, ip)
         raise FactorError("unknown word: %s" % name)
 
     def _dispatch_prim(self, name):
@@ -409,6 +431,10 @@ class Interpreter(FragmentBase):
             prim_rolldown(st)
         elif name == "rollup":
             prim_rollup(st)
+        elif name == "pick":
+            prim_pick(st)
+        elif name == "3dup":
+            prim_3dup(st)
         elif name == "dupd":
             prim_dupd(st)
         elif name == "swapd":
@@ -512,13 +538,13 @@ class Interpreter(FragmentBase):
         return v.program
 
     def _snapshot_stack(self):
-        return self.st().snapshot_flat()
+        return self.st().snapshot_cache()
 
     def _restore_stack(self, snap):
-        self.st().restore_flat(snap)
+        self.st().restore_cache(snap)
 
     def comb_i(self, program, ip):
-        return self._enter(self._pop_quot(), program, ip, KIND_RET)
+        return self._enter_ret(self._pop_quot(), program, ip)
 
     def comb_x(self, program, ip):
         st = self.st()
@@ -555,8 +581,8 @@ class Interpreter(FragmentBase):
                 return if_q, 0
         flag = st.pop_truthy()
         if flag:
-            return self._enter(then_q, program, ip, KIND_RET)
-        return self._enter(else_q, program, ip, KIND_RET)
+            return self._enter_ret(then_q, program, ip)
+        return self._enter_ret(else_q, program, ip)
 
     def comb_branch(self, program, ip):
         st = self.st()
@@ -564,8 +590,8 @@ class Interpreter(FragmentBase):
         false_q = self._pop_quot()
         true_q = self._pop_quot()
         if flag:
-            return self._enter(true_q, program, ip, KIND_RET)
-        return self._enter(false_q, program, ip, KIND_RET)
+            return self._enter_ret(true_q, program, ip)
+        return self._enter_ret(false_q, program, ip)
 
     def comb_times(self, program, ip):
         st = self.st()
@@ -588,23 +614,23 @@ class Interpreter(FragmentBase):
         lst = st.pop()
         if not isinstance(lst, W_List):
             raise FactorError("step expects list")
-        if len(lst.items) == 0:
+        if not isinstance(lst, W_Cons):
             return program, ip
         ptr = self._push_frame(KIND_STEP, program, ip)
         self.cs_body[ptr] = body
         self.cs_list[ptr] = lst
-        self.cs_i[ptr] = 0
-        st.push(lst.items[0])
+        st.push(lst.head)
         st.push_fragment()
         return body, 0
 
     def _step_continue(self, ptr):
-        i = self.cs_i[ptr] + 1
-        lst = self.cs_list[ptr]
-        if i < len(lst.items):
-            self.cs_i[ptr] = i
+        cur = self.cs_list[ptr]
+        assert isinstance(cur, W_Cons)
+        nxt = cur.tail
+        if isinstance(nxt, W_Cons):
+            self.cs_list[ptr] = nxt
             st = self.st()
-            st.push(lst.items[i])
+            st.push(nxt.head)
             st.push_fragment()
             return self.cs_body[ptr], 0
         prog = self.cs_progs[ptr]
@@ -618,15 +644,14 @@ class Interpreter(FragmentBase):
         lst = st.pop()
         if not isinstance(lst, W_List):
             raise FactorError("map expects list")
-        if len(lst.items) == 0:
-            st.push(W_List([]))
+        if not isinstance(lst, W_Cons):
+            st.push(nil_list())
             return program, ip
         ptr = self._push_frame(KIND_MAP, program, ip)
         self.cs_body[ptr] = body
         self.cs_list[ptr] = lst
         self.cs_out[ptr] = []
-        self.cs_i[ptr] = 0
-        st.push(lst.items[0])
+        st.push(lst.head)
         st.push_fragment()
         return body, 0
 
@@ -634,22 +659,23 @@ class Interpreter(FragmentBase):
         st = self.st()
         out = self.cs_out[ptr]
         out.append(st.pop())
-        i = self.cs_i[ptr] + 1
-        lst = self.cs_list[ptr]
-        if i < len(lst.items):
-            self.cs_i[ptr] = i
+        cur = self.cs_list[ptr]
+        assert isinstance(cur, W_Cons)
+        nxt = cur.tail
+        if isinstance(nxt, W_Cons):
+            self.cs_list[ptr] = nxt
             self.cs_out[ptr] = out
-            st.push(lst.items[i])
+            st.push(nxt.head)
             st.push_fragment()
             return self.cs_body[ptr], 0
-        st.push(W_List(out))
+        st.push(w_list_from_items(out))
         prog = self.cs_progs[ptr]
         ip = self.cs_ips[ptr]
         self.cs_ptr = ptr
         return self._resume_ret(prog, ip)
 
     def comb_fold(self, program, ip):
-        # Joy order: acc [quot] list fold
+        # fold argument order: acc [quot] list fold
         st = self.st()
         lst = st.pop()
         body = self._pop_quot()
@@ -668,27 +694,27 @@ class Interpreter(FragmentBase):
         st = self.st()
         if not isinstance(lst, W_List):
             raise FactorError("reduce expects list")
-        if len(lst.items) == 0:
+        if not isinstance(lst, W_Cons):
             st.push(acc)
             return program, ip
         ptr = self._push_frame(KIND_FOLD, program, ip)
         self.cs_body[ptr] = body
         self.cs_list[ptr] = lst
-        self.cs_i[ptr] = 0
         st.push(acc)
-        st.push(lst.items[0])
+        st.push(lst.head)
         st.push_fragment()
         return body, 0
 
     def _fold_continue(self, ptr):
         st = self.st()
         acc = st.pop()
-        i = self.cs_i[ptr] + 1
-        lst = self.cs_list[ptr]
-        if i < len(lst.items):
-            self.cs_i[ptr] = i
+        cur = self.cs_list[ptr]
+        assert isinstance(cur, W_Cons)
+        nxt = cur.tail
+        if isinstance(nxt, W_Cons):
+            self.cs_list[ptr] = nxt
             st.push(acc)
-            st.push(lst.items[i])
+            st.push(nxt.head)
             st.push_fragment()
             return self.cs_body[ptr], 0
         st.push(acc)
@@ -703,16 +729,15 @@ class Interpreter(FragmentBase):
         lst = st.pop()
         if not isinstance(lst, W_List):
             raise FactorError("filter expects list")
-        if len(lst.items) == 0:
-            st.push(W_List([]))
+        if not isinstance(lst, W_Cons):
+            st.push(nil_list())
             return program, ip
         ptr = self._push_frame(KIND_FILTER, program, ip)
         self.cs_body[ptr] = body
         self.cs_list[ptr] = lst
         self.cs_out[ptr] = []
-        self.cs_i[ptr] = 0
-        self.cs_val[ptr] = lst.items[0]
-        st.push(lst.items[0])
+        self.cs_val[ptr] = lst.head
+        st.push(lst.head)
         st.push_fragment()
         return body, 0
 
@@ -722,16 +747,17 @@ class Interpreter(FragmentBase):
             out = self.cs_out[ptr]
             out.append(self.cs_val[ptr])
             self.cs_out[ptr] = out
-        i = self.cs_i[ptr] + 1
-        lst = self.cs_list[ptr]
-        if i < len(lst.items):
-            self.cs_i[ptr] = i
-            elem = lst.items[i]
+        cur = self.cs_list[ptr]
+        assert isinstance(cur, W_Cons)
+        nxt = cur.tail
+        if isinstance(nxt, W_Cons):
+            self.cs_list[ptr] = nxt
+            elem = nxt.head
             self.cs_val[ptr] = elem
             st.push(elem)
             st.push_fragment()
             return self.cs_body[ptr], 0
-        st.push(W_List(self.cs_out[ptr]))
+        st.push(w_list_from_items(self.cs_out[ptr]))
         prog = self.cs_progs[ptr]
         ip = self.cs_ips[ptr]
         self.cs_ptr = ptr

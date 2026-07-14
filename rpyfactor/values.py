@@ -1,7 +1,8 @@
 """Boxed runtime values for rpyfactor.
 
-W_List uses immutable Python tuples of W_Value for structural sharing on
-cons/uncons/rest (P1 decision per SECOND_SESL_PLAN.md §2).
+W_List holds a Python list of W_Value that is never mutated in place;
+cons/uncons/rest build fresh lists, so backing storage can be shared on
+copy (P1 decision per SECOND_SESL_PLAN.md §2).
 """
 
 
@@ -86,20 +87,58 @@ class W_Symbol(W_Value):
 
 
 class W_List(W_Value):
-    """Immutable list of values (tuple-backed)."""
+    """Immutable singly-linked list (cons cells).
+
+    Two concrete forms: W_Nil (the empty singleton) and W_Cons (head + tail).
+    Both head and tail are immutable, so a cons cell is a compile-time
+    constant once built from a literal and stays foldable in traces.
+    cons/first/rest/swons/null? are O(1); size/concat/reverse traverse once.
+
+    ``items`` is a read-only Python-list view over the chain, kept only for
+    tests and diagnostics -- never call it on a hot path."""
 
     _immutable_ = True
 
-    def __init__(self, items):
-        if isinstance(items, W_List):
-            self.items = items.items
-        elif isinstance(items, tuple):
-            self.items = list(items)
-        else:
-            self.items = list(items)
+    @property
+    def items(self):
+        out = []
+        node = self
+        while isinstance(node, W_Cons):
+            out.append(node.head)
+            node = node.tail
+        return out
+
+
+class W_Nil(W_List):
+    _immutable_ = True
 
     def __repr__(self):
-        return "W_List(%r)" % (self.items,)
+        return "W_Nil()"
+
+    def __eq__(self, other):
+        return isinstance(other, W_Nil)
+
+    def __ne__(self, other):
+        return not self.__eq__(other)
+
+
+_NIL = W_Nil()
+
+
+def nil_list():
+    return _NIL
+
+
+class W_Cons(W_List):
+    _immutable_ = True
+    _immutable_fields_ = ["head", "tail"]
+
+    def __init__(self, head, tail):
+        self.head = head
+        self.tail = tail
+
+    def __repr__(self):
+        return "W_Cons(%r, %r)" % (self.head, self.tail)
 
     def __eq__(self, other):
         if not isinstance(other, W_List):
@@ -108,6 +147,28 @@ class W_List(W_Value):
 
     def __ne__(self, other):
         return not self.__eq__(other)
+
+
+def w_list_from_items(items):
+    node = nil_list()
+    i = len(items) - 1
+    while i >= 0:
+        node = W_Cons(items[i], node)
+        i -= 1
+    return node
+
+
+def list_is_empty(lst):
+    return not isinstance(lst, W_Cons)
+
+
+def list_length(lst):
+    n = 0
+    node = lst
+    while isinstance(node, W_Cons):
+        n += 1
+        node = node.tail
+    return n
 
 
 class W_Array(W_Value):
@@ -163,7 +224,7 @@ def truthy(val):
     if isinstance(val, W_Int):
         return val.val != 0
     if isinstance(val, W_List):
-        return len(val.items) != 0
+        return isinstance(val, W_Cons)
     if isinstance(val, W_Array):
         return len(val.items) != 0
     if isinstance(val, W_String):

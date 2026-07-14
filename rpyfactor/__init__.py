@@ -1,1 +1,1 @@
-"""rpyfactor: Joy-style concatenative interpreter (RPython-translatable subset)."""
+"""rpyfactor: Factor-subset concatenative interpreter (RPython-translatable subset)."""

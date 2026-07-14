@@ -9,14 +9,26 @@ TAG_INT = 0
 TAG_OBJ = 1
 
 
-def _parse_frame_size():
-    raw = os.environ.get("RPYFACTOR_FRAME_SIZE")
-    if raw is None or raw == "" or raw == "8":
-        return 8
-    return 8
+FRAME_SIZE_DEFAULT = 8
+FRAME_SIZE_MIN = 4
+FRAME_SIZE_MAX = 64
 
 
-FRAME_SIZE = _parse_frame_size()
+def _parse_frame_size(raw):
+    if raw is None or raw == "":
+        return FRAME_SIZE_DEFAULT
+    try:
+        n = int(raw)
+    except ValueError:
+        return FRAME_SIZE_DEFAULT
+    if n < FRAME_SIZE_MIN or n > FRAME_SIZE_MAX:
+        return FRAME_SIZE_DEFAULT
+    if n & (n - 1) != 0:
+        return FRAME_SIZE_DEFAULT
+    return n
+
+
+FRAME_SIZE = _parse_frame_size(os.environ.get("RPYFACTOR_FRAME_SIZE"))
 ACTIVE_MAX = NTOP + FRAME_SIZE
 
 USE_STACK_FRAGMENT = bool(os.environ.get("RPYFACTOR_STACK_FRAGMENT"))

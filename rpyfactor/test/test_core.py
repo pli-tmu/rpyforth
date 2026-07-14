@@ -164,3 +164,43 @@ def test_iota_sum():
     5 iota 0 [ + ] reduce
     """
     assert run_result_int(src) == 15
+
+
+def test_deep_tail_recursion():
+    src = """
+    : countdown ( n -- n )
+        dup 0 = [ ] [ 1 - countdown ] if ;
+    1000000 countdown
+    """
+    assert run_result_int(src) == 0
+
+
+def test_tail_recursion_accumulator():
+    src = """
+    : sumdown ( acc n -- acc )
+        dup 0 = [ drop ] [ dup [ + ] dip 1 - sumdown ] if ;
+    0 100000 sumdown
+    """
+    assert run_result_int(src) == 5000050000
+
+
+def test_redefinition_after_first_call():
+    from rpyfactor.test.conftest import run
+    interp = run("""
+    : greet ( n -- n ) 1 + ;
+    5 greet
+    """)
+    assert interp.pop_int_result() == 6
+    interp.run_source("""
+    : greet ( n -- n ) 10 + ;
+    5 greet
+    """)
+    assert interp.pop_int_result() == 15
+
+
+def test_tail_call_result_correct():
+    src = """
+    : loop ( n -- n ) dup 0 > [ 1 - loop ] [ ] if ;
+    50 loop
+    """
+    assert run_result_int(src) == 0

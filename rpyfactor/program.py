@@ -7,7 +7,9 @@ push gives each trace a different green key and makes the promoted program
 a trace-local virtual, which aborts the loop (promote-of-virtual).
 """
 
-from rpyfactor.values import W_Int, W_String, W_Symbol, W_List, W_Quotation
+from rpyfactor.values import (
+    W_Int, W_String, W_Symbol, W_List, W_Quotation, w_list_from_items,
+)
 
 
 class ProgramItem(object):
@@ -82,18 +84,29 @@ class LitArray(ProgramItem):
             while i < len(self.elems):
                 values.append(item_to_value(self.elems[i]))
                 i += 1
-            self.w_val = W_List(values)
+            self.w_val = w_list_from_items(values)
         return self.w_val
 
     def __repr__(self):
         return "LitArray(len=%d)" % (len(self.elems),)
 
 
+class Word(object):
+    _immutable_fields_ = ["body?"]
+
+    def __init__(self, body):
+        self.body = body
+
+    def redefine(self, body):
+        self.body = body
+
+
 class CallWord(ProgramItem):
-    _immutable_fields_ = ["name"]
+    _immutable_fields_ = ["name", "cell?"]
 
     def __init__(self, name):
         self.name = str(name)
+        self.cell = None
 
     def __repr__(self):
         return "CallWord(%r)" % (self.name,)

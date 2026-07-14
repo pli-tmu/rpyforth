@@ -28,11 +28,11 @@ def use_fragment_stack():
     return USE_STACK_FRAGMENT
 
 
-class JoyStack(object):
+class FactorStack(object):
     pass
 
 
-class NaiveStack(JoyStack):
+class NaiveStack(FactorStack):
     def __init__(self):
         self.items = []
 
@@ -99,6 +99,12 @@ class NaiveStack(JoyStack):
     def snapshot_flat(self):
         return list(self.items)
 
+    def snapshot_cache(self):
+        return list(self.items)
+
+    def restore_cache(self, snap):
+        self.items = list(snap)
+
     def restore_flat(self, items):
         self.items = list(items)
 
@@ -114,8 +120,47 @@ class StackOverflow(FactorError):
         FactorError.__init__(self, "stack overflow")
 
 
-class FragmentBase(JoyStack):
+class CacheSnapshot(object):
+    """Constant-size capture of the active-fragment cache: the scalar tops,
+    the cached depth, private copies of the FRAME_SIZE frame arrays, and the
+    cache/spill pointers. The shared spill buffers are not copied; restore rolls
+    the spill pointer back and relies on the cells below it being undisturbed --
+    which holds for a well-behaved condition quotation ( ..a -- ..a ? ) that
+    leaves the cells it did not produce untouched."""
+
+    _immutable_fields_ = ["t0i", "t1i", "t0t", "t1t", "t0o", "t1o", "d",
+                          "frame_i[*]", "frame_t[*]", "frame_o[*]",
+                          "frag_ptr", "spill_ptr"]
+
+    def __init__(self, t0i, t1i, t0t, t1t, t0o, t1o, d,
+                 frame_i, frame_t, frame_o, frag_ptr, spill_ptr):
+        self.t0i = t0i
+        self.t1i = t1i
+        self.t0t = t0t
+        self.t1t = t1t
+        self.t0o = t0o
+        self.t1o = t1o
+        self.d = d
+        self.frame_i = frame_i
+        self.frame_t = frame_t
+        self.frame_o = frame_o
+        self.frag_ptr = frag_ptr
+        self.spill_ptr = spill_ptr
+
+
+class FragmentBase(FactorStack):
     """Fragment-cache fields and operations, mixed into the Interpreter.
+
+    Three-tier layout, split-plane variant (unboxed int / tag / object plane
+    per tier):
+
+        t0* t1* (vable scalars) | frame_*[FRAME_SIZE] (vable arrays) | spill_*
+        (ONE shared heap array per plane, all fragments)
+
+    The spill planes are allocated once per VM (init_fragment_fields); a
+    fragment is only the scalar tops + frame + the two pointers (frag_ptr,
+    spill_ptr), a window [0, spill_ptr) onto the shared spill, so nest/unnest
+    allocates nothing.
 
     The interpreter class declares which of these fields are virtualizable;
     everything here only ever touches them through ``self`` so all access
@@ -137,6 +182,9 @@ class FragmentBase(JoyStack):
         self.frame_o = [None] * FRAME_SIZE
         make_sure_not_resized(self.frame_o)
         self.frag_ptr = 0
+        # One spill per VM, allocated once; every fragment is a window
+        # [0, spill_ptr) onto these three shared planes. Split-plane variant of
+        # the shared spill: unboxed ints, tags and object cells in parallel.
         self.spill_i = [0] * SPILL_SIZE
         make_sure_not_resized(self.spill_i)
         self.spill_t = [TAG_OBJ] * SPILL_SIZE
@@ -196,7 +244,7 @@ class FragmentBase(JoyStack):
     def _pop_parts(self):
         dd = self.d
         if dd <= 0:
-            return self._pop_from_arena()
+            return self._pop_from_spill()
         ri = self.t0i
         rt = self.t0t
         ro = self.t0o
@@ -212,7 +260,7 @@ class FragmentBase(JoyStack):
         self.d = dd - 1
         return ri, rt, ro
 
-    def _pop_from_arena(self):
+    def _pop_from_spill(self):
         ap = self.spill_ptr - 1
         if ap < 0:
             raise FactorError("stack underflow")
@@ -315,6 +363,42 @@ class FragmentBase(JoyStack):
         if fp < 0:
             raise FactorError("fragment underflow")
         self.frag_ptr = fp
+
+    @unroll_safe
+    def snapshot_cache(self):
+        frame_i = [0] * FRAME_SIZE
+        frame_t = [TAG_OBJ] * FRAME_SIZE
+        frame_o = [None] * FRAME_SIZE
+        i = 0
+        while i < FRAME_SIZE:
+            frame_i[i] = self.frame_i[i]
+            frame_t[i] = self.frame_t[i]
+            frame_o[i] = self.frame_o[i]
+            i += 1
+        make_sure_not_resized(frame_i)
+        make_sure_not_resized(frame_t)
+        make_sure_not_resized(frame_o)
+        return CacheSnapshot(
+            self.t0i, self.t1i, self.t0t, self.t1t, self.t0o, self.t1o,
+            self.d, frame_i, frame_t, frame_o, self.frag_ptr, self.spill_ptr)
+
+    @unroll_safe
+    def restore_cache(self, snap):
+        self.t0i = snap.t0i
+        self.t1i = snap.t1i
+        self.t0t = snap.t0t
+        self.t1t = snap.t1t
+        self.t0o = snap.t0o
+        self.t1o = snap.t1o
+        self.d = snap.d
+        i = 0
+        while i < FRAME_SIZE:
+            self.frame_i[i] = snap.frame_i[i]
+            self.frame_t[i] = snap.frame_t[i]
+            self.frame_o[i] = snap.frame_o[i]
+            i += 1
+        self.frag_ptr = snap.frag_ptr
+        self.spill_ptr = snap.spill_ptr
 
     def snapshot_flat(self):
         n = self.size()
