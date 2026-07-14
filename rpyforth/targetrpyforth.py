@@ -12,7 +12,7 @@ from rpython.rlib.streamio import open_file_as_stream
 
 def entry_point(argv):
     # set default parameter values
-    jit.set_user_param(None, "trace_limit=200000,retrace_limit=10")
+    jit.set_user_param(None, "trace_limit=200000,retrace_limit=60")
     for i in range(len(argv)):
         if argv[i] == "--jit":
             if len(argv) == i + 1:
