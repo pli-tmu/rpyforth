@@ -1,0 +1,27 @@
+From f15e441db5aab1b15523c7049a388ac210a44bb8 Mon Sep 17 00:00:00 2001
+From: YUSUKE IZAWA <me@yizawa.com>
+Date: Wed, 15 Jul 2026 00:46:20 +0900
+Subject: [PATCH] add missing setup guard to
+ ExtendedShortPreambleBuilder.use_box to avoid segfault in compile_retrace
+
+---
+ rpython/jit/metainterp/optimizeopt/shortpreamble.py | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/rpython/jit/metainterp/optimizeopt/shortpreamble.py b/rpython/jit/metainterp/optimizeopt/shortpreamble.py
+index 15d420e..d20c54e 100644
+--- a/rpython/jit/metainterp/optimizeopt/shortpreamble.py
++++ b/rpython/jit/metainterp/optimizeopt/shortpreamble.py
+@@ -476,6 +476,9 @@ class ExtendedShortPreambleBuilder(AbstractShortPreambleBuilder):
+         self.jump_args.append(preamble_op.preamble_op)
+ 
+     def use_box(self, box, preamble_op, optimizer=None):
++        if self.label_args is None:
++            # setup not called, rather abandon the trace than crash
++            raise InvalidLoop("ExtendedShortPreambleBuilder not properly initialized")
+         jump_op = self.short.pop()
+         AbstractShortPreambleBuilder.use_box(self, box, preamble_op, optimizer)
+         self.short.append(jump_op)
+-- 
+2.53.0
+
