@@ -15,6 +15,10 @@ rpyforth-c-*
 gforth.tar.xz
 gforth-[0-9]*/
 
+# Local Factor binary package (make setup-factor)
+factor/
+factor-linux-x86-64-*.tar.gz
+
 # Generated benchmark charts
 *.pdf
 
@@ -24,3 +28,4 @@ vfxforth/_install/
 # Local SwiftForth installation
 swiftforth/SwiftForth/
 swiftforth/_install/
+tmp/
