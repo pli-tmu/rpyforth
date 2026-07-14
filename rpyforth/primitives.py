@@ -2911,19 +2911,32 @@ def prim_STDERR(inner, cur, ip):
     return ip
 
 
-# OPEN-FILE ( c-addr u fam -- fileid ior )
+# File-word structure: the prim itself stays traceable (stack and heap access
+# happen on the virtualizable inside the trace) and only the OS call sits in a
+# @dont_look_inside helper that never receives `inner`. Passing the
+# virtualizable to an opaque residual call forces it and aborts the enclosing
+# trace ("vable escape"); cd16sim re-loads its ROM with OPEN-FILE/READ-LINE/
+# CLOSE-FILE inside its benchmark loop, so these three must stay escape-free.
+
 @dont_look_inside
-def prim_OPEN_FILE(inner, cur, ip):
+def _open_file_raw(name, flags):
     import os
+    try:
+        return os.open(name, flags, 0666)
+    except OSError as e:
+        return -e.errno
+
+
+# OPEN-FILE ( c-addr u fam -- fileid ior )
+def prim_OPEN_FILE(inner, cur, ip):
     fam = inner.pop_ds_int()
     u = inner.pop_ds_int()
     addr = inner.pop_ds_int()
     name = _read_cstr(inner, addr, u)
-    try:
-        fd = os.open(name, _open_flags(fam), 0666)
-    except OSError as e:
+    fd = _open_file_raw(name, _open_flags(fam))
+    if fd < 0:
         inner.push_ds_int(0)
-        inner.push_ds_int(e.errno)
+        inner.push_ds_int(-fd)
         return ip
     inner.push_ds_int(fd)
     inner.push_ds_int(0)
@@ -2950,17 +2963,19 @@ def prim_CREATE_FILE(inner, cur, ip):
     return ip
 
 
-# CLOSE-FILE ( fileid -- ior )
 @dont_look_inside
-def prim_CLOSE_FILE(inner, cur, ip):
+def _close_file_raw(fd):
     import os
-    fd = inner.pop_ds_int()
     try:
         os.close(fd)
     except OSError as e:
-        inner.push_ds_int(e.errno)
-        return ip
-    inner.push_ds_int(0)
+        return e.errno
+    return 0
+
+
+# CLOSE-FILE ( fileid -- ior )
+def prim_CLOSE_FILE(inner, cur, ip):
+    inner.push_ds_int(_close_file_raw(inner.pop_ds_int()))
     return ip
 
 
@@ -3001,13 +3016,22 @@ def prim_READ_FILE(inner, cur, ip):
     return ip
 
 
-# READ-LINE ( c-addr u1 fileid -- u2 flag ior )
+class FileLineResult(object):
+    """Out-params of _read_line_raw. One prebuilt instance: the VM is
+    single-threaded and the result is consumed before the next file op."""
+    def __init__(self):
+        self.n = 0
+        self.flag = 0
+        self.ior = 0
+
+
+_read_line_result = FileLineResult()
+
+
 @dont_look_inside
-def prim_READ_LINE(inner, cur, ip):
+def _read_line_raw(heap, fd, u1, addr):
     import os
-    fd = inner.pop_ds_int()
-    u1 = inner.pop_ds_int()
-    addr = inner.pop_ds_int()
+    res = _read_line_result
     n = 0
     got_any = False
     try:
@@ -3018,24 +3042,36 @@ def prim_READ_LINE(inner, cur, ip):
             got_any = True
             c = ch[0]
             if c == '\n':
-                inner.push_ds_int(n)
-                inner.push_ds_int(-1)
-                inner.push_ds_int(0)
-                return ip
+                res.n = n
+                res.flag = -1
+                res.ior = 0
+                return
             if c != '\r':
-                inner.char_store(addr + n, ord(c))
+                heap.char_store(addr + n, ord(c))
                 n += 1
     except OSError as e:
-        inner.push_ds_int(n)
-        inner.push_ds_int(-1)
-        inner.push_ds_int(e.errno)
-        return ip
-    inner.push_ds_int(n)
+        res.n = n
+        res.flag = -1
+        res.ior = e.errno
+        return
+    res.n = n
     if got_any:
-        inner.push_ds_int(-1)
+        res.flag = -1
     else:
-        inner.push_ds_int(0)
-    inner.push_ds_int(0)
+        res.flag = 0
+    res.ior = 0
+
+
+# READ-LINE ( c-addr u1 fileid -- u2 flag ior )
+def prim_READ_LINE(inner, cur, ip):
+    fd = inner.pop_ds_int()
+    u1 = inner.pop_ds_int()
+    addr = inner.pop_ds_int()
+    _read_line_raw(inner.heap, fd, u1, addr)
+    res = _read_line_result
+    inner.push_ds_int(res.n)
+    inner.push_ds_int(res.flag)
+    inner.push_ds_int(res.ior)
     return ip
 
 
