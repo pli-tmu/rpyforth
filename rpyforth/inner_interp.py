@@ -119,7 +119,18 @@ class Abort(Exception):
 HALT_THREAD = CodeThread([], [])
 
 def get_printable_location(ip, thread):
-    return "ip=%d %s %s" % (ip, thread.code[ip].to_string(), thread.lits[ip].to_string())
+    # Must be total for every (ip, thread) the JIT ever logs: ip == len(code)
+    # is the thread-end/return state and code/lits slots may hold None, both
+    # legitimate at merge points. Translated builds drop bounds checks, so an
+    # out-of-range index or None dereference here segfaults the VM whenever
+    # PYPYLOG jit logging is enabled.
+    if ip < 0 or ip >= len(thread.code):
+        return "ip=%d <thread-end>" % ip
+    w = thread.code[ip]
+    lit = thread.lits[ip]
+    wname = w.to_string() if w is not None else "<none>"
+    lname = lit.to_string() if lit is not None else "<none>"
+    return "ip=%d %s %s" % (ip, wname, lname)
 
 if USE_STACK_FRAGMENT:
     jitdriver = JitDriver(
