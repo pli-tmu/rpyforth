@@ -4,15 +4,14 @@ An ANS-Forth system written in [RPython](https://rpython.readthedocs.io/) and
 translated with the PyPy toolchain into a native binary with a meta-tracing
 JIT compiler.
 
-The interpreter is deliberately written as a straightforward indirect-threaded
-VM.  The key runtime structure is a three-tier *metastack*: the top
-data-stack cells live in scalar fields (registers inside a trace), the next
-cells in a small. JIT-virtualizable frame array, and everything deeper in one
-shared spill area The compiler additionally inlines small colon words -- including
-ones containing control flow -- at compile time.
+The interpreter is written as an indirect-threaded VM.  The key runtime structure is
+a three-area-layout *metastack*: the top data-stack cells live in registers as known as the stack-caching technique,
+the next cells in a small JIT-virtualizable frame array, and everything deeper in one
+shared spill area.
 
 The repository also contains the benchmark infrastructure used to compare against gforth,
 gforth-fast, VFX Forth, and SwiftForth on the shootout and appbench-1.4 suites.
+
 ## Requirements
 
 - Linux x86-64
