@@ -232,34 +232,43 @@ setup-baselines: setup-gforth setup-vfxforth setup-swiftforth
 # Benchmarks
 # ---------------------------------------------------------------------------
 
+RPYFORTH_STKFRAG = rpyforth-c-stkfrag
+
+# Build the benchmark binary only when it does not exist yet; use
+# `make build-jit-stkfrag` explicitly to force a re-translation.
+$(RPYFORTH_STKFRAG):
+	$(MAKE) build-jit-stkfrag
+
 SHOOTOUT_COMPARE = \
 	--compare ./rpyforth-c-stkfrag \
 	--compare $(GFORTH_FAST) \
 	--compare $(VFXFORTH) \
 	--compare $(SWIFTFORTH)
 
+BENCH_DEPS = $(RPYFORTH_STKFRAG) setup-baselines $(PLOT_PY)
+
 .PHONY: bench-shootout
-bench-shootout: #build-jit-stkfrag setup-baselines $(PLOT_PY)
+bench-shootout: $(BENCH_DEPS)
 	@$(PLOT_PY) benchmark/run_shootout.py \
 		$(SHOOTOUT_COMPARE) \
 		--exclude curve/ --iterations 5 \
 		--chart compare.pdf
 
 .PHONY: bench-shootout-curve
-bench-shootout-curve: #build-jit-stkfrag setup-baselines $(PLOT_PY)
+bench-shootout-curve: $(BENCH_DEPS)
 	@$(PLOT_PY) benchmark/run_shootout.py \
 		$(SHOOTOUT_COMPARE) \
 		--only curve/ --iterations 5 \
 		--curve-chart warmup.pdf
 
 .PHONY: bench-appbench
-bench-appbench: #build-jit-stkfrag setup-baselines setup-appbench $(PLOT_PY)
+bench-appbench: $(BENCH_DEPS) setup-appbench
 	@$(PLOT_PY) benchmark/run_appbench.py func \
 		--engines rpyforth gforth-fast vfxforth swiftforth \
 		--iterations 5 --chart appbench.pdf
 
 .PHONY: bench-appbench-curve
-bench-appbench-curve: #build-jit-stkfrag setup-baselines setup-appbench $(PLOT_PY)
+bench-appbench-curve: $(BENCH_DEPS) setup-appbench
 	@$(PLOT_PY) benchmark/run_appbench.py steady \
 		--engines rpyforth gforth-fast vfxforth swiftforth \
 		--iterations 50 --pin 3 --pdf appbench-curve.pdf
