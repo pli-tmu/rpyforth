@@ -21,7 +21,7 @@ def test_init_fields_sets_virtualizable_host_slots():
     init_fields(host)
     assert host.t0 == 0
     assert host.t1 == 0
-    assert host.d == 0
+    assert host.cache_depth == 0
     assert host.frag_ptr == 0
     assert host.spill_ptr == 0
     assert len(host.frame) == FRAME_SIZE
@@ -33,7 +33,7 @@ def test_init_fields_sets_virtualizable_host_slots():
 def test_stack_fragment_virtualizables_include_tops_and_frame():
     # Tops, cache depth, frame array and the changing stack pointers.
     for name in (
-        "t0", "t1", "d", "frame[*]",
+        "t0", "t1", "cache_depth", "frame[*]",
         "frag_ptr", "spill_ptr",
         "rs_ptr", "cs_pcs", "cs_ptr", "cs_base",
     ):
@@ -49,7 +49,7 @@ def test_int_push_pop_peek():
     for v in range(n):
         s.push(v)
     assert s.size() == n
-    assert s.d == n
+    assert s.cache_depth == n
     assert s.peek(0) == n - 1
     assert s.peek(n - 1) == 0
     assert [s.pop() for _ in range(n)] == list(range(n - 1, -1, -1))
@@ -79,7 +79,7 @@ def test_int_spill_beyond_active_max():
     for v in range(n):
         s.push(v)
     assert s.size() == n
-    assert s.d == ACTIVE_MAX
+    assert s.cache_depth == ACTIVE_MAX
     assert s.spill_ptr == n - ACTIVE_MAX
     assert s.peek(0) == n - 1            # top, in the cache
     assert s.peek(ACTIVE_MAX) == n - 1 - ACTIVE_MAX   # just below the cache
@@ -95,7 +95,7 @@ def test_int_clear_resets():
         s.push(v)
     s.clear()
     assert s.size() == 0
-    assert s.d == 0
+    assert s.cache_depth == 0
     assert s.frag_ptr == 0
     assert s.spill_ptr == 0
     s.push(42)
@@ -112,7 +112,7 @@ def test_int_fragment_call_commit_within_window():
     s.push_fragment()
     assert s.frag_ptr == 1
     assert s.spill_ptr == 0
-    assert s.d == NTOP
+    assert s.cache_depth == NTOP
     assert s.size() == NTOP
     assert s.peek(0) == NTOP - 1
     s.push(99)
@@ -133,7 +133,7 @@ def test_int_fragment_call_commit_beyond_window():
     s.push_fragment()
     parked = n - NTOP
     assert s.frag_ptr == 1
-    assert s.d == NTOP                   # cache normalized to the tops
+    assert s.cache_depth == NTOP                   # cache normalized to the tops
     assert s.spill_ptr == parked         # below-top cells parked in the spill
     assert s.size() == n                 # total depth preserved
     # callee sees the top NTOP cells in the cache
@@ -171,7 +171,7 @@ def test_int_nested_fragments_bounded_entry_depth():
     for v in range(depth):
         s.push(v)
         s.push_fragment()
-        assert s.d <= NTOP
+        assert s.cache_depth <= NTOP
     assert s.frag_ptr == depth
     assert s.size() == depth
     for _ in range(depth):

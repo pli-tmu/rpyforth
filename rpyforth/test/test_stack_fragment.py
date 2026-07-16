@@ -30,7 +30,7 @@ def test_call_window_cap():
     for v in range(n):
         s.push(v)
     s.push_fragment()
-    assert s.d == NTOP
+    assert s.cache_depth == NTOP
     assert s.size() == n          # nothing lost: the rest is parked
 
 

@@ -5,22 +5,23 @@ fields t0, t1 and the next FRAME_SIZE cells in the virtualizable ``frame``
 array. Keeping "t0 = top" as an invariant costs a data-movement shift on every
 push (t1=t0; t0=v) and pop. This variant removes the scalar tops entirely
 (NTOP=0, "frame-only"): every cached cell lives in the virtualizable ``frame``
-array and the top floats at frame[d-1], so push is ``frame[d]=v; d+=1`` with
+array and the top floats at frame[cache_depth-1], so push is ``frame[cache_depth]=v; cache_depth+=1`` with
 zero data movement. Inside a trace the vable-array slots are virtual registers
-and the d-derived indices fold, mirroring PyPy's own fastlocals_w[*].
+and the depth-derived indices fold, mirroring PyPy's own fastlocals_w[*].
 
 Sizing parity with the flagship: ``frame`` holds ACTIVE_MAX = NTOP + FRAME_SIZE
 cells (the same total as the flagship's t0 + t1 + frame), so both variants cache
-the same number of cells and RPYFORTH_FRAME_SIZE sweeps stay comparable.
+the same number of cells and runs at different RPYFORTH_FRAME_SIZE values stay
+comparable.
 
 Indexing conventions:
-  * deepest cached cell at frame[0], top at frame[d-1];
-  * d is the cached count (0..ACTIVE_MAX);
+  * deepest cached cell at frame[0], top at frame[cache_depth-1];
+  * cache_depth is the cached count (0..ACTIVE_MAX);
   * everything below the cache is in the shared ``spill`` (contiguous,
     spill[spill_ptr-1] just under the cache, spill[0] the stack bottom).
 
 The call boundary keeps the flagship's CALL_WINDOW = NTOP argument window: a
-call parks the below-window cells in the spill and normalizes d to that window,
+call parks the below-window cells in the spill and normalizes cache_depth to that window,
 so calling-convention behavior is identical between the two variants.
 """
 
@@ -40,10 +41,10 @@ from rpyforth.metastack import (
 def init_fields(host):
     """Install the host-resident frame-only active cache + metastack spill."""
     # The active cache holds the top ACTIVE_MAX cells directly in the
-    # virtualizable ``frame`` array (frame[0] deepest, frame[d-1] the top).
-    # ``d`` is the number of cells currently cached (0..ACTIVE_MAX). No scalar
-    # tops: the top floats at frame[d-1] and push/pop move no data.
-    host.d = 0
+    # virtualizable ``frame`` array (frame[0] deepest, frame[cache_depth-1] the top).
+    # ``cache_depth`` is the number of cells currently cached (0..ACTIVE_MAX). No scalar
+    # tops: the top floats at frame[cache_depth-1] and push/pop move no data.
+    host.cache_depth = 0
     host.frame = [0] * ACTIVE_MAX
     make_sure_not_resized(host.frame)
 
@@ -65,10 +66,10 @@ class DSCacheSnapshotFrameOnly(object):
     copied: restore rolls the spill pointer back and relies on the cells below
     it being undisturbed."""
 
-    _immutable_fields_ = ["d", "frame[*]", "frag_ptr", "spill_ptr"]
+    _immutable_fields_ = ["cache_depth", "frame[*]", "frag_ptr", "spill_ptr"]
 
-    def __init__(self, d, frame, frag_ptr, spill_ptr):
-        self.d = d
+    def __init__(self, cache_depth, frame, frag_ptr, spill_ptr):
+        self.cache_depth = cache_depth
         self.frame = frame
         self.frag_ptr = frag_ptr
         self.spill_ptr = spill_ptr
@@ -83,7 +84,7 @@ def snapshot_cache(host):
         frame_copy[i] = host.frame[i]
         i += 1
     make_sure_not_resized(frame_copy)
-    return DSCacheSnapshotFrameOnly(host.d, frame_copy,
+    return DSCacheSnapshotFrameOnly(host.cache_depth, frame_copy,
                                     host.frag_ptr, host.spill_ptr)
 
 
@@ -91,7 +92,7 @@ def restore_cache(host, snap):
     """Roll host's stack back to a snapshot, discarding everything pushed since.
     Restores the cache and the cache/spill pointers; the spill cells below the
     saved spill pointer are left in place."""
-    host.d = snap.d
+    host.cache_depth = snap.cache_depth
     i = 0
     while i < ACTIVE_MAX:
         host.frame[i] = snap.frame[i]
@@ -114,28 +115,28 @@ class DSIntMetaStackFrameOnly(DSMetaStack):
 
     # ------------------------------------------------------------------
     # Hot path. Every cached cell is a virtualizable frame slot; the top is
-    # frame[d-1]. push/pop touch a single slot with no shift, so inside a trace
-    # the whole cache is virtual registers and d-derived indices fold. The
+    # frame[cache_depth-1]. push/pop touch a single slot with no shift, so inside a trace
+    # the whole cache is virtual registers and depth-derived indices fold. The
     # spill is reached only past ACTIVE_MAX (or when a callee consumes past its
     # imported window).
     # ------------------------------------------------------------------
     def push_on(self, v):
-        dd = self.d
+        dd = self.cache_depth
         if dd >= ACTIVE_MAX:
             self._spill_bottom()
-            dd = self.d
+            dd = self.cache_depth
         assert dd >= 0
         self.frame[dd] = v
-        self.d = dd + 1
+        self.cache_depth = dd + 1
 
     def pop_on(self):
-        dd = self.d
+        dd = self.cache_depth
         if dd <= 0:
             return self._pop_from_spill()
         dd -= 1
         assert dd >= 0
         r = self.frame[dd]
-        self.d = dd
+        self.cache_depth = dd
         return r
 
     def _pop_from_spill(self):
@@ -163,11 +164,11 @@ class DSIntMetaStackFrameOnly(DSMetaStack):
         while i < ACTIVE_MAX - 1:
             self.frame[i] = self.frame[i + 1]
             i += 1
-        self.d = self.d - 1
+        self.cache_depth = self.cache_depth - 1
 
     def peek_on(self, depth):
         depth = promote(depth)
-        dd = self.d
+        dd = self.cache_depth
         if depth < dd:
             si = dd - 1 - depth
             assert si >= 0
@@ -178,7 +179,7 @@ class DSIntMetaStackFrameOnly(DSMetaStack):
 
     def poke_on(self, depth, v):
         depth = promote(depth)
-        dd = self.d
+        dd = self.cache_depth
         if depth < dd:
             si = dd - 1 - depth
             assert si >= 0
@@ -189,10 +190,10 @@ class DSIntMetaStackFrameOnly(DSMetaStack):
         self.spill[ai] = v
 
     def depth_on(self):
-        return self.d + self.spill_ptr
+        return self.cache_depth + self.spill_ptr
 
     def reset_on(self):
-        self.d = 0
+        self.cache_depth = 0
         self.frag_ptr = 0
         self.spill_ptr = 0
 
@@ -206,7 +207,7 @@ class DSIntMetaStackFrameOnly(DSMetaStack):
     @unroll_safe
     def push_fragment_on(self):
         self.frag_ptr = self.frag_ptr + 1
-        dd = self.d
+        dd = self.cache_depth
         # Park the below-window cells one at a time, deepest first: each step
         # evacuates frame[0] to the spill and slides the frame down by one, so
         # spill[ap+k] receives the original frame[k] (same order the flagship

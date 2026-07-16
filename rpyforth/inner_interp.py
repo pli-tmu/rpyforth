@@ -35,10 +35,10 @@ USE_STACK_FRAGMENT = bool(os.environ.get("RPYFORTH_STACK_FRAGMENT"))
 from rpyforth.metastack import (
     FRAME_SIZE,
     ACTIVE_MAX,
-    SWEEP_NTOP,
+    EFFECTIVE_NTOP,
     USE_FLOAT_FRAGMENT,
     USE_FRAME_ONLY,
-    USE_NTOP_SWEEP,
+    USE_NTOP_VARIANT,
     STACK_FRAGMENT_VIRTUALIZABLES,
     push_ds_fragments,
     pop_ds_fragments_commit,
@@ -48,15 +48,15 @@ from rpyforth.metastack import (
 # CATCH saves a full copy of the int cache. In the flagship the frame holds
 # FRAME_SIZE cells (the two scalar tops are saved separately in ca_t0/ca_t1);
 # in the frame-only ablation the whole cache is the frame, so its rows are
-# ACTIVE_MAX wide. In the parametric-NTOP ablation the SWEEP_NTOP scalar tops
+# ACTIVE_MAX wide. In the parametric-NTOP ablation the EFFECTIVE_NTOP scalar tops
 # have no dedicated ca_t* arrays -- they are folded into the ca_frames row,
-# stored at offsets 0..SWEEP_NTOP-1 with the frame cells at SWEEP_NTOP.., so the
-# row is SWEEP_NTOP + FRAME_SIZE wide. A flag-constant width keeps every path a
-# single sized array.
+# stored at offsets 0..EFFECTIVE_NTOP-1 with the frame cells at EFFECTIVE_NTOP..,
+# so the row is EFFECTIVE_NTOP + FRAME_SIZE wide. A flag-constant width keeps
+# every path a single sized array.
 if USE_FRAME_ONLY:
     CA_FRAME_WIDTH = ACTIVE_MAX
-elif USE_NTOP_SWEEP:
-    CA_FRAME_WIDTH = SWEEP_NTOP + FRAME_SIZE
+elif USE_NTOP_VARIANT:
+    CA_FRAME_WIDTH = EFFECTIVE_NTOP + FRAME_SIZE
 else:
     CA_FRAME_WIDTH = FRAME_SIZE
 
@@ -64,7 +64,7 @@ if USE_STACK_FRAGMENT:
     if USE_FRAME_ONLY:
         from rpyforth.metastack_int_frameonly import DSIntMetaStackFrameOnly
         InterpBase = DSIntMetaStackFrameOnly
-    elif USE_NTOP_SWEEP:
+    elif USE_NTOP_VARIANT:
         from rpyforth.metastack_int_ntop import DSIntMetaStackN
         InterpBase = DSIntMetaStackN
     elif USE_FLOAT_FRAGMENT:
@@ -163,7 +163,7 @@ class InnerInterpreter(InterpBase, object):
                           "lc_is", "lc_ls", "rs", "ds_locals", "heap",
                           "ca_tids", "ca_ips", "ca_dsi", "ca_dsf", "ca_dsl",
                           "ca_rs", "ca_li", "ca_lc", "ca_cs",
-                          "ca_t0", "ca_t1", "ca_d", "ca_frag", "ca_spill",
+                          "ca_t0", "ca_t1", "ca_cache_depth", "ca_frag", "ca_spill",
                           "ca_frames",
                           "ca_fft0", "ca_fft1", "ca_ffd", "ca_ffrag",
                           "ca_fspill", "ca_fframes", "pending_box"]
@@ -263,7 +263,7 @@ class InnerInterpreter(InterpBase, object):
         self.ca_cs = [0] * CATCH_DEPTH
         self.ca_t0 = [0] * CATCH_DEPTH
         self.ca_t1 = [0] * CATCH_DEPTH
-        self.ca_d = [0] * CATCH_DEPTH
+        self.ca_cache_depth = [0] * CATCH_DEPTH
         self.ca_frag = [0] * CATCH_DEPTH
         self.ca_spill = [0] * CATCH_DEPTH
         self.ca_frames = [0] * (CATCH_DEPTH * CA_FRAME_WIDTH)
@@ -295,7 +295,7 @@ class InnerInterpreter(InterpBase, object):
             # fragmented).
             self.t0 = 0
             self.t1 = 0
-            self.d = 0
+            self.cache_depth = 0
             self.frame = [0]
             self.frag_ptr = 0
             self.spill = [0]
@@ -363,21 +363,21 @@ class InnerInterpreter(InterpBase, object):
         self.ca_lc[cp] = self.lc_depth
         self.ca_cs[cp] = self.cs_ptr
         if USE_STACK_FRAGMENT:
-            if not USE_FRAME_ONLY and not USE_NTOP_SWEEP:
+            if not USE_FRAME_ONLY and not USE_NTOP_VARIANT:
                 self.ca_t0[cp] = self.t0
                 self.ca_t1[cp] = self.t1
-            self.ca_d[cp] = self.d
+            self.ca_cache_depth[cp] = self.cache_depth
             self.ca_frag[cp] = self.frag_ptr
             self.ca_spill[cp] = self.spill_ptr
             fbase = cp * CA_FRAME_WIDTH
-            if USE_NTOP_SWEEP:
+            if USE_NTOP_VARIANT:
                 k = 0
-                while k < SWEEP_NTOP:
+                while k < EFFECTIVE_NTOP:
                     self.ca_frames[fbase + k] = self._get_scalar(k)
                     k += 1
                 i = 0
                 while i < FRAME_SIZE:
-                    self.ca_frames[fbase + SWEEP_NTOP + i] = self.frame[i]
+                    self.ca_frames[fbase + EFFECTIVE_NTOP + i] = self.frame[i]
                     i += 1
             else:
                 i = 0
@@ -424,21 +424,21 @@ class InnerInterpreter(InterpBase, object):
         self.lc_depth = self.ca_lc[cp]
         self.cs_ptr = self.ca_cs[cp]
         if USE_STACK_FRAGMENT:
-            if not USE_FRAME_ONLY and not USE_NTOP_SWEEP:
+            if not USE_FRAME_ONLY and not USE_NTOP_VARIANT:
                 self.t0 = self.ca_t0[cp]
                 self.t1 = self.ca_t1[cp]
-            self.d = self.ca_d[cp]
+            self.cache_depth = self.ca_cache_depth[cp]
             self.frag_ptr = self.ca_frag[cp]
             self.spill_ptr = self.ca_spill[cp]
             fbase = cp * CA_FRAME_WIDTH
-            if USE_NTOP_SWEEP:
+            if USE_NTOP_VARIANT:
                 k = 0
-                while k < SWEEP_NTOP:
+                while k < EFFECTIVE_NTOP:
                     self._set_scalar(k, self.ca_frames[fbase + k])
                     k += 1
                 i = 0
                 while i < FRAME_SIZE:
-                    self.frame[i] = self.ca_frames[fbase + SWEEP_NTOP + i]
+                    self.frame[i] = self.ca_frames[fbase + EFFECTIVE_NTOP + i]
                     i += 1
             else:
                 i = 0

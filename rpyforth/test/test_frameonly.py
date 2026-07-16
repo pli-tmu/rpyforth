@@ -61,8 +61,8 @@ def test_top_floats_at_frame_top():
     s = DSIntMetaStackFrameOnly()
     s.push(7)
     s.push(8)
-    assert s.frame[s.d - 1] == 8
-    assert s.frame[s.d - 2] == 7
+    assert s.frame[s.cache_depth - 1] == 8
+    assert s.frame[s.cache_depth - 2] == 7
 
 
 @pytest.mark.parametrize("depth", [1, 2, 5, 10, 15])
@@ -75,7 +75,7 @@ def test_call_park_commit_roundtrip(depth):
         s.push(v)
     s.push_fragment()
     # Cache is normalized to at most the argument window.
-    assert s.d <= CALL_WINDOW
+    assert s.cache_depth <= CALL_WINDOW
     assert s.size() == depth
     # Argument-window tops are still readable at the shallow depths.
     for k in range(min(depth, CALL_WINDOW)):

@@ -2,32 +2,32 @@
 
 The flagship layout (metastack_int.py) caches the top NTOP=2 cells in scalar
 fields t0, t1 and the next FRAME_SIZE cells in the virtualizable ``frame``
-array. This variant generalizes the scalar-tops count to SWEEP_NTOP, a
+array. This variant generalizes the scalar-tops count to EFFECTIVE_NTOP, a
 translation-time constant read from RPYFORTH_NTOP (valid 4/8/16; also 2 for
 validation against the flagship). The layout is:
 
-    t0 .. t{SWEEP_NTOP-1} (vable scalars) | frame[FRAME_SIZE] (vable array)
+    t0 .. t{EFFECTIVE_NTOP-1} (vable scalars) | frame[FRAME_SIZE] (vable array)
         | spill (ONE shared heap array, all fragments)
 
 All sixteen scalar fields t0..t15 are always defined (init 0), but only the
-first SWEEP_NTOP participate: every hot method is written as an UNROLLED chain
-gated by constant comparisons against SWEEP_NTOP that the RPython translator
-constant-folds, so the compiled code contains exactly SWEEP_NTOP live scalars
+first EFFECTIVE_NTOP participate: every hot method is written as an UNROLLED chain
+gated by constant comparisons against EFFECTIVE_NTOP that the RPython translator
+constant-folds, so the compiled code contains exactly EFFECTIVE_NTOP live scalars
 and the rest fold away.
 
-Sizing: total cache = SWEEP_NTOP + FRAME_SIZE cells. t0 is the top, t1 the next,
-etc.; frame[FRAME_SIZE-1] holds the cell just below t{SWEEP_NTOP-1} and frame[0]
+Sizing: total cache = EFFECTIVE_NTOP + FRAME_SIZE cells. t0 is the top, t1 the next,
+etc.; frame[FRAME_SIZE-1] holds the cell just below t{EFFECTIVE_NTOP-1} and frame[0]
 the deepest cached cell. The shared spill holds everything below the cache
 (spill[spill_ptr-1] just under the cache, spill[0] the stack bottom).
 
-Call-window / park semantics (SWEEP_NTOP > 2)
+Call-window / park semantics (EFFECTIVE_NTOP > 2)
 ---------------------------------------------
-For calling-convention parity across the whole sweep the call boundary keeps the
-flagship's CALL_WINDOW = NTOP = 2 argument window regardless of SWEEP_NTOP: a
+For calling-convention parity across every NTOP value the call boundary keeps the
+flagship's CALL_WINDOW = NTOP = 2 argument window regardless of EFFECTIVE_NTOP: a
 call parks the below-window cells and normalizes the active depth to (at most) 2
 cached cells, so the callee always runs with the same 2-cell window the flagship
-uses. When SWEEP_NTOP > 2 this means the scalar tops beyond the window --
-t2 .. t{SWEEP_NTOP-1} -- as well as all cached frame cells must be parked too,
+uses. When EFFECTIVE_NTOP > 2 this means the scalar tops beyond the window --
+t2 .. t{EFFECTIVE_NTOP-1} -- as well as all cached frame cells must be parked too,
 not just the frame cells (as in the flagship, where only frame cells sit below
 the window). push_fragment_on parks deepest-first, one cell at a time, via
 _park_one: it evacuates the deepest cached cell to the spill and slides the
@@ -42,7 +42,7 @@ from rpython.rlib.jit import promote, unroll_safe
 from rpython.rlib.debug import make_sure_not_resized
 
 from rpyforth.metastack import (
-    SWEEP_NTOP,
+    EFFECTIVE_NTOP,
     FRAME_SIZE,
     CALL_WINDOW,
     SPILL_SIZE,
@@ -50,15 +50,15 @@ from rpyforth.metastack import (
     DSMetaStack,
 )
 
-# Total cached cells: SWEEP_NTOP scalar tops + FRAME_SIZE frame cells.
-NTOP_ACTIVE_MAX = SWEEP_NTOP + FRAME_SIZE
+# Total cached cells: EFFECTIVE_NTOP scalar tops + FRAME_SIZE frame cells.
+NTOP_ACTIVE_MAX = EFFECTIVE_NTOP + FRAME_SIZE
 
 
 def init_fields(host):
     """Install the host-resident active-cache + metastack spill state."""
     # All sixteen scalar tops are always present so the field set is uniform
-    # across the sweep; only the first SWEEP_NTOP are live after constant
-    # folding. t0 is the top, t{SWEEP_NTOP-1} the deepest scalar.
+    # across every NTOP value; only the first EFFECTIVE_NTOP are live after
+    # constant folding. t0 is the top, t{EFFECTIVE_NTOP-1} the deepest scalar.
     host.t0 = 0
     host.t1 = 0
     host.t2 = 0
@@ -75,7 +75,7 @@ def init_fields(host):
     host.t13 = 0
     host.t14 = 0
     host.t15 = 0
-    host.d = 0
+    host.cache_depth = 0
     host.frame = [0] * FRAME_SIZE
     make_sure_not_resized(host.frame)
 
@@ -97,9 +97,9 @@ class DSCacheSnapshotN(object):
 
     _immutable_fields_ = ["t0", "t1", "t2", "t3", "t4", "t5", "t6", "t7",
                           "t8", "t9", "t10", "t11", "t12", "t13", "t14", "t15",
-                          "d", "frame[*]", "frag_ptr", "spill_ptr"]
+                          "cache_depth", "frame[*]", "frag_ptr", "spill_ptr"]
 
-    def __init__(self, tops, d, frame, frag_ptr, spill_ptr):
+    def __init__(self, tops, cache_depth, frame, frag_ptr, spill_ptr):
         self.t0 = tops[0]
         self.t1 = tops[1]
         self.t2 = tops[2]
@@ -116,7 +116,7 @@ class DSCacheSnapshotN(object):
         self.t13 = tops[13]
         self.t14 = tops[14]
         self.t15 = tops[15]
-        self.d = d
+        self.cache_depth = cache_depth
         self.frame = frame
         self.frag_ptr = frag_ptr
         self.spill_ptr = spill_ptr
@@ -135,7 +135,7 @@ def snapshot_cache(host):
     tops = [host.t0, host.t1, host.t2, host.t3, host.t4, host.t5, host.t6,
             host.t7, host.t8, host.t9, host.t10, host.t11, host.t12, host.t13,
             host.t14, host.t15]
-    return DSCacheSnapshotN(tops, host.d, frame_copy,
+    return DSCacheSnapshotN(tops, host.cache_depth, frame_copy,
                             host.frag_ptr, host.spill_ptr)
 
 
@@ -160,7 +160,7 @@ def restore_cache(host, snap):
     host.t13 = snap.t13
     host.t14 = snap.t14
     host.t15 = snap.t15
-    host.d = snap.d
+    host.cache_depth = snap.cache_depth
     i = 0
     while i < FRAME_SIZE:
         host.frame[i] = snap.frame[i]
@@ -172,7 +172,7 @@ def restore_cache(host, snap):
 class DSIntMetaStackN(DSMetaStack):
     """Integer data stack in the parametric-NTOP three-tier layout:
 
-        t0 .. t{SWEEP_NTOP-1} (vable scalars) | frame[FRAME_SIZE] (vable array)
+        t0 .. t{EFFECTIVE_NTOP-1} (vable scalars) | frame[FRAME_SIZE] (vable array)
             | spill (ONE shared heap array, all fragments)
 
     The spill is allocated once per VM (init_fields); a fragment is only the
@@ -184,13 +184,13 @@ class DSIntMetaStackN(DSMetaStack):
 
     # ------------------------------------------------------------------
     # Scalar-tops helpers. Written as UNROLLED chains gated by constant
-    # comparisons against SWEEP_NTOP; the translator folds each branch to a
-    # constant, leaving exactly SWEEP_NTOP live scalars. A vable array cannot be
+    # comparisons against EFFECTIVE_NTOP; the translator folds each branch to a
+    # constant, leaving exactly EFFECTIVE_NTOP live scalars. A vable array cannot be
     # indexed by a runtime offset, so the scalars are addressed only through
     # these constant-index chains.
     # ------------------------------------------------------------------
     def _get_scalar(self, k):
-        # Return the k'th scalar top (0 = top). k must be < SWEEP_NTOP.
+        # Return the k'th scalar top (0 = top). k must be < EFFECTIVE_NTOP.
         if k == 0:
             return self.t0
         if k == 1:
@@ -260,105 +260,105 @@ class DSIntMetaStackN(DSMetaStack):
     @unroll_safe
     def _push_scalar(self, v):
         # Shift the scalar tops down by one and drop v into t0. The scalar that
-        # falls off the deepest slot (t{SWEEP_NTOP-1}) is handled by the caller,
+        # falls off the deepest slot (t{EFFECTIVE_NTOP-1}) is handled by the caller,
         # which reads it before this shift (push_on) -- here we only slide.
-        if SWEEP_NTOP > 15:
+        if EFFECTIVE_NTOP > 15:
             self.t15 = self.t14
-        if SWEEP_NTOP > 14:
+        if EFFECTIVE_NTOP > 14:
             self.t14 = self.t13
-        if SWEEP_NTOP > 13:
+        if EFFECTIVE_NTOP > 13:
             self.t13 = self.t12
-        if SWEEP_NTOP > 12:
+        if EFFECTIVE_NTOP > 12:
             self.t12 = self.t11
-        if SWEEP_NTOP > 11:
+        if EFFECTIVE_NTOP > 11:
             self.t11 = self.t10
-        if SWEEP_NTOP > 10:
+        if EFFECTIVE_NTOP > 10:
             self.t10 = self.t9
-        if SWEEP_NTOP > 9:
+        if EFFECTIVE_NTOP > 9:
             self.t9 = self.t8
-        if SWEEP_NTOP > 8:
+        if EFFECTIVE_NTOP > 8:
             self.t8 = self.t7
-        if SWEEP_NTOP > 7:
+        if EFFECTIVE_NTOP > 7:
             self.t7 = self.t6
-        if SWEEP_NTOP > 6:
+        if EFFECTIVE_NTOP > 6:
             self.t6 = self.t5
-        if SWEEP_NTOP > 5:
+        if EFFECTIVE_NTOP > 5:
             self.t5 = self.t4
-        if SWEEP_NTOP > 4:
+        if EFFECTIVE_NTOP > 4:
             self.t4 = self.t3
-        if SWEEP_NTOP > 3:
+        if EFFECTIVE_NTOP > 3:
             self.t3 = self.t2
-        if SWEEP_NTOP > 2:
+        if EFFECTIVE_NTOP > 2:
             self.t2 = self.t1
-        if SWEEP_NTOP > 1:
+        if EFFECTIVE_NTOP > 1:
             self.t1 = self.t0
         self.t0 = v
 
     @unroll_safe
     def _pop_scalar_shift(self, refill):
         # Slide the scalar tops up by one (t0 = t1, t1 = t2, ...) and drop
-        # ``refill`` into the deepest live scalar t{SWEEP_NTOP-1}. The old t0 is
+        # ``refill`` into the deepest live scalar t{EFFECTIVE_NTOP-1}. The old t0 is
         # read by the caller before this call.
-        if SWEEP_NTOP > 1:
+        if EFFECTIVE_NTOP > 1:
             self.t0 = self.t1
-        if SWEEP_NTOP > 2:
+        if EFFECTIVE_NTOP > 2:
             self.t1 = self.t2
-        if SWEEP_NTOP > 3:
+        if EFFECTIVE_NTOP > 3:
             self.t2 = self.t3
-        if SWEEP_NTOP > 4:
+        if EFFECTIVE_NTOP > 4:
             self.t3 = self.t4
-        if SWEEP_NTOP > 5:
+        if EFFECTIVE_NTOP > 5:
             self.t4 = self.t5
-        if SWEEP_NTOP > 6:
+        if EFFECTIVE_NTOP > 6:
             self.t5 = self.t6
-        if SWEEP_NTOP > 7:
+        if EFFECTIVE_NTOP > 7:
             self.t6 = self.t7
-        if SWEEP_NTOP > 8:
+        if EFFECTIVE_NTOP > 8:
             self.t7 = self.t8
-        if SWEEP_NTOP > 9:
+        if EFFECTIVE_NTOP > 9:
             self.t8 = self.t9
-        if SWEEP_NTOP > 10:
+        if EFFECTIVE_NTOP > 10:
             self.t9 = self.t10
-        if SWEEP_NTOP > 11:
+        if EFFECTIVE_NTOP > 11:
             self.t10 = self.t11
-        if SWEEP_NTOP > 12:
+        if EFFECTIVE_NTOP > 12:
             self.t11 = self.t12
-        if SWEEP_NTOP > 13:
+        if EFFECTIVE_NTOP > 13:
             self.t12 = self.t13
-        if SWEEP_NTOP > 14:
+        if EFFECTIVE_NTOP > 14:
             self.t13 = self.t14
-        if SWEEP_NTOP > 15:
+        if EFFECTIVE_NTOP > 15:
             self.t14 = self.t15
-        self._set_scalar(SWEEP_NTOP - 1, refill)
+        self._set_scalar(EFFECTIVE_NTOP - 1, refill)
 
     # ------------------------------------------------------------------
-    # Hot path. The top SWEEP_NTOP cells are scalars; the frame array is reached
-    # only past depth SWEEP_NTOP, and the spill only past NTOP_ACTIVE_MAX.
+    # Hot path. The top EFFECTIVE_NTOP cells are scalars; the frame array is reached
+    # only past depth EFFECTIVE_NTOP, and the spill only past NTOP_ACTIVE_MAX.
     # ------------------------------------------------------------------
     def push_on(self, v):
-        dd = self.d
+        dd = self.cache_depth
         if dd >= NTOP_ACTIVE_MAX:
             self._spill_bottom()
-            dd = self.d
-        if dd >= SWEEP_NTOP:
-            si = dd - SWEEP_NTOP
+            dd = self.cache_depth
+        if dd >= EFFECTIVE_NTOP:
+            si = dd - EFFECTIVE_NTOP
             assert si >= 0
-            self.frame[si] = self._get_scalar(SWEEP_NTOP - 1)
+            self.frame[si] = self._get_scalar(EFFECTIVE_NTOP - 1)
         self._push_scalar(v)
-        self.d = dd + 1
+        self.cache_depth = dd + 1
 
     def pop_on(self):
-        dd = self.d
+        dd = self.cache_depth
         if dd <= 0:
             return self._pop_from_spill()
         r = self.t0
-        if dd > SWEEP_NTOP:
-            si = dd - SWEEP_NTOP - 1
+        if dd > EFFECTIVE_NTOP:
+            si = dd - EFFECTIVE_NTOP - 1
             assert si >= 0
             self._pop_scalar_shift(self.frame[si])
         else:
             self._pop_scalar_shift(0)
-        self.d = dd - 1
+        self.cache_depth = dd - 1
         return r
 
     def _pop_from_spill(self):
@@ -386,7 +386,7 @@ class DSIntMetaStackN(DSMetaStack):
         while i < FRAME_SIZE - 1:
             self.frame[i] = self.frame[i + 1]
             i += 1
-        self.d = self.d - 1
+        self.cache_depth = self.cache_depth - 1
 
     @unroll_safe
     def _park_one(self):
@@ -400,26 +400,26 @@ class DSIntMetaStackN(DSMetaStack):
         if ap >= SPILL_SIZE:
             raise DataStackOverflow()
         assert ap >= 0
-        dd = self.d
-        if dd > SWEEP_NTOP:
+        dd = self.cache_depth
+        if dd > EFFECTIVE_NTOP:
             self.spill[ap] = self.frame[0]
             i = 0
             while i < FRAME_SIZE - 1:
                 self.frame[i] = self.frame[i + 1]
                 i += 1
-            si = dd - SWEEP_NTOP - 1
+            si = dd - EFFECTIVE_NTOP - 1
             assert si >= 0
-            self.frame[si] = self._get_scalar(SWEEP_NTOP - 1)
+            self.frame[si] = self._get_scalar(EFFECTIVE_NTOP - 1)
         else:
             self.spill[ap] = self._get_scalar(dd - 1)
         self.spill_ptr = ap + 1
-        self.d = dd - 1
+        self.cache_depth = dd - 1
 
     def peek_on(self, depth):
         depth = promote(depth)
-        dd = self.d
+        dd = self.cache_depth
         if depth < dd:
-            if depth < SWEEP_NTOP:
+            if depth < EFFECTIVE_NTOP:
                 return self._get_scalar(depth)
             si = dd - 1 - depth
             assert si >= 0
@@ -430,9 +430,9 @@ class DSIntMetaStackN(DSMetaStack):
 
     def poke_on(self, depth, v):
         depth = promote(depth)
-        dd = self.d
+        dd = self.cache_depth
         if depth < dd:
-            if depth < SWEEP_NTOP:
+            if depth < EFFECTIVE_NTOP:
                 self._set_scalar(depth, v)
                 return
             si = dd - 1 - depth
@@ -444,7 +444,7 @@ class DSIntMetaStackN(DSMetaStack):
         self.spill[ai] = v
 
     def depth_on(self):
-        return self.d + self.spill_ptr
+        return self.cache_depth + self.spill_ptr
 
     @unroll_safe
     def reset_on(self):
@@ -464,20 +464,21 @@ class DSIntMetaStackN(DSMetaStack):
         self.t13 = 0
         self.t14 = 0
         self.t15 = 0
-        self.d = 0
+        self.cache_depth = 0
         self.frag_ptr = 0
         self.spill_ptr = 0
 
     # ------------------------------------------------------------------
     # Call entry / return. On a call the caller's below-CALL_WINDOW cells are
     # parked in the spill and the active depth is normalized to the CALL_WINDOW
-    # top cells (2, regardless of SWEEP_NTOP -- calling-convention parity across
-    # the sweep). Return is O(1): the spill already holds the caller's cells.
+    # top cells (2, regardless of EFFECTIVE_NTOP -- calling-convention parity
+    # across every NTOP value). Return is O(1): the spill already holds the
+    # caller's cells.
     # ------------------------------------------------------------------
     @unroll_safe
     def push_fragment_on(self):
         self.frag_ptr = self.frag_ptr + 1
-        dd = self.d
+        dd = self.cache_depth
         # Park below-window cells one at a time, deepest first, so each ends at
         # spill[ap+k] in the same order the flagship parks and the surviving
         # window cells finish packed at t0..t{CALL_WINDOW-1}.

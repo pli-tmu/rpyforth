@@ -26,10 +26,10 @@ def init_fields(host):
     # The active fragment caches the TOP of the data stack:
     #   * the top NTOP cells in scalar fields t0, t1 (hottest, in registers)
     #   * the next cells in the small virtualizable spill array ``frame``
-    # ``d`` is the number of cells currently cached (0..ACTIVE_MAX).
+    # ``cache_depth`` is the number of cells currently cached (0..ACTIVE_MAX).
     host.t0 = 0
     host.t1 = 0
-    host.d = 0
+    host.cache_depth = 0
     host.frame = [0] * FRAME_SIZE
     make_sure_not_resized(host.frame)
 
@@ -53,12 +53,12 @@ class DSCacheSnapshot(object):
     copied: restore rolls the spill pointer back (discarding cells parked above
     it) and relies on the cells below it being undisturbed."""
 
-    _immutable_fields_ = ["t0", "t1", "d", "frame[*]", "frag_ptr", "spill_ptr"]
+    _immutable_fields_ = ["t0", "t1", "cache_depth", "frame[*]", "frag_ptr", "spill_ptr"]
 
-    def __init__(self, t0, t1, d, frame, frag_ptr, spill_ptr):
+    def __init__(self, t0, t1, cache_depth, frame, frag_ptr, spill_ptr):
         self.t0 = t0
         self.t1 = t1
-        self.d = d
+        self.cache_depth = cache_depth
         self.frame = frame
         self.frag_ptr = frag_ptr
         self.spill_ptr = spill_ptr
@@ -73,7 +73,7 @@ def snapshot_cache(host):
         frame_copy[i] = host.frame[i]
         i += 1
     make_sure_not_resized(frame_copy)
-    return DSCacheSnapshot(host.t0, host.t1, host.d, frame_copy,
+    return DSCacheSnapshot(host.t0, host.t1, host.cache_depth, frame_copy,
                            host.frag_ptr, host.spill_ptr)
 
 
@@ -83,7 +83,7 @@ def restore_cache(host, snap):
     saved spill pointer are left in place."""
     host.t0 = snap.t0
     host.t1 = snap.t1
-    host.d = snap.d
+    host.cache_depth = snap.cache_depth
     i = 0
     while i < FRAME_SIZE:
         host.frame[i] = snap.frame[i]
@@ -112,20 +112,20 @@ class DSIntMetaStack(DSMetaStack):
     # array is reached only past depth NTOP, and the spill only past ACTIVE_MAX.
     # ------------------------------------------------------------------
     def push_on(self, v):
-        dd = self.d
+        dd = self.cache_depth
         if dd >= ACTIVE_MAX:
             self._spill_bottom()
-            dd = self.d
+            dd = self.cache_depth
         if dd >= NTOP:
             si = dd - NTOP
             assert si >= 0
             self.frame[si] = self.t1
         self.t1 = self.t0
         self.t0 = v
-        self.d = dd + 1
+        self.cache_depth = dd + 1
 
     def pop_on(self):
-        dd = self.d
+        dd = self.cache_depth
         if dd <= 0:
             return self._pop_from_spill()
         r = self.t0
@@ -134,7 +134,7 @@ class DSIntMetaStack(DSMetaStack):
             si = dd - NTOP - 1
             assert si >= 0
             self.t1 = self.frame[si]
-        self.d = dd - 1
+        self.cache_depth = dd - 1
         return r
 
     def _pop_from_spill(self):
@@ -162,11 +162,11 @@ class DSIntMetaStack(DSMetaStack):
         while i < FRAME_SIZE - 1:
             self.frame[i] = self.frame[i + 1]
             i += 1
-        self.d = self.d - 1
+        self.cache_depth = self.cache_depth - 1
 
     def peek_on(self, depth):
         depth = promote(depth)
-        dd = self.d
+        dd = self.cache_depth
         if depth < dd:
             if depth == 0:
                 return self.t0
@@ -181,7 +181,7 @@ class DSIntMetaStack(DSMetaStack):
 
     def poke_on(self, depth, v):
         depth = promote(depth)
-        dd = self.d
+        dd = self.cache_depth
         if depth < dd:
             if depth == 0:
                 self.t0 = v
@@ -197,12 +197,12 @@ class DSIntMetaStack(DSMetaStack):
         self.spill[ai] = v
 
     def depth_on(self):
-        return self.d + self.spill_ptr
+        return self.cache_depth + self.spill_ptr
 
     def reset_on(self):
         self.t0 = 0
         self.t1 = 0
-        self.d = 0
+        self.cache_depth = 0
         self.frag_ptr = 0
         self.spill_ptr = 0
 
@@ -216,7 +216,7 @@ class DSIntMetaStack(DSMetaStack):
     @unroll_safe
     def push_fragment_on(self):
         self.frag_ptr = self.frag_ptr + 1
-        dd = self.d
+        dd = self.cache_depth
         if dd > NTOP:
             n = dd - NTOP
             ap = self.spill_ptr
@@ -230,7 +230,7 @@ class DSIntMetaStack(DSMetaStack):
                 self.spill[ap + i] = self.frame[i]
                 i += 1
             self.spill_ptr = ap + n
-            self.d = NTOP
+            self.cache_depth = NTOP
 
     def pop_fragment_commit_on(self):
         # O(1): the callee's net result is already the cache top and the caller's
