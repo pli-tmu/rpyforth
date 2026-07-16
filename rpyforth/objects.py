@@ -50,8 +50,8 @@ class Word(object):
     def __init__(self, name, prim=None, immediate=False, thread=None):
         self.name = name
         self.prim = prim # callable(vm) or None
-        self.immediate = immediate # bool (mutable for IMMEDIATE)
-        self.thread = thread # code thread (mutable for RECURSIVE)
+        self.immediate = immediate # mutable for IMMEDIATE
+        self.thread = thread # mutable for RECURSIVE
         self.does_ip = -1  # DOES> instruction pointer (-1 means not set)
         # Integer execution token: a stable id so an xt can live on the (integer)
         # data stack and be stored/fetched with ! @ , like any cell. WORD_REGISTRY
@@ -105,7 +105,7 @@ class CodeThread(object):
     _immutable_fields_ = ["code[*]", "lits[*]", "tid"]
 
     def __init__(self, code, lits):
-        self.code = code # code (list of Words)
+        self.code = code # list of Words
         self.lits = lits # literal values used by code[i]
         self.tid = THREAD_REGISTRY.register(self)
         self.does_word = None
@@ -336,7 +336,7 @@ class W_WordObject(W_Object):
 
     def __init__(self, word):
         W_Object.__init__(self)
-        self.word = word  # Word instance
+        self.word = word
 
     def __repr__(self):
         return self.to_string()
@@ -362,7 +362,6 @@ BINARY  = W_IntObject(2)
 SMALL_INT_MIN = -128
 SMALL_INT_MAX = 2048  # Extended range for loop counters (covers 0-1000 loops)
 
-# Pre-initialize the cache as a list at module load time for O(1) access
 _small_int_cache = [W_IntObject(i) for i in range(SMALL_INT_MIN, SMALL_INT_MAX)]
 
 @elidable

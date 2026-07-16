@@ -194,7 +194,7 @@ class InnerInterpreter(InterpBase, object):
         self.ds_locals = [None] * STACK_SIZE
         self.ds_ptr_locals = 0
 
-        self.rs = [0] * STACK_SIZE  # return stack
+        self.rs = [0] * STACK_SIZE
         self.rs_ptr = 0
 
         # dedicated loop-control stack
@@ -334,7 +334,6 @@ class InnerInterpreter(InterpBase, object):
         return thread, ip
 
     def is_call_stack_empty(self):
-        """Check if call stack is empty."""
         return self.cs_ptr == 0
 
     def reset_after_abort(self):

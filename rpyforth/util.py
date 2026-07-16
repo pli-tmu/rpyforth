@@ -142,11 +142,10 @@ def remove_comments_stateful(line, depth):
                 i = j
                 continue
 
-        # Handle backslash comment - rest of line is ignored
         if ch == '\\':
-            # Check if it's actually a backslash comment (needs space before or at start)
+            # A backslash comment needs a space before it or line start.
             if at_word_start:
-                break  # Skip rest of line
+                break
 
         # Handle parenthetical comment. '(' opens a comment only when it stands
         # as its own word: whitespace (or start) before it AND whitespace (or
@@ -199,7 +198,6 @@ def split_whitespace_stateful(line, depth):
 @unroll_safe
 def split_whitespace(line):
     """Split line into tokens, removing Forth comments first."""
-    # Remove comments before tokenization
     line = remove_comments(line)
     return _tokenize(line)
 

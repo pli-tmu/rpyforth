@@ -33,7 +33,7 @@ def test_base_save_restore_roundtrip():
         "DECIMAL",
     ])
     assert inner.pop_ds_int() == 16   # the trailing 10 in hex
-    assert inner.pop_ds_int() == 10   # the decimal 10
+    assert inner.pop_ds_int() == 10
 
 
 def test_base_in_colon_body():

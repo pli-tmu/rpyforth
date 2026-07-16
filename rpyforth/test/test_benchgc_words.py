@@ -115,7 +115,6 @@ def test_cs_roll_false_branch():
         "  0<> if begin 222 [ 1 ] [cs-roll] then exit again ; "
         "42 0 t"
     )
-    # only the pre-existing 42 remains; t pushed nothing.
     assert inner.pop_ds_int() == 42
     assert inner.ds_int_size() == 0
 

@@ -288,7 +288,6 @@ class OuterInterpreter(object):
 
     def _define_literal_word(self):
         """Define LITERAL as an immediate word that compiles a literal."""
-        # LITERAL is IMMEDIATE and uses prim_LITERAL from primitives.py
         from rpyforth.primitives import prim_LITERAL
         w = Word("LITERAL", prim=prim_LITERAL, immediate=True, thread=None)
         self.dict["LITERAL"] = w
@@ -296,7 +295,6 @@ class OuterInterpreter(object):
 
     def _define_fliteral_word(self):
         """Define FLITERAL as an immediate word that compiles a float literal."""
-        # FLITERAL is IMMEDIATE and uses prim_FLITERAL from primitives.py
         from rpyforth.primitives import prim_FLITERAL
         w = Word("FLITERAL", prim=prim_FLITERAL, immediate=True, thread=None)
         self.dict["FLITERAL"] = w
@@ -320,7 +318,6 @@ class OuterInterpreter(object):
             start_idx = 1
             if length == 1:
                 return False
-        # Unroll the check for better performance
         for i in range(start_idx, length):
             ch = s[i]
             if ch < '0' or ch > '9':
@@ -702,17 +699,13 @@ class OuterInterpreter(object):
             print "CONSTANT requires a name"
             return -1
         name, i = self._take_defining_name(toks, i)
-        # Check which stack has data and pop from it
         if self.inner.ds_int_size() > 0:
-            # Unboxed integer
             intval = self.inner.pop_ds_int()
             val = W_IntObject(intval)
         elif self.inner.depth_ds_float() > 0:
-            # Unboxed float
             floatval = self.inner.pop_ds_float()
             val = W_FloatObject(floatval)
         elif self.inner.ds_ptr_locals > 0:
-            # Boxed object
             val = self.inner.pop_ds()
         else:
             print "CONSTANT: stack underflow"
@@ -921,7 +914,6 @@ class OuterInterpreter(object):
     # Control structure compilation helpers
 
     def _compile_if(self):
-        """Compile IF."""
         orig = self.cc_ptr
         self._emit_with_target(self.w0BR, 0)
         self.ctrl.append(CtrlEntry(CTRL_IF, orig))
@@ -976,7 +968,6 @@ class OuterInterpreter(object):
                 self.current_code[self.cc_ptr - 2] is self.wLIT)
 
     def _compile_do(self):
-        """Compile DO."""
         limit_is_literal = self._do_limit_is_literal()
         self._emit_word(self.wDO)
         do_body_start = self.cc_ptr
@@ -997,7 +988,6 @@ class OuterInterpreter(object):
         self.ctrl.append(entry)
 
     def _compile_loop(self):
-        """Compile LOOP."""
         if not self.ctrl:
             print "LOOP without DO"
             return False
@@ -1015,7 +1005,6 @@ class OuterInterpreter(object):
         return True
 
     def _compile_begin(self):
-        """Compile BEGIN."""
         begin_addr = self.cc_ptr
         self.ctrl.append(CtrlEntry(CTRL_BEGIN, begin_addr))
 
@@ -1080,7 +1069,6 @@ class OuterInterpreter(object):
         self.ctrl = new_ctrl
 
     def _compile_plusloop(self):
-        """Compile +LOOP."""
         if not self.ctrl:
             print "+LOOP without DO"
             return False
@@ -1138,7 +1126,6 @@ class OuterInterpreter(object):
         return True
 
     def _compile_leave(self):
-        """Compile LEAVE."""
         # Find the innermost DO loop on the control stack
         for i in range(len(self.ctrl) - 1, -1, -1):
             entry = self.ctrl[i]
@@ -1195,7 +1182,6 @@ class OuterInterpreter(object):
         return False
 
     def _compile_char(self, toks, i):
-        """Compile [CHAR]."""
         toks_len = len(toks)
         if i >= toks_len:
             print "[CHAR] requires a following character"
@@ -1325,9 +1311,7 @@ class OuterInterpreter(object):
     def _compile_word_or_literal(self, w, t):
         """Compile word or literal in COMPILE mode."""
         if w is not None:
-            # Check if word is immediate - if so, execute it now
             if w.immediate:
-                # Immediate words (including LITERAL, FLITERAL) are executed immediately
                 # LITERAL and FLITERAL have primitives that pop from the stack and emit literals
                 self.inner.execute_word_now(w)
             else:
@@ -2264,12 +2248,10 @@ class OuterInterpreter(object):
         length = u1
         value = ud1_lo
 
-        # Process each character
         chars_processed = 0
         for j in range(length):
             ch = chr(self.inner.char_fetch(addr + j))
 
-            # Convert character to digit value
             digit = -1
             if '0' <= ch <= '9':
                 digit = ord(ch) - ord('0')
@@ -2279,13 +2261,11 @@ class OuterInterpreter(object):
                 digit = ord(ch) - ord('a') + 10
 
             if digit < 0 or digit >= base:
-                # Invalid character, stop conversion
                 break
 
             value = value * base + digit
             chars_processed += 1
 
-        # Return updated values
         self.inner.push_ds_int(value)
         self.inner.push_ds_int(0)  # ud2 high
         self.inner.push_ds_int(addr + chars_processed)
@@ -2297,7 +2277,6 @@ class OuterInterpreter(object):
         u = self.inner.pop_ds_int()
         c_addr = self.inner.pop_ds_int()
 
-        # Extract the query string from buffer
         buf_entry = self.inner.buf_get(c_addr)
         assert isinstance(buf_entry, W_StringObject)
         strval = buf_entry.strval
@@ -2305,7 +2284,6 @@ class OuterInterpreter(object):
         query = strval[:u]
         query_upper = to_upper(query)
 
-        # Handle known queries
         if query_upper == "/COUNTED-STRING":
             self.inner.push_ds_int(255)  # max counted string length
             self.inner.push_ds_int(-1)
@@ -3039,8 +3017,8 @@ class OuterInterpreter(object):
                 # is confirmed present, or it would be silently dropped.
                 wTAILCALL = self.forth_wl.get("TAILCALL", None)
                 if wTAILCALL is not None:
-                    self.cc_ptr -= 1  # Remove the last word
-                    self.lit_ptr -= 1  # Remove its literal
+                    self.cc_ptr -= 1
+                    self.lit_ptr -= 1
                     self.push_code(wTAILCALL)
                     self.push_lit(W_WordObject(last_word))
                     tail_call_applied = True

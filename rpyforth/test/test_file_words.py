@@ -52,7 +52,6 @@ def test_open_read_close_line():
         ior = inner.pop_ds_int()
         assert ior == 0
         fid = inner.pop_ds_int()
-        # read first line into BUF
         outer.interpret_line("BUF 64 %d READ-LINE" % fid)
         rl_ior = inner.pop_ds_int()
         flag = inner.pop_ds_int()
@@ -60,17 +59,14 @@ def test_open_read_close_line():
         assert rl_ior == 0
         assert flag == -1
         assert n == 5
-        # verify buffer contents
         outer.interpret_line("BUF C@  BUF 1+ C@  BUF 4 + C@")
         assert inner.pop_ds_int() == ord('o')
         assert inner.pop_ds_int() == ord('e')
         assert inner.pop_ds_int() == ord('h')
-        # second line
         outer.interpret_line("BUF 64 %d READ-LINE" % fid)
         inner.pop_ds_int()  # ior
         assert inner.pop_ds_int() == -1  # flag
         assert inner.pop_ds_int() == 5   # "world"
-        # EOF: flag false
         outer.interpret_line("BUF 64 %d READ-LINE" % fid)
         inner.pop_ds_int()  # ior
         assert inner.pop_ds_int() == 0   # flag false at EOF
@@ -115,7 +111,6 @@ def test_write_and_read_back():
     os.remove(path)
     try:
         inner, outer = make()
-        # build "Hi" in a buffer
         outer.interpret_line("CREATE B 16 ALLOT  72 B C!  105 B 1+ C!")
         outer.interpret_line('S" ' + path + '" W/O CREATE-FILE')
         inner.pop_ds_int()  # ior

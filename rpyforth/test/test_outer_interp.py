@@ -440,95 +440,69 @@ def test_2STORE():
     assert inner.cell_fetch(CELL_SIZE_BYTES).intval == 10
 
 def test_s2f():
-    """Test S>F (integer to float conversion)"""
     assert run_and_pop_float("10 S>F") == 10.0
 
 def test_fstore_ffetch():
-    """Test F! and F@"""
     result = run_and_pop_float("FVARIABLE X  3.14E0 X F!  X F@")
     assert abs(result - 3.14) < 0.01
 
 def test_fdup():
-    """Test FDUP"""
     inner = run("5.5E0 FDUP")
     f1 = inner.pop_ds_float()
     f2 = inner.pop_ds_float()
     assert f1 == f2 == 5.5
 
 def test_begin_while_repeat():
-    """Test BEGIN...WHILE...REPEAT loop"""
-    # Count from 0 to 4
     result = run_and_pop(": TEST 0 BEGIN DUP 5 < WHILE 1+ REPEAT ; TEST")
     assert result == 5
 
 def test_to_r():
-    """Test >R (to-R) - move value from data stack to return stack"""
     inner = run("42 >R")
-    # Data stack should be empty
     assert inner.ds_ptr_ints == 0
-    # Return stack should have 42
     result = inner.pop_rs()
     assert result == 42
 
 def test_r_from():
-    """Test R> (R-from) - move value from return stack to data stack"""
     inner = run("42 >R R>")
-    # Data stack should have 42
     result = inner.pop_ds_int()
     assert result == 42
-    # Return stack should be empty
     assert inner.rs_ptr == 0
 
 def test_r_fetch():
-    """Test R@ (R-fetch) - copy value from return stack to data stack"""
     inner = run("42 >R R@")
-    # Data stack should have 42
     result = inner.pop_ds_int()
     assert result == 42
-    # Return stack should still have 42
     result2 = inner.pop_rs()
     assert result2 == 42
 
 def test_2to_r():
-    """Test 2>R - move two values from data stack to return stack"""
     inner = run("10 20 2>R")
-    # Data stack should be empty
     assert inner.ds_ptr_ints == 0
-    # Return stack should have 20 on top, 10 below
     result2 = inner.pop_rs()
     result1 = inner.pop_rs()
     assert result1 == 10
     assert result2 == 20
 
 def test_2r_from():
-    """Test 2R> - move two values from return stack to data stack"""
     inner = run("10 20 2>R 2R>")
-    # Data stack should have 10 and 20
     result2 = inner.pop_ds_int()
     result1 = inner.pop_ds_int()
     assert result1 == 10
     assert result2 == 20
-    # Return stack should be empty
     assert inner.rs_ptr == 0
 
 def test_2r_fetch():
-    """Test 2R@ - copy two values from return stack to data stack"""
     inner = run("10 20 2>R 2R@")
-    # Data stack should have 10 and 20
     result2 = inner.pop_ds_int()
     result1 = inner.pop_ds_int()
     assert result1 == 10
     assert result2 == 20
-    # Return stack should still have 10 and 20
     result2_rs = inner.pop_rs()
     result1_rs = inner.pop_rs()
     assert result1_rs == 10
     assert result2_rs == 20
 
 def test_return_stack_complex():
-    """Test complex combination of return stack operations"""
-    # Test: 1 2 3 >R >R >R R> R> R>
-    # Should result in: 3 2 1
     inner = run("1 2 3 >R >R >R R> R> R>")
     result1 = inner.pop_ds_int()
     result2 = inner.pop_ds_int()
@@ -540,61 +514,45 @@ def test_return_stack_complex():
 # Data Space Tests
 
 def test_here():
-    """Test HERE - return current data space pointer"""
     inner = run("HERE")
     addr1 = inner.pop_ds_int()
-    # HERE should return a valid address
     assert addr1 >= 0
 
 def test_comma():
-    """Test , (comma) - store value at HERE and increment"""
     inner = run("HERE  42 ,  HERE")
     addr2 = inner.pop_ds_int()
     addr1 = inner.pop_ds_int()
-    # addr2 should be addr1 + cell_size_bytes
     assert addr2 == addr1 + inner.cell_size_bytes
-    # Check that 42 was stored at addr1
     stored_val = inner.cell_fetch(addr1)
     assert stored_val.intval == 42
 
 def test_c_comma():
-    """Test C, - store character at HERE and increment by 1"""
     inner = run("HERE  65 C,  HERE")
     addr2 = inner.pop_ds_int()
     addr1 = inner.pop_ds_int()
-    # addr2 should be addr1 + 1
     assert addr2 == addr1 + 1
 
 def test_allot():
-    """Test ALLOT - allocate n address units"""
     inner = run("HERE  10 ALLOT  HERE")
     addr2 = inner.pop_ds_int()
     addr1 = inner.pop_ds_int()
-    # addr2 should be addr1 + 10
     assert addr2 == addr1 + 10
 
 # Dictionary Tests
 
 def test_create():
-    """Test CREATE - create a new word with data field"""
     result = run_and_pop("CREATE MYDATA  MYDATA")
-    # MYDATA should push its address
     assert result >= 0
 
 def test_create_with_comma():
-    """Test CREATE with , to store data"""
     result = run_and_pop("CREATE MYVAR  123 ,  456 ,  MYVAR")
-    # MYVAR should push its address
     addr = result
-    # We need to access the inner interpreter to fetch values
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
     outer.interpret_line("CREATE MYVAR2  123 ,  456 ,  MYVAR2")
     addr = inner.pop_ds_int()
-    # Fetch the first value
     val1 = inner.cell_fetch(addr)
     assert val1.intval == 123
-    # Fetch the second value
     addr2 = addr + CELL_SIZE_BYTES
     val2 = inner.cell_fetch(addr2)
     assert val2.intval == 456
@@ -621,7 +579,6 @@ def test_find_not_found():
     assert flag == 0
 
 def test_execute():
-    """Test EXECUTE - execute an execution token"""
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
     outer.interpret_line('S" DUP" DROP')
@@ -637,7 +594,6 @@ def test_execute():
     assert val2 == 42
 
 def test_to_body():
-    """Test >BODY - get body address from execution token"""
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
     outer.interpret_line("VARIABLE MYVAR")
@@ -655,7 +611,6 @@ def test_to_body():
 # Source Input Tests
 
 def test_source():
-    """Test SOURCE - returns current input buffer"""
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
     test_line = "1 2 3 SOURCE"
@@ -663,7 +618,6 @@ def test_source():
     # SOURCE pushes ( c-addr u )
     u = inner.pop_ds_int()
     caddr = inner.pop_ds_int()
-    # Should return the length of the line
     assert u == len(test_line)
 
 def test_to_in():
@@ -680,7 +634,6 @@ def test_to_in():
 # Special Tests
 
 def test_tick():
-    """Test ' (tick) - get execution token of next word"""
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
     outer.interpret_line("' DUP")
@@ -688,10 +641,8 @@ def test_tick():
     assert word_from_wid(xt).name == "DUP"
 
 def test_paren_comment():
-    """Test ( (paren) - comment word"""
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
-    # The parenthetical comment should be ignored
     outer.interpret_line("1 ( this is a comment ) 2")
     val2 = inner.pop_ds_int()
     val1 = inner.pop_ds_int()
@@ -699,7 +650,6 @@ def test_paren_comment():
     assert val2 == 2
 
 def test_tick_execute():
-    """Test ' (tick) with EXECUTE"""
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
     outer.interpret_line("' DUP")
@@ -715,7 +665,6 @@ def test_tick_execute():
 # Memory Access Tests
 
 def test_plusstore():
-    """Test +! - add to memory location"""
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
     outer.interpret_line("VARIABLE X  10 X !  5 X +!  X @")
@@ -723,7 +672,6 @@ def test_plusstore():
     assert result == 15
 
 def test_2fetch():
-    """Test 2@ - fetch cell pair"""
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
     outer.interpret_line("2VARIABLE BUF  10 20 BUF 2!  BUF 2@")
@@ -733,7 +681,6 @@ def test_2fetch():
     assert x2 == 20
 
 def test_c_store_fetch():
-    """Test C! and C@ - character store and fetch"""
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
     outer.interpret_line("VARIABLE CBUF  65 CBUF C!  CBUF C@")
@@ -741,39 +688,31 @@ def test_c_store_fetch():
     assert result == 65
 
 def test_char_plus():
-    """Test CHAR+ - increment address by character size"""
     result = run_and_pop("10 CHAR+")
     assert result == 11
 
 def test_chars():
-    """Test CHARS - convert character count to address units"""
     result = run_and_pop("5 CHARS")
     assert result == 5
 
 def test_align():
-    """Test ALIGN - align data space pointer"""
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
-    # Set HERE to unaligned position
     outer.interpret_line("HERE  1 C,  ALIGN  HERE")
     here_after = inner.pop_ds_int()
     here_before = inner.pop_ds_int()
-    # After ALIGN, HERE should be aligned to cell boundary
     assert here_after % CELL_SIZE_BYTES == 0
 
 def test_aligned():
-    """Test ALIGNED - return aligned address"""
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
     outer.interpret_line("1 ALIGNED")
     result = inner.pop_ds_int()
-    # Should be aligned to cell boundary
     assert result % CELL_SIZE_BYTES == 0
 
 # Parsing Tests
 
 def test_count():
-    """Test COUNT - convert counted string to addr/len"""
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
     # Create a counted string manually: length byte then the characters, all
@@ -785,16 +724,13 @@ def test_count():
     outer.interpret_line("COUNT")
     u = inner.pop_ds_int()
     caddr2 = inner.pop_ds_int()
-    # Length should be 3
     assert u == 3
     # caddr2 should be addr + 1 char (skipping the length byte)
     assert caddr2 == addr + 1
 
 def test_word():
-    """Test WORD - parse word delimited by character"""
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
-    # Parse a word delimited by space (32)
     # Use separate calls to avoid "World" being executed
     outer.interpret_line("32 WORD Hello")
     caddr = inner.pop_ds_int()
@@ -803,14 +739,11 @@ def test_word():
     assert length == 5  # "Hello"
 
 def test_word_count():
-    """Test WORD with COUNT"""
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
-    # Parse a word and use COUNT to get addr/len
     outer.interpret_line("32 WORD Test COUNT")
     u = inner.pop_ds_int()
     caddr2 = inner.pop_ds_int()
-    # Length should be 4 ("Test")
     assert u == 4
 
 # Pictured Numeric Output Tests
@@ -837,20 +770,16 @@ def test_PNO():
 
 
 def test_sign_negative():
-    """Test SIGN - adds minus sign for negative numbers"""
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
-    # Use SIGN with a negative number
     # #S expects (ud.lo ud.hi) on stack, so 123 0 gives ud=123
     outer.interpret_line("<# -1 SIGN 123 0 #S #> TYPE")
     # This should output "-123" (the SIGN adds -, then #S converts 123)
     # We can't easily test TYPE output, but we can verify SIGN doesn't crash
 
 def test_sign_positive():
-    """Test SIGN - no sign for positive numbers"""
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
-    # Use SIGN with a positive number
     outer.interpret_line("<# 1 SIGN 123 0 #S #>")
     u = inner.pop_ds_int()
     c_addr = inner.pop_ds_int()
@@ -858,10 +787,9 @@ def test_sign_positive():
     assert "".join(chars) == '123'
 
 def test_sign_in_pno():
-    """Test SIGN within pictured numeric output"""
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
-    # Complete PNO example with SIGN. #> now yields ( c-addr u ) ints.
+    # #> now yields ( c-addr u ) ints.
     outer.interpret_line("<# -5 SIGN 0 0 #>")
     u = inner.pop_ds_int()
     c_addr = inner.pop_ds_int()
@@ -871,67 +799,48 @@ def test_sign_in_pno():
 # System Tests
 
 def test_fill():
-    """Test FILL - fill memory with character"""
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
-    # Fill 5 bytes starting at HERE with 'A' (65)
     outer.interpret_line("HERE 5 65 FILL")
 
 def test_move():
-    """Test MOVE - copy memory region"""
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
-    # Store values using VARIABLE to get proper addresses
     outer.interpret_line("VARIABLE SRC1  VARIABLE SRC2  VARIABLE SRC3")
     outer.interpret_line("10 SRC1 !  20 SRC2 !  30 SRC3 !")
-    # Get source address and create destination
     outer.interpret_line("VARIABLE DST")
-    # Move 3 bytes from SRC1 to DST
     outer.interpret_line("SRC1 DST 3 MOVE")
-    # Verify first value was copied
     outer.interpret_line("DST @")
     result = inner.pop_ds_int()
     assert result == 10
 
 def test_state():
-    """Test STATE - get interpreter state"""
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
-    # In interpret mode, STATE should return address with 0
     outer.interpret_line("STATE @")
     state_val = inner.pop_ds_int()
     assert state_val == 0
 
 def test_evaluate():
-    """Test EVALUATE - evaluate string as Forth"""
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
-    # Create a string and evaluate it
     outer.interpret_line('S" 1 2 +"')
     outer.interpret_line("EVALUATE")
     result = inner.pop_ds_int()
     assert result == 3
 
 def test_abort_quote_false():
-    """Test ABORT\" with false condition - should not abort"""
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
-    # Push some values
     outer.interpret_line("1 2 3")
-    # False flag should not abort
     outer.interpret_line('0 ABORT" This should not print"')
-    # Stack should still have values
     assert inner.ds_int_size() == 3
 
 def test_abort_quote_true():
-    """Test ABORT\" with true condition - should abort"""
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
-    # Push some values
     outer.interpret_line("1 2 3")
-    # True flag should abort and clear stack
     outer.interpret_line('-1 ABORT" Error occurred"')
-    # Stack should be cleared
     assert inner.ds_int_size() == 0
 
 
@@ -942,7 +851,6 @@ def test_abort_quote_true():
 # Division Tests
 
 def test_divmod():
-    """Test /MOD - division with remainder"""
     inner = run("10 3 /MOD")
     quot = inner.pop_ds_int()
     rem = inner.pop_ds_int()
@@ -950,11 +858,9 @@ def test_divmod():
     assert rem == 1
 
 def test_starslash():
-    """Test */ - multiply then divide"""
     assert run_and_pop("10 3 2 */") == 15  # (10*3)/2
 
 def test_starslashmod():
-    """Test */MOD - multiply then divide with remainder"""
     inner = run("10 3 4 */MOD")
     quot = inner.pop_ds_int()
     rem = inner.pop_ds_int()
@@ -963,7 +869,6 @@ def test_starslashmod():
     assert rem == 2
 
 def test_fmslashmod():
-    """Test FM/MOD - floored division"""
     inner = run("7 0 3 FM/MOD")
     quot = inner.pop_ds_int()
     rem = inner.pop_ds_int()
@@ -971,7 +876,6 @@ def test_fmslashmod():
     assert rem == 1
 
 def test_smslashrem():
-    """Test SM/REM - symmetric division"""
     inner = run("7 0 3 SM/REM")
     quot = inner.pop_ds_int()
     rem = inner.pop_ds_int()
@@ -979,7 +883,6 @@ def test_smslashrem():
     assert rem == 1
 
 def test_umslashmod():
-    """Test UM/MOD - unsigned division"""
     inner = run("10 0 3 UM/MOD")
     quot = inner.pop_ds_int()
     rem = inner.pop_ds_int()
@@ -989,14 +892,12 @@ def test_umslashmod():
 # Bitwise Tests
 
 def test_invert():
-    """Test INVERT - bitwise NOT"""
     assert run_and_pop("0 INVERT") == -1
     assert run_and_pop("-1 INVERT") == 0
 
 # Comparison Tests
 
 def test_u_less():
-    """Test U< - unsigned less than"""
     assert run_and_pop("1 2 U<") == -1  # True
     assert run_and_pop("2 1 U<") == 0   # False
     assert run_and_pop("-1 1 U<") == 0  # -1 is large when unsigned
@@ -1004,7 +905,6 @@ def test_u_less():
 # Control Flow Tests
 
 def test_plusloop():
-    """Test +LOOP with positive increment"""
     result = run_and_pop(": TEST 0 10 0 DO I + 2 +LOOP ; TEST")
     assert result == 20  # 0+2+4+6+8 = 20
 
@@ -1014,12 +914,10 @@ def test_again():
     assert result == 5
 
 def test_until():
-    """Test BEGIN...UNTIL loop"""
     result = run_and_pop(": TEST 0 BEGIN 1+ DUP 5 = UNTIL ; TEST")
     assert result == 5
 
 def test_unloop():
-    """Test UNLOOP - remove loop parameters from return stack"""
     # Keep I on stack before comparison by duplicating it
     result = run_and_pop(": TEST 5 0 DO I DUP 3 = IF UNLOOP EXIT THEN DROP LOOP 99 ; TEST")
     assert result == 3  # Should exit when I=3
@@ -1027,27 +925,21 @@ def test_unloop():
 # Compilation Tests
 
 def test_immediate():
-    """Test IMMEDIATE - mark word as immediate"""
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
-    # Define a word and mark it immediate
     outer.interpret_line(": TWICE 2 * ;")
     outer.interpret_line("IMMEDIATE")
-    # The last defined word should be marked immediate
     assert outer.last_word.immediate == True
 
 def test_literal():
-    """Test LITERAL - compile literal at compile time"""
     result = run_and_pop(": TEST [ 5 3 + ] LITERAL ; TEST")
     assert result == 8
 
 def test_bracket():
-    """Test [ and ] - switch between interpret and compile modes"""
     result = run_and_pop(": TEST [ 2 3 + ] LITERAL 10 + ; TEST")
     assert result == 15  # (2+3) + 10
 
 def test_bracket_tick():
-    """Test ['] - compile execution token"""
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
     outer.interpret_line(": TEST ['] DUP ; TEST")
@@ -1057,23 +949,20 @@ def test_bracket_tick():
 # Number Conversion Tests
 
 def test_base():
-    """Test BASE - returns address of base variable"""
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
     outer.interpret_line("BASE@")
     result = inner.pop_ds_int()
-    # Default base should be 10 (decimal)
     assert result == 10
 
 def test_base_change():
-    """Test changing BASE via HEX/DECIMAL"""
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
-    outer.interpret_line("HEX")  # Set to hex
+    outer.interpret_line("HEX")
     outer.interpret_line("BASE@")
     result = inner.pop_ds_int()
     assert result == 16
-    outer.interpret_line("DECIMAL")  # Set back to decimal
+    outer.interpret_line("DECIMAL")
     outer.interpret_line("BASE@")
     result2 = inner.pop_ds_int()
     assert result2 == 10
@@ -1081,19 +970,16 @@ def test_base_change():
 # I/O Tests
 
 def test_space():
-    """Test SPACE - output single space"""
     # Just verify it doesn't crash
     run("SPACE")
 
 def test_spaces():
-    """Test SPACES - output multiple spaces"""
     # Just verify it doesn't crash
     run("5 SPACES")
 
 # Environment Tests
 
 def test_environment_core():
-    """Test ENVIRONMENT? with CORE query"""
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
     outer.interpret_line('S" CORE" ENVIRONMENT?')
@@ -1103,7 +989,6 @@ def test_environment_core():
     assert result == -1  # CORE is present
 
 def test_environment_stack_cells():
-    """Test ENVIRONMENT? with STACK-CELLS query"""
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
     outer.interpret_line('S" STACK-CELLS" ENVIRONMENT?')
@@ -1113,7 +998,6 @@ def test_environment_stack_cells():
     assert result == 64  # Stack size
 
 def test_environment_unknown():
-    """Test ENVIRONMENT? with unknown query"""
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
     outer.interpret_line('S" UNKNOWN-QUERY" ENVIRONMENT?')
@@ -1124,19 +1008,16 @@ def test_environment_unknown():
 # RECURSE Tests
 
 def test_recurse_factorial():
-    """Test RECURSE for recursive factorial"""
     result = run_and_pop(": FACT DUP 1 > IF DUP 1- RECURSE * THEN ; 5 FACT")
     assert result == 120  # 5! = 120
 
 def test_recurse_countdown():
-    """Test RECURSE for countdown"""
     result = run_and_pop(": COUNTDOWN DUP 0 > IF 1- RECURSE THEN ; 5 COUNTDOWN")
     assert result == 0
 
 # Compiled ABORT" Tests
 
 def test_abort_quote_compiled_false():
-    """Test compiled ABORT\" with false condition"""
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
     outer.interpret_line(': TEST 0 ABORT" Should not abort" 42 ;')
@@ -1145,64 +1026,49 @@ def test_abort_quote_compiled_false():
     assert result == 42
 
 def test_abort_quote_compiled_true():
-    """Test compiled ABORT\" with true condition"""
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
     outer.interpret_line(': TEST -1 ABORT" Aborted!" 42 ;')
-    # Push a marker to verify stack gets cleared
     outer.interpret_line("99")
     outer.interpret_line("TEST")
-    # After abort, stack should be cleared
     assert inner.ds_ptr_ints == 0
 
 
 def test_utime():
-    """Test UTIME - returns current time in microseconds as double-cell"""
     inner = run("UTIME")
     # UTIME pushes ( d.low d.high )
     high = inner.pop_ds_int()
     low = inner.pop_ds_int()
-    # Reconstruct the double-cell value
     # On 64-bit systems, high should typically be 0 for reasonable times
-    # The value should be positive and represent a reasonable timestamp
     assert high >= 0
     assert low >= 0
-    # Combined value should be non-zero (current time)
     usecs = low + (high << 64)
     assert usecs > 0
 
 
 def test_utime_increases():
-    """Test that UTIME increases over time"""
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
-    # Define a word that does some work
     outer.interpret_line(": DELAY 1000 0 DO LOOP ;")
-    # Get first timestamp
     outer.interpret_line("UTIME")
     high1 = inner.pop_ds_int()
     low1 = inner.pop_ds_int()
-    # Do some work
     outer.interpret_line("DELAY")
-    # Get second timestamp
     outer.interpret_line("UTIME")
     high2 = inner.pop_ds_int()
     low2 = inner.pop_ds_int()
-    # Second should be >= first (time should not go backwards)
     time1 = low1 + (high1 << 64)
     time2 = low2 + (high2 << 64)
     assert time2 >= time1
 
 
 def test_cputime():
-    """Test CPUTIME - returns CPU times as two double-cells"""
     inner = run("CPUTIME")
     # CPUTIME pushes ( duser.low duser.high dsystem.low dsystem.high )
     sys_high = inner.pop_ds_int()
     sys_low = inner.pop_ds_int()
     user_high = inner.pop_ds_int()
     user_low = inner.pop_ds_int()
-    # Values should be non-negative
     assert user_high >= 0
     assert user_low >= 0
     assert sys_high >= 0
@@ -1210,33 +1076,26 @@ def test_cputime():
 
 
 def test_cputime_user_increases():
-    """Test that CPUTIME user time increases with work"""
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
-    # Define a word that does CPU-intensive work
     outer.interpret_line(": WORK 10000 0 DO I DROP LOOP ;")
-    # Get first CPU time
     outer.interpret_line("CPUTIME")
     sys_high1 = inner.pop_ds_int()
     sys_low1 = inner.pop_ds_int()
     user_high1 = inner.pop_ds_int()
     user_low1 = inner.pop_ds_int()
-    # Do some CPU-intensive work
     outer.interpret_line("WORK")
-    # Get second CPU time
     outer.interpret_line("CPUTIME")
     sys_high2 = inner.pop_ds_int()
     sys_low2 = inner.pop_ds_int()
     user_high2 = inner.pop_ds_int()
     user_low2 = inner.pop_ds_int()
-    # User time should increase (or at least not decrease)
     user1 = user_low1 + (user_high1 << 64)
     user2 = user_low2 + (user_high2 << 64)
     assert user2 >= user1
 
 
 def test_d_plus():
-    """Test D+ - add two double-cell numbers"""
     # 100 as double (100 0) + 200 as double (200 0) = 300 as double (300 0)
     inner = run("100 S>D 200 S>D D+")
     high = inner.pop_ds_int()
@@ -1246,7 +1105,6 @@ def test_d_plus():
 
 
 def test_d_minus():
-    """Test D- - subtract two double-cell numbers"""
     # 500 as double (500 0) - 200 as double (200 0) = 300 as double (300 0)
     inner = run("500 S>D 200 S>D D-")
     high = inner.pop_ds_int()
@@ -1256,20 +1114,14 @@ def test_d_minus():
 
 
 def test_d_minus_with_utime():
-    """Test D- with UTIME for elapsed time measurement"""
-    # Use run() helper which initializes primitives including DO/LOOP
-    # Test the actual D- usage pattern for timing
     inner = run("UTIME 100 S>D D+ UTIME 2SWAP D-")
-    # Result should be elapsed microseconds (very small positive or zero)
     high = inner.pop_ds_int()
     low = inner.pop_ds_int()
     elapsed = low + (high << 64)
-    # Elapsed time should be non-negative
     assert elapsed >= 0
 
 
 def test_argc():
-    """Test ARGC primitive returns number of command-line arguments."""
     inner = InnerInterpreter()
     inner.argv = ["10", "20"]
     outer = OuterInterpreter(inner)
@@ -1278,17 +1130,14 @@ def test_argc():
 
 
 def test_argv():
-    """Test ARGV primitive returns argument as a counted string."""
     inner = InnerInterpreter()
     inner.argv = ["10"]
     outer = OuterInterpreter(inner)
-    # Parse the first argument as a number
     outer.interpret_line("0 0 0 ARGV >NUMBER 2DROP DROP")
     assert inner.pop_ds_int() == 10
 
 
 def test_argv_out_of_range():
-    """Test ARGV primitive returns 0 0 for out-of-range index."""
     inner = InnerInterpreter()
     inner.argv = ["10"]
     outer = OuterInterpreter(inner)

@@ -91,7 +91,6 @@ def prim_ZEROGREATER(inner, cur, ip):
 # > ( n1 n2 -- flag )
 def prim_GREATER(inner, cur, ip):
     """GForth core 2012: flag is true when n1 is greater than n2."""
-    # Pop in correct order: n2 is top, n1 is second
     n2 = inner.pop_ds_int()
     n1 = inner.pop_ds_int()
     if n1 > n2:
@@ -103,7 +102,6 @@ def prim_GREATER(inner, cur, ip):
 # < ( n1 n2 -- flag )
 def prim_LESS(inner, cur, ip):
     """GForth core 2012: flag is true when n1 is less than n2."""
-    # Pop in correct order: n2 is top, n1 is second
     n2 = inner.pop_ds_int()
     n1 = inner.pop_ds_int()
     if n1 < n2:
@@ -137,7 +135,6 @@ def prim_U_LESS(inner, cur, ip):
 # DUP ( x -- x x )
 def prim_DUP(inner, cur, ip):
     """GForth core 2012: duplicate x, leaving two copies on the stack."""
-    # Optimized: peek instead of pop+push cycle
     a = inner.peek_ds_int(0)
     inner.push_ds_int(a)
     return ip
@@ -145,7 +142,6 @@ def prim_DUP(inner, cur, ip):
 
 # 2DUP ( x1 x2 -- x1 x2 x1 x2 )
 def prim_2DUP(inner, cur, ip):
-    # Optimized: peek instead of pop+push cycle
     b = inner.peek_ds_int(0)
     a = inner.peek_ds_int(1)
     inner.push_ds_int(a)
@@ -156,7 +152,6 @@ def prim_2DUP(inner, cur, ip):
 # ?DUP ( x -- 0 | x x )
 def prim_QUESTIONDUP(inner, cur, ip):
     """GForth core 2012: duplicate x if it is non-zero."""
-    # Optimized: use peek instead of pop+push
     a = inner.peek_ds_int(0)
     if a != 0:
         inner.push_ds_int(a)
@@ -173,7 +168,6 @@ def prim_DROP(inner, cur, ip):
 # NIP ( x1 x2 -- x2 )
 def prim_NIP(inner, cur, ip):
     """GForth core 2012: discard the second stack item."""
-    # Optimized: copy top to second position, then drop top
     x2 = inner.peek_ds_int(0)
     inner.pop_ds_int()
     inner.poke_ds_int(0, x2)
@@ -190,7 +184,6 @@ def prim_2DROP(inner, cur, ip):
 # SWAP ( x1 x2 -- x2 x1 )
 def prim_SWAP(inner, cur, ip):
     """GForth core 2012: exchange the top two stack items."""
-    # Optimized: use peek/poke for in-place swap
     a = inner.peek_ds_int(1)
     b = inner.peek_ds_int(0)
     inner.poke_ds_int(1, b)
@@ -201,7 +194,6 @@ def prim_SWAP(inner, cur, ip):
 # 2SWAP ( x1 x2 x3 x4 -- x3 x4 x1 x2 )
 def prim_2SWAP(inner, cur, ip):
     """GForth core 2012: exchange the top two cell pairs."""
-    # Optimized: use peek/poke for in-place swap
     a = inner.peek_ds_int(3)
     b = inner.peek_ds_int(2)
     c = inner.peek_ds_int(1)
@@ -216,7 +208,6 @@ def prim_2SWAP(inner, cur, ip):
 # OVER ( x1 x2 -- x1 x2 x1 )
 def prim_OVER(inner, cur, ip):
     """GForth core 2012: copy the second stack item to the top."""
-    # Optimized: peek instead of pop+push cycle
     a = inner.peek_ds_int(1)
     inner.push_ds_int(a)
     return ip
@@ -225,7 +216,6 @@ def prim_OVER(inner, cur, ip):
 # 2OVER ( x1 x2 x3 x4 -- x1 x2 x3 x4 x1 x2 )
 def prim_2OVER(inner, cur, ip):
     """GForth core 2012: copy cell pair x1 x2 to the top of the stack."""
-    # Optimized: peek instead of pop+push cycle
     a = inner.peek_ds_int(3)
     b = inner.peek_ds_int(2)
     inner.push_ds_int(a)
@@ -235,7 +225,6 @@ def prim_2OVER(inner, cur, ip):
 
 # ROT ( x1 x2 x3 -- x2 x3 x1 )
 def prim_ROT(inner, cur, ip):
-    # Optimized: use peek/poke for in-place rotation
     a = inner.peek_ds_int(2)
     b = inner.peek_ds_int(1)
     c = inner.peek_ds_int(0)
@@ -248,7 +237,6 @@ def prim_ROT(inner, cur, ip):
 # -ROT ( x1 x2 x3 -- x3 x1 x2 )
 def prim_NROT(inner, cur, ip):
     """Inverse of ROT."""
-    # Optimized: use peek/poke for in-place rotation
     a = inner.peek_ds_int(2)
     b = inner.peek_ds_int(1)
     c = inner.peek_ds_int(0)
@@ -454,9 +442,7 @@ def int_shortcut(intval):
 # + ( n1 n2 -- n3 )
 def prim_ADD(inner, cur, ip):
     """GForth core 2012: add n1 and n2, leaving their sum."""
-    # top2_ds pops in correct order: second-to-top (a), then top (b)
     a, b = inner.top2_ds_int()
-    # Inline cache access for JIT optimization (avoid function call overhead)
     inner.push_ds_int(a + b)
     return ip
 
@@ -1009,7 +995,6 @@ def prim_CELL(inner, cur, ip):
 # FLOAT ( -- n )
 def prim_FLOAT(inner, cur, ip):
     """GForth floating 2012: return the size of one float in address units."""
-    # In our implementation, floats are stored as W_FloatObject which uses 8 bytes
     inner.push_ds_int(8)
     return ip
 
@@ -1018,7 +1003,6 @@ def prim_FLOAT(inner, cur, ip):
 def prim_FLOATS(inner, cur, ip):
     """GForth floating 2012: convert  float count to address units."""
     n = inner.pop_ds_int()
-    # Each float is 8 bytes
     inner.push_ds_int(n * 8)
     return ip
 
@@ -1215,7 +1199,6 @@ def prim_PLUSLOOP_RUNTIME(inner, cur, ip):
             continue_loop = True
 
     if continue_loop:
-        # Continue loop: update counter in place (raw int, no allocation)
         inner.set_loop_counter(0, new_counter_val)
         origin_ip = ip - 1
         target = promote(cur.lits[origin_ip])
@@ -1224,7 +1207,6 @@ def prim_PLUSLOOP_RUNTIME(inner, cur, ip):
         ip = target_ip
         _maybe_enter_jit(inner, target_ip, origin_ip, cur)
     else:
-        # Loop done: pop from loop stack
         inner.pop_loop()
     return ip
 
@@ -1232,14 +1214,14 @@ def prim_PLUSLOOP_RUNTIME(inner, cur, ip):
 # UNLOOP ( -- ) ( R: limit counter -- )
 def prim_UNLOOP(inner, cur, ip):
     """GForth core 2012: discard loop parameters from return stack."""
-    inner.pop_loop()  # Pop from dedicated loop stack
+    inner.pop_loop()
     return ip
 
 
 # LEAVE ( -- ) ( R: limit counter -- )
 def prim_LEAVE(inner, cur, ip):
     """Exit the current loop by cleaning up return stack and jumping to end."""
-    inner.pop_loop()  # Pop from dedicated loop stack
+    inner.pop_loop()
     target = cur.lits[ip - 1]
     assert isinstance(target, W_IntObject)
     ip = target.intval
@@ -1248,7 +1230,6 @@ def prim_LEAVE(inner, cur, ip):
 # I ( -- n ) ( R: limit counter -- limit counter )
 def prim_I(inner, cur, ip):
     """Get the current loop counter (innermost loop)."""
-    # Read from dedicated integer loop stack
     counter_val = inner.peek_loop_counter(0)
     inner.push_ds_int(counter_val)
     return ip
@@ -1556,7 +1537,6 @@ def prim_KEY(inner, cur, ip):
     stdin, stdout, stderr = create_stdio()
     ch = stdin.read(1)
     if len(ch) > 0:
-        # Index into string to get a single character for ord()
         inner.push_ds_int(ord(ch[0]))
     else:
         inner.push_ds_int(0)
@@ -1572,19 +1552,16 @@ def prim_ACCEPT(inner, cur, ip):
 
     stdin, stdout, stderr = create_stdio()
     line = stdin.readline()
-    # Remove trailing newline if present
     line_len = len(line)
     if line_len > 0 and line[line_len - 1] == '\n':
         new_len = line_len - 1
         assert new_len >= 0  # Help RPython prove non-negative
         line = line[:new_len]
 
-    # Limit to max_count
     line_len = len(line)
     if line_len > max_count and max_count >= 0:
         line = line[:max_count]
 
-    # Store characters at addr
     final_len = len(line)
     for j in range(final_len):
         inner.char_store(addr+j, ord(line[j]))
@@ -1685,7 +1662,6 @@ def prim_ABORT_QUOTE_RUNTIME(inner, cur, ip):
     flag = inner.pop_ds_int()
 
     if flag != 0:
-        # Print the abort message
         if isinstance(c_addr, W_StringObject):
             msg = c_addr.strval
         else:
@@ -1832,7 +1808,6 @@ def prim_2RFETCH(inner, cur, ip):
 def prim_PICK(inner, cur, ip):
     """Copy the u-th stack item to the top (0 PICK is equivalent to DUP)."""
     u = inner.pop_ds_int()
-    # Optimized: use peek_ds_int to directly access the item
     item = inner.peek_ds_int(u)
     inner.push_ds_int(item)
     return ip
@@ -2490,7 +2465,6 @@ def prim_TOBODY(inner, cur, ip):
             inner.push_ds(body)
     else:
         # For primitive words, there's no body
-        # Push 0 or raise an error
         inner.push_ds_int(0)
     return ip
 
@@ -2573,7 +2547,6 @@ def prim_C_STORE(inner, cur, ip):
     """GForth core 2012: store char at c-addr."""
     addr = inner.pop_ds_int()
     char = inner.pop_ds_int()
-    # Optimized: use unboxed char_store (no W_IntObject allocation)
     inner.char_store(addr, char)
     return ip
 
@@ -2582,7 +2555,6 @@ def prim_C_STORE(inner, cur, ip):
 def prim_C_FETCH(inner, cur, ip):
     """GForth core 2012: fetch the character stored at c-addr."""
     addr = inner.pop_ds_int()
-    # Optimized: use unboxed char_fetch (no W_IntObject boxing/unboxing)
     char = inner.char_fetch(addr)
     inner.push_ds_int(char)
     return ip
@@ -2609,7 +2581,6 @@ def prim_CHARS(inner, cur, ip):
 # ALIGN ( -- )
 def prim_ALIGN(inner, cur, ip):
     """GForth core 2012: align the data-space pointer."""
-    # Align to cell boundary
     remainder = inner.here % inner.cell_size_bytes
     if remainder != 0:
         inner.here += (inner.cell_size_bytes - remainder)
@@ -3211,10 +3182,10 @@ def prim_ALLOCATE(inner, cur, ip):
         inner.cell_store(header, usable)
         inner.alloc_ptr = new_ptr
         inner.push_ds_int(addr)
-        inner.push_ds_int(0)  # success
+        inner.push_ds_int(0)
     else:
         inner.push_ds_int(0)
-        inner.push_ds_int(-1)  # failure
+        inner.push_ds_int(-1)
     return ip
 
 
@@ -3231,7 +3202,7 @@ def prim_FREE(inner, cur, ip):
                 bucket = []
                 inner.alloc_free[usable] = bucket
             bucket.append(addr)
-    inner.push_ds_int(0)  # success
+    inner.push_ds_int(0)
     return ip
 
 
@@ -3258,7 +3229,6 @@ def prim_RESIZE(inner, cur, ip):
             inner.push_ds_int(old_addr)
             inner.push_ds_int(0)
             return ip
-    # Allocate the new block via the same path as ALLOCATE.
     inner.push_ds_int(new_size)
     prim_ALLOCATE(inner, cur, ip)
     ior = inner.pop_ds_int()
@@ -3494,7 +3464,7 @@ def prim_D2F(inner, cur, ip):
     high = inner.pop_ds_int()
     low = inner.pop_ds_int()
     if LONG_BIT == 64:
-        d = low  # or combine if needed
+        d = low
     else:
         d = (high << 32) | (low & 0xFFFFFFFF)
     inner.push_ds_float(float(d))
@@ -3506,7 +3476,6 @@ def prim_F2D(inner, cur, ip):
     """Convert float to double-cell integer (truncate toward zero)."""
     f = inner.pop_ds_float()
     d = int(f)
-    # Push as double (two cells)
     if LONG_BIT == 64:
         inner.push_ds_int(d)
         inner.push_ds_int(0)  # high part
@@ -3560,10 +3529,8 @@ def prim_FROUND(inner, cur, ip):
 # FLITERAL ( F: r -- ) compilation; ( -- F: r ) run-time
 def prim_FLITERAL(inner, cur, ip):
     """Compile a float literal. At run-time, push the float onto the float stack."""
-    # Pop float from float stack
     if inner.depth_ds_float() > 0:
         floatval = inner.pop_ds_float()
-        # Emit LIT <float> into the compilation buffer
         outer = inner.outer
         if outer is not None:
             outer._emit_lit(W_FloatObject(floatval))
@@ -3805,7 +3772,6 @@ def prim_MS(inner, cur, ip):
     import time
     u = inner.pop_ds_int()
     if u > 0:
-        # Convert milliseconds to seconds for time.sleep
         time.sleep(u / 1000.0)
     return ip
 
@@ -3876,10 +3842,8 @@ def prim_ARGV(inner, cur, ip):
 # UTIME ( -- d )
 def prim_UTIME(inner, cur, ip):
     from rpython.rlib.rtime import time
-    # Get current time in seconds (float), convert to microseconds
     t = time()
     usecs = int(t * 1000000.0)
-    # Push as double-cell (low, high)
     BIT_MASK = (1 << LONG_BIT) - 1
     low = usecs & BIT_MASK
     high = usecs >> LONG_BIT
@@ -3905,7 +3869,6 @@ def prim_CPUTIME(inner, cur, ip):
 # LITERAL ( x -- ) compilation; ( -- x ) run-time
 def prim_LITERAL(inner, cur, ip):
     """Compile a literal. At run-time, push the value onto the stack."""
-    # Pop value from stack
     if inner.ds_int_size() > 0:
         intval = inner.pop_ds_int()
         outer = inner.outer

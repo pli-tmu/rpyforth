@@ -26,7 +26,6 @@ def test_value_to_updates():
 
 
 def test_value_to_in_colon():
-    # compile-mode TO inside a definition
     inner = run("10 VALUE c  : bump 5 TO c ;  bump  c c")
     assert inner.ds_int_size() == 2
     assert inner.pop_ds_int() == 5
