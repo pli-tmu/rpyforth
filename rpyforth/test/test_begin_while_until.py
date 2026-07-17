@@ -11,10 +11,7 @@ def run_lines(lines):
 
 
 def test_begin_double_while_repeat_then():
-    # ansify.fth xt-skip uses BEGIN .. WHILE .. WHILE .. REPEAT THEN: two forward
-    # exits sharing one BEGIN. REPEAT resolves the nearest WHILE and branches back;
-    # the trailing THEN resolves the first WHILE.
-    # skip-zeros: ( n -- n' ) while n>0 and n even, halve; stop at odd or zero.
+    # ansify.fth xt-skip: two WHILEs share one BEGIN; REPEAT resolves the inner WHILE, THEN resolves the outer.
     inner, outer = run_lines([
         ": skip-zeros ( n -- n' )"
         "  BEGIN DUP WHILE"            # n != 0
@@ -38,8 +35,7 @@ def test_begin_double_while_repeat_then():
 
 
 def test_begin_while_until_then_defines():
-    # fcp's >goodVar uses BEGIN ... WHILE ... UNTIL THEN: a loop with an early
-    # WHILE exit (resolved by THEN) and an UNTIL back-branch to BEGIN.
+    # fcp >goodVar: BEGIN...WHILE...UNTIL THEN mixes an early WHILE exit with an UNTIL back-branch.
     inner, outer = run_lines([
         ": walk ( n -- n' )"
         "  BEGIN DUP WHILE"          # while n != 0
@@ -52,8 +48,6 @@ def test_begin_while_until_then_defines():
 
 
 def test_begin_while_until_then_runs():
-    # Count down from n; the loop decrements until DUP is 0 (WHILE exits) or we
-    # short-circuit. Verify it terminates and yields the expected value.
     inner, _ = run_lines([
         ": countdown BEGIN DUP WHILE 1- DUP 0= UNTIL THEN ;",
         "5 countdown",

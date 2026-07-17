@@ -37,8 +37,7 @@ def test_fdepth_two():
 # --- SEARCH ---
 
 def test_search_found():
-    # ( c-addr3 u3 flag ) with flag = -1, u3 = 5 (len of "world"),
-    # and c-addr3 points at "world" (the tail of "hello world").
+    # ( c-addr3 u3 flag ) flag=-1, u3=5, c-addr3 points at "world" in the tail.
     inner, outer = run_lines(['s" hello world" s" world" search'])
     flag = inner.pop_ds_int()
     u3 = inner.pop_ds_int()
@@ -96,7 +95,6 @@ def test_represent_pi():
     assert n == 1
     assert f1 == 0
     assert f2 == -1
-    # pad address is the last thing consumed; recompute from PAD
     # digits start with "314"
     inner2, outer2 = run_lines(["pad"])
     pad = inner2.pop_ds_int()
@@ -160,6 +158,5 @@ def test_vocabulary_compiled_also():
         "forth definitions",
         "myv inv",
     ])
-    # `go` (compiled ALSO/DEFINITIONS) selected myv as current; inv was defined
-    # into it and is found when myv is put back on the search order.
+    # compiled ALSO/DEFINITIONS selected myv; inv was defined into it and is found when myv is on the order.
     assert inner.pop_ds_int() == 7

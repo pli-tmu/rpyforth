@@ -13,8 +13,7 @@ def run_lines(lines):
 
 
 def test_evaluate_of_char_memory_string():
-    # EVALUATE must work when the c-addr points at plain bytes in char memory
-    # (not a boxed S" buffer). brew assembles text and EVALUATEs it.
+    # EVALUATE must work on plain bytes in char memory, not only boxed S" buffers (brew assembles text and EVALUATEs it).
     inner, outer = run_lines([])
     text = "3 4 +"
     addr = inner.here

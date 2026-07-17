@@ -25,16 +25,12 @@ def test_env_override_wins():
 
 
 def test_untranslated_default_is_small():
-    # Untranslated the raw buffer is a simulated array with O(size) creation
-    # cost, so the suite default must stay at 1 MB.
+    # Untranslated buffer creation is O(size), so the suite default must stay at 1 MB.
     assert with_env(None, _alloc_region_bytes) == 1 << 20
 
 
 def test_translated_default_is_generous():
-    # brainless's ttable.fs does `#ttentries /ttentry * 2* ALLOCATE THROW` at
-    # load (several MB). The translated binary must not need an env var for
-    # stock appbench programs; calloc'd pages are lazily mapped so a generous
-    # default costs nothing.
+    # brainless ttable.fs allocates several MB; lazily-mapped calloc pages mean a generous default costs nothing.
     assert _default_alloc_mb(translated=True) >= 64
     assert _default_alloc_mb(translated=False) == 1
 

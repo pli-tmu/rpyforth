@@ -13,8 +13,7 @@ def run_lines(lines):
 
 
 def test_begin_while_until_else_then():
-    # gforth-verified: BEGIN ... WHILE ... UNTIL ... ELSE ... THEN. The WHILE's
-    # forward branch is resolved by ELSE (brew basics.fs char-search-backwards).
+    # gforth-verified: WHILE's forward branch resolved by ELSE (brew basics.fs char-search-backwards).
     inner, outer = run_lines([
         ": t ( n -- r )",
         "  BEGIN dup 0>",
@@ -31,8 +30,7 @@ def test_begin_while_until_else_then():
 
 
 def test_begin_while_until_then_still_works():
-    # Regression: BEGIN ... WHILE ... UNTIL ... THEN (no ELSE) must still compile
-    # (fcp >goodVar pattern).
+    # Regression: BEGIN WHILE UNTIL THEN (no ELSE) must still compile (fcp >goodVar pattern).
     inner, outer = run_lines([
         ": u ( n -- r )",
         "  BEGIN dup 0>",

@@ -24,7 +24,6 @@ def test_roll_three():
 
 
 def test_roll_two_is_rot():
-    # 2 ROLL == ROT
     inner, _ = run_lines(["1 2 3 2 roll"])
     assert _stack(inner) == [2, 3, 1]
 

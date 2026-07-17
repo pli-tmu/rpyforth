@@ -13,8 +13,7 @@ def run_lines(lines):
 
 
 def test_included_missing_file_is_catchable():
-    # gforth-verified: INCLUDED on a non-existent file THROWs, so an enclosing
-    # CATCH recovers with a nonzero code (brew probes an optional identity file).
+    # gforth-verified: INCLUDED on a non-existent file THROWs, so an enclosing CATCH recovers with a nonzero code (brew probes an optional identity file).
     inner, outer = run_lines([
         ": try-load ['] included catch ;",
         's" /nonexistent/definitely-not-here-xyz123" try-load',

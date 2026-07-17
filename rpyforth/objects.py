@@ -53,13 +53,9 @@ class Word(object):
         self.immediate = immediate # mutable for IMMEDIATE
         self.thread = thread # mutable for RECURSIVE
         self.does_ip = -1  # DOES> instruction pointer (-1 means not set)
-        # Integer execution token: a stable id so an xt can live on the (integer)
-        # data stack and be stored/fetched with ! @ , like any cell. WORD_REGISTRY
-        # maps it back to this Word for EXECUTE.
+        # Integer execution token: stable id so an xt can live on the data stack and be stored/fetched with ! @ ,; WORD_REGISTRY maps it back for EXECUTE.
         self.wid = WORD_REGISTRY.register(self)
-        # Single-instruction thread wrapping this word, built on first use by
-        # execute_word_now and reused so each EXECUTE/CATCH does not allocate a
-        # fresh thread (and register id) on every call.
+        # Single-instruction thread built on first use; reused so EXECUTE/CATCH doesn't allocate a fresh thread (and register id) on every call.
         self.now_thread = None
 
     @elidable
@@ -353,7 +349,6 @@ class W_WordObject(W_Object):
 ZERO = W_IntObject(0)
 TRUE = W_IntObject(-1)
 
-# BASE
 HEX     = W_IntObject(16)
 DECIMAL = W_IntObject(10)
 OCTAL   = W_IntObject(8)
@@ -371,6 +366,5 @@ def make_int(val):
         return _small_int_cache[val - SMALL_INT_MIN]
     return W_IntObject(val)
 
-# data space characteristics
 CELL_SIZE_BYTES = 8  # byte-addressed heap with 64-bit little-endian cells
 CELL_SIZE = W_IntObject(CELL_SIZE_BYTES)

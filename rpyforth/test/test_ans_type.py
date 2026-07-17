@@ -11,8 +11,7 @@ def run_lines(lines):
 
 
 def test_ans_type_from_char_memory(capfd):
-    # An ANS-style ( c-addr u ) string in char memory typed via TYPE. This is the
-    # form brainless load-part uses (2DUP ... TYPE on a WORD/COUNT string).
+    # ANS-style ( c-addr u ) TYPE path (brainless load-part uses WORD/COUNT + TYPE).
     inner = run_lines([
         ": grab BL WORD COUNT ;",
         "grab hiZ",
@@ -23,7 +22,7 @@ def test_ans_type_from_char_memory(capfd):
 
 
 def test_boxed_type_still_works(capfd):
-    # ." " compiles a boxed string + TYPE; that path must keep working.
+    # ." compiles a boxed string + TYPE; that path must keep working alongside ANS TYPE.
     run_lines([': say ." boxed" ;', "say"])
     out, _ = capfd.readouterr()
     assert "boxed" in out

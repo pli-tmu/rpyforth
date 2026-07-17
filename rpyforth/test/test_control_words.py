@@ -35,9 +35,7 @@ def test_qdo_nested():
     assert run_and_pop(": t 0 3 0 ?DO 5 5 ?DO 1+ LOOP LOOP ; t") == 0
 
 
-# CASE / OF / ENDOF / ENDCASE
-# In the default clause, "value SWAP" leaves the value below the selector that
-# ENDCASE drops.
+# CASE/OF/ENDOF/ENDCASE: default clause uses "value SWAP" to leave value below the selector that ENDCASE drops.
 _CASE = ": f CASE 1 OF 11 ENDOF 2 OF 22 ENDOF 99 SWAP ENDCASE ;  "
 
 

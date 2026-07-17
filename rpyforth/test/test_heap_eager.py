@@ -62,7 +62,6 @@ def test_float_store_fetch_roundtrip():
 
 
 def test_heap_is_not_none_after_init():
-    # After eager allocation the heap must be present immediately, before any
-    # store has been called.
+    # Heap must be present immediately after init (eager allocation), before any store.
     inner = make_interp()
     assert inner.heap is not None

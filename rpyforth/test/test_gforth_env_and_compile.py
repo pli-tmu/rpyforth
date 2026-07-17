@@ -44,8 +44,7 @@ def test_bracket_compile_forces_compilation():
 
 
 def test_look_then_name_string_gives_name():
-    # gforth.fs defines xt>string as `look IF name>string THEN`; our LOOK leaves
-    # ( xt -1 ) so that idiom yields the word name.
+    # gforth.fs defines xt>string as `look IF name>string THEN`; LOOK leaves ( xt -1 ) so that idiom yields the word name.
     inner, outer = run_lines([
         ": foo ;",
         ": xts look IF name>string THEN ;",

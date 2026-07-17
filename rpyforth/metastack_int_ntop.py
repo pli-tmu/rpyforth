@@ -33,9 +33,7 @@ NTOP_ACTIVE_MAX = EFFECTIVE_NTOP + FRAME_SIZE
 
 def init_fields(host):
     """Install the host-resident active-cache + metastack spill state."""
-    # All sixteen scalar tops are always present so the field set is uniform
-    # across every NTOP value; only the first EFFECTIVE_NTOP are live after
-    # constant folding. t0 is the top, t{EFFECTIVE_NTOP-1} the deepest scalar.
+    # All sixteen scalar fields always exist; only the first EFFECTIVE_NTOP are live after constant folding.
     host.t0 = 0
     host.t1 = 0
     host.t2 = 0
@@ -56,9 +54,7 @@ def init_fields(host):
     host.frame = [0] * FRAME_SIZE
     make_sure_not_resized(host.frame)
 
-    # Shared spill: every cell below the cached window. Plain heap (immutable
-    # reference), sized to the whole stack depth, one per VM; every fragment is
-    # a window [0, spill_ptr) onto it, so nest/unnest allocates nothing.
+    # Shared spill: plain heap (immutable reference), one per VM; every fragment is a window [0, spill_ptr).
     host.frag_ptr = 0
     host.spill = [0] * SPILL_SIZE
     make_sure_not_resized(host.spill)
@@ -153,15 +149,8 @@ class DSIntMetaStackN(DSMetaStack):
     def init_fields(self):
         init_fields(self)
 
-    # ------------------------------------------------------------------
-    # Scalar-tops helpers. Written as UNROLLED chains gated by constant
-    # comparisons against EFFECTIVE_NTOP; the translator folds each branch to a
-    # constant, leaving exactly EFFECTIVE_NTOP live scalars. A vable array cannot be
-    # indexed by a runtime offset, so the scalars are addressed only through
-    # these constant-index chains.
-    # ------------------------------------------------------------------
+    # Scalar-tops helpers: unrolled chains gated by constant compares against EFFECTIVE_NTOP; constant folding leaves exactly EFFECTIVE_NTOP live scalars. A vable array cannot use a runtime-offset index, so scalars use constant-index chains only.
     def _get_scalar(self, k):
-        # Return the k'th scalar top (0 = top). k must be < EFFECTIVE_NTOP.
         if k == 0:
             return self.t0
         if k == 1:
@@ -230,9 +219,7 @@ class DSIntMetaStackN(DSMetaStack):
 
     @unroll_safe
     def _push_scalar(self, v):
-        # Shift the scalar tops down by one and drop v into t0. The scalar that
-        # falls off the deepest slot (t{EFFECTIVE_NTOP-1}) is handled by the caller,
-        # which reads it before this shift (push_on) -- here we only slide.
+        # Caller reads t{EFFECTIVE_NTOP-1} before calling; this method only slides.
         if EFFECTIVE_NTOP > 15:
             self.t15 = self.t14
         if EFFECTIVE_NTOP > 14:
@@ -267,9 +254,7 @@ class DSIntMetaStackN(DSMetaStack):
 
     @unroll_safe
     def _pop_scalar_shift(self, refill):
-        # Slide the scalar tops up by one (t0 = t1, t1 = t2, ...) and drop
-        # ``refill`` into the deepest live scalar t{EFFECTIVE_NTOP-1}. The old t0 is
-        # read by the caller before this call.
+        # Caller reads t0 before this call; drops refill into t{EFFECTIVE_NTOP-1}.
         if EFFECTIVE_NTOP > 1:
             self.t0 = self.t1
         if EFFECTIVE_NTOP > 2:
@@ -302,10 +287,7 @@ class DSIntMetaStackN(DSMetaStack):
             self.t14 = self.t15
         self._set_scalar(EFFECTIVE_NTOP - 1, refill)
 
-    # ------------------------------------------------------------------
-    # Hot path. The top EFFECTIVE_NTOP cells are scalars; the frame array is reached
-    # only past depth EFFECTIVE_NTOP, and the spill only past NTOP_ACTIVE_MAX.
-    # ------------------------------------------------------------------
+    # Hot path: top EFFECTIVE_NTOP cells are scalars; frame reached past EFFECTIVE_NTOP; spill past NTOP_ACTIVE_MAX.
     def push_on(self, v):
         dd = self.cache_depth
         if dd >= NTOP_ACTIVE_MAX:
@@ -333,9 +315,7 @@ class DSIntMetaStackN(DSMetaStack):
         return r
 
     def _pop_from_spill(self):
-        # Cache empty: the top now lives in the spill (a callee consumed past its
-        # imported window into parent cells). Underflow is an interpreter bug,
-        # checked by assert (no branch on the hot path).
+        # Underflow is an interpreter bug; assert instead of branching on the hot path.
         ap = self.spill_ptr - 1
         assert ap >= 0
         r = self.spill[ap]
@@ -344,9 +324,7 @@ class DSIntMetaStackN(DSMetaStack):
 
     @unroll_safe
     def _spill_bottom(self):
-        # Move the deepest cached cell (frame[0]) to the spill and slide the
-        # frame down, leaving one free slot. Cold: only when the stack is deeper
-        # than NTOP_ACTIVE_MAX.
+        # Cold path: only when depth exceeds NTOP_ACTIVE_MAX.
         ap = self.spill_ptr
         if ap >= SPILL_SIZE:
             raise DataStackOverflow()
@@ -361,12 +339,7 @@ class DSIntMetaStackN(DSMetaStack):
 
     @unroll_safe
     def _park_one(self):
-        # Evacuate the single deepest cached cell to the spill and slide the
-        # whole cache (frame then scalars) down by one, so the surviving cells
-        # end packed at the shallow end (t0, t1, ...). Deepest cell is frame[0]
-        # when the frame holds cells, else the deepest live scalar. Reuses only
-        # the constant-index scalar chains and the frame[i]=frame[i+1] slide, so
-        # no runtime-offset index ever touches the virtualizable arrays.
+        # Evacuates the deepest cached cell to spill; no runtime-offset index touches the virtualizable arrays.
         ap = self.spill_ptr
         if ap >= SPILL_SIZE:
             raise DataStackOverflow()
@@ -439,38 +412,21 @@ class DSIntMetaStackN(DSMetaStack):
         self.frag_ptr = 0
         self.spill_ptr = 0
 
-    # ------------------------------------------------------------------
-    # Call entry / return. On a call the caller's below-CALL_WINDOW cells are
-    # parked in the spill and the active depth is normalized to the CALL_WINDOW
-    # top cells (2, regardless of EFFECTIVE_NTOP -- calling-convention parity
-    # across every NTOP value). Return is O(1): the spill already holds the
-    # caller's cells.
-    # ------------------------------------------------------------------
+    # Call entry / return: CALL_WINDOW=2 regardless of EFFECTIVE_NTOP (calling-convention parity); return is O(1).
     @unroll_safe
     def push_fragment_on(self):
         self.frag_ptr = self.frag_ptr + 1
         dd = self.cache_depth
-        # Park below-window cells one at a time, deepest first, so each ends at
-        # spill[ap+k] in the same order the flagship parks and the surviving
-        # window cells finish packed at t0..t{CALL_WINDOW-1}.
         while dd > CALL_WINDOW:
             self._park_one()
             dd -= 1
 
     def pop_fragment_commit_on(self):
-        # O(1): the callee's net result is already the cache top and the caller's
-        # parked cells are already the spill top, contiguously below it. Nothing
-        # to move -- just unwind the call counter. Every poppable call-stack
-        # entry was pushed with a paired push_fragment_on (and ABORT zeroes both
-        # counters together), so the counter cannot underflow; assert instead of
-        # branching on the hot return path.
+        # O(1): counter cannot underflow (ABORT zeroes both together); assert instead of branching.
         fp = self.frag_ptr - 1
         assert fp >= 0
         self.frag_ptr = fp
 
-    # ------------------------------------------------------------------
-    # Public, test-facing wrappers.
-    # ------------------------------------------------------------------
     def __init__(self):
         self.init_fields()
 

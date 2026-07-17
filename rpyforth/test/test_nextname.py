@@ -37,17 +37,14 @@ def test_nextname_then_variable():
 
 
 def test_nextname_is_consumed_once():
-    # After the first defining word consumes the pending name, the next
-    # defining word must go back to parsing its name from input normally.
+    # After the first defining word consumes the pending name, the next word parses its name from input normally.
     inner = run('S" one" NEXTNAME CREATE 10 ,  20 CONSTANT two  one @ two')
     assert inner.pop_ds_int() == 20
     assert inner.pop_ds_int() == 10
 
 
 def test_to_order_findable_word():
-    # >ORDER must be a real dictionary word (findable via ') and usable
-    # inside a colon body (registered as a prim, not just an interpret-mode
-    # token).
+    # >ORDER must be a real dictionary word (findable via ') and usable inside a colon body.
     inner, outer = make()
     outer.interpret_line("' >ORDER DROP")  # DROP underflows (raises) if ' found nothing
 

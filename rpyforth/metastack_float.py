@@ -78,9 +78,7 @@ class DSFloatMetaStack(DSIntMetaStack):
     def init_float_fields(self):
         init_float_fields(self)
 
-    # ------------------------------------------------------------------
-    # Hot path. NTOP scalar tops (ft0, ft1) keep FDUP/F+/FSWAP in registers.
-    # ------------------------------------------------------------------
+    # Hot path: NTOP scalar tops (ft0, ft1) keep FDUP/F+/FSWAP in registers.
     def fpush_on(self, v):
         dd = self.fdep
         if dd >= ACTIVE_MAX:
@@ -170,9 +168,7 @@ class DSFloatMetaStack(DSIntMetaStack):
         self.ffrag_ptr = 0
         self.fspill_ptr = 0
 
-    # ------------------------------------------------------------------
     # Call entry / return: float cells nest at the same points as int cells.
-    # ------------------------------------------------------------------
     @unroll_safe
     def push_float_fragment_on(self):
         self.ffrag_ptr = self.ffrag_ptr + 1
@@ -195,9 +191,6 @@ class DSFloatMetaStack(DSIntMetaStack):
         assert fp >= 0
         self.ffrag_ptr = fp
 
-    # ------------------------------------------------------------------
-    # Public, test-facing wrappers for the float stack.
-    # ------------------------------------------------------------------
     def fpush(self, v):
         self.fpush_on(v)
 

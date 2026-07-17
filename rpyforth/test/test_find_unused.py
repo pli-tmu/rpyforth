@@ -12,8 +12,7 @@ def run_lines(lines):
 
 
 def test_find_counted_string_from_word():
-    # Standard FIND ( c-addr -- xt 1|-1 ): the counted string comes from BL WORD
-    # (char memory, length byte first). This is how fcp uses FIND.
+    # Standard FIND ( c-addr -- xt 1|-1 ): counted string from BL WORD (char memory, length byte first), as fcp uses it.
     inner = run_lines([
         "BL WORD DUP FIND",
     ])
@@ -33,7 +32,7 @@ def test_find_counted_string_not_found():
 
 
 def test_find_in_colon_body():
-    # FIND compiled inside a colon body (fcp's [UNDEFINED]/[DEFINED]).
+    # FIND compiled inside a colon body (fcp's [UNDEFINED]/[DEFINED] pattern).
     inner = run_lines([
         ": defined? BL WORD FIND NIP ;",
         "defined? SWAP",

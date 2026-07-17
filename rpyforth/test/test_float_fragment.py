@@ -6,10 +6,6 @@ from rpyforth.outer_interp import OuterInterpreter
 from rpyforth.inner_interp import InnerInterpreter
 
 
-# ---------------------------------------------------------------------------
-# Unit level: exercise the float metastack directly (independent of the flag).
-# ---------------------------------------------------------------------------
-
 def test_float_push_pop_order():
     s = DSFloatMetaStack()
     n = CALL_WINDOW + 2
@@ -21,7 +17,6 @@ def test_float_push_pop_order():
 
 
 def test_float_deep_spill():
-    # Push well past the cache so the shared fspill is exercised, then read back.
     s = DSFloatMetaStack()
     n = 2 * ACTIVE_MAX
     for v in range(n):
@@ -110,11 +105,6 @@ def test_int_and_float_independent():
     assert s.fpop() == 1.25
 
 
-# ---------------------------------------------------------------------------
-# End-to-end: through the interpreter, so the flag-gated helper dispatch and
-# call-boundary parking are all exercised.
-# ---------------------------------------------------------------------------
-
 def run(line):
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
@@ -149,13 +139,11 @@ def test_e2e_fdepth():
 
 
 def test_e2e_colon_word_floats():
-    # A colon word consumes and produces floats across the call boundary.
     inner = run(": scale 2e F* ; 3e scale 4e F+")
     assert inner.pop_ds_float() == 10.0
 
 
 def test_e2e_deep_float_stack_crossing_frame():
-    # Push more floats than the cache holds, sum them inside a loop.
     n = ACTIVE_MAX + 5
     src = " ".join("1e" for _ in range(n))
     prog = src + " " + " ".join("F+" for _ in range(n - 1))
@@ -189,7 +177,7 @@ def test_e2e_s_to_f_and_f_to_d():
 
 
 def test_e2e_catch_restores_float_depth():
-    # Floats pushed before THROW are discarded; the pre-CATCH float survives.
+    # Floats pushed before THROW are discarded; only the pre-CATCH float survives.
     inner = run("9e  : bad 1e 2e 3e 7 THROW ;  ' bad CATCH")
     assert inner.pop_ds_int() == 7          # throw code
     assert inner.pop_ds_float() == 9.0      # float depth restored
@@ -204,7 +192,6 @@ def test_e2e_catch_no_throw_keeps_floats():
 
 
 def test_e2e_float_heapish_pattern():
-    # Nested colon words shuffling floats, mimicking the composite/heap kernels.
     prog = (": sq FDUP F* ; "
             ": hyp sq FSWAP sq F+ FSQRT ; "
             "3e 4e hyp")

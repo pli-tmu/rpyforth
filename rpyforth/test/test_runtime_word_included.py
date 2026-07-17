@@ -19,8 +19,7 @@ def _chars(inner, c_addr, u):
 
 
 def test_runtime_word_reads_next_token():
-    # BL WORD executed from a colon body consumes the token after the call site
-    # and returns a counted string; COUNT then yields ( c-addr u ).
+    # BL WORD from a colon body consumes the token after the call site and returns a counted string.
     inner = run_lines([
         ": grab BL WORD COUNT ;",
         "grab hello",
@@ -32,8 +31,7 @@ def test_runtime_word_reads_next_token():
 
 
 def test_runtime_included_from_char_memory():
-    # A filename assembled in char memory (as brainless does via PAD/MOVE) and
-    # passed to INCLUDED at runtime must load the file.
+    # A filename assembled in char memory (as brainless does via PAD/MOVE) must be accepted by INCLUDED.
     path = "/tmp/inc_target_rt.fs"
     f = open(path, "w")
     f.write(": got 111 ;\n")
@@ -50,8 +48,7 @@ def test_runtime_included_from_char_memory():
 
 
 def test_runtime_included_via_word():
-    # Mirror brainless load-part: BL WORD builds the counted string, COUNT turns
-    # it into ( c-addr u ), INCLUDED loads it -- all at runtime in a colon body.
+    # BL WORD / COUNT / INCLUDED at runtime in a colon body (mirrors brainless load-part).
     path = "/tmp/inc_target_word.fs"
     f = open(path, "w")
     f.write(": viaword 222 ;\n")
@@ -68,10 +65,7 @@ def test_runtime_included_via_word():
 
 
 def test_refill_reads_next_include_line_and_parses_names():
-    # Mirror brainless squares:  a colon word runs REFILL to pull the next
-    # physical line of the file being INCLUDEd, then parses names off it to
-    # define constants. After the word returns, interpretation resumes on the
-    # line following the consumed one.
+    # REFILL in a colon word pulls the next physical line and parses names off it (mirrors brainless squares).
     path = "/tmp/inc_refill.fs"
     f = open(path, "w")
     f.write(
@@ -95,7 +89,6 @@ def test_refill_reads_next_include_line_and_parses_names():
 
 
 def test_refill_returns_false_at_end_of_input():
-    # With no further include lines, REFILL pushes false.
     path = "/tmp/inc_refill_eof.fs"
     f = open(path, "w")
     f.write(": lastline REFILL ;\nlastline\n")
@@ -105,10 +98,7 @@ def test_refill_returns_false_at_end_of_input():
             ': loadit S" ' + path + '" INCLUDED ;',
             "loadit",
         ])
-        # The trailing empty split element is the only remaining "line"; REFILL
-        # consumes it (true) then any subsequent call yields false. Here the
-        # word runs on the "lastline" line, so one empty line remains -> true,
-        # but we only assert it does not underflow and leaves a flag.
+        # The word runs on the "lastline" line; one empty line remains so REFILL yields true or false here.
         flag = inner.pop_ds_int()
         assert flag == 0 or flag == -1
     finally:
@@ -116,8 +106,7 @@ def test_refill_returns_false_at_end_of_input():
 
 
 def test_second_string_literal_after_dot_quote_compiles_content():
-    # A ." and an s" on the same line must each track their own occurrence
-    # index; the s" content used to compile empty.
+    # ." and s" on the same line must each track their own occurrence index; s" used to compile empty.
     from rpyforth.outer_interp import OuterInterpreter
     from rpyforth.inner_interp import InnerInterpreter
     inner = InnerInterpreter()

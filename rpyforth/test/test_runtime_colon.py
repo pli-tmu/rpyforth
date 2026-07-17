@@ -13,8 +13,7 @@ def run_lines(lines):
 
 
 def test_runtime_colon_defines_noop_word():
-    # brew's basics.fs `(zero-offset:)` pattern: a defining word that runs `:`
-    # then `POSTPONE ;` to create a no-op named word.
+    # brew's basics.fs `(zero-offset:)` pattern: a defining word that runs `:` then `POSTPONE ;` to create a no-op named word.
     inner, outer = run_lines([
         ": (zero-offset:) : POSTPONE ; ;",
         "(zero-offset:) foo",

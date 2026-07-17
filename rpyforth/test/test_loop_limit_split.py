@@ -58,8 +58,7 @@ def test_computed_limit_qdo_runs():
 
 
 def test_negative_computed_limit():
-    # Downward +LOOP with a computed (negative) limit -6 (as 2 -3 *).
-    # From 0 by -2 until crossing -6: indices 0, -2, -4, -6 -> sum -12.
+    # Downward +LOOP with a computed (negative) limit -6 (as 2 -3 *). From 0 by -2 until crossing -6: indices 0, -2, -4, -6 -> sum -12.
     assert run_and_pop(": t 0 2 -3 * 0 DO I + -2 +LOOP ; t") == -12
 
 

@@ -11,8 +11,7 @@ def run_lines(lines):
 
 
 def test_inline_defines_word_like_colon():
-    # :inline name body ; behaves structurally like : name body ; (fcp's own
-    # profiling fallback is exactly : :inline : ;). Inlining is a perf detail.
+    # :inline must behave structurally like : name body ; (fcp's profiling fallback is exactly : :inline : ;).
     inner, _ = run_lines([
         ":inline piece 7 AND ;",
         ": t 15 piece ;",
@@ -22,17 +21,15 @@ def test_inline_defines_word_like_colon():
 
 
 def test_inline_reported_defined():
-    # fcp guards its own :inline definition with [UNDEFINED] :inline [IF] ... .
-    # We must report :inline as defined so that block is skipped.
+    # fcp guards its own :inline with [UNDEFINED] :inline [IF]; we must report it defined so that block is skipped.
     inner, _ = run_lines([
         "[UNDEFINED] :inline 0= ",
     ])
-    # 0= of the [UNDEFINED] flag: defined -> flag 0 -> 0= -> -1 (true)
     assert inner.pop_ds_int() == -1
 
 
 def test_inline_with_stack_comment_tail():
-    # fcp writes :inline otherSide  COLORMASK XOR ; ( color -- ~color )
+    # fcp writes :inline otherSide COLORMASK XOR ; ( color -- ~color ) — trailing stack comment must not confuse parsing.
     inner, _ = run_lines([
         "$30 CONSTANT COLORMASK",
         ":inline otherSide COLORMASK XOR ; ( color -- ~color )",

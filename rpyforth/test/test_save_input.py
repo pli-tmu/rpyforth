@@ -20,17 +20,12 @@ def test_save_restore_round_trips_false():
 
 
 def test_restore_input_rewinds_parse_cursor():
-    # Mirror brainless option-exists?: after SAVE-INPUT, parse+lookup a name,
-    # then RESTORE-INPUT rewinds so the same name can be parsed again. Here we
-    # parse a following token twice and confirm both reads see it.
+    # Mirror brainless option-exists?: after SAVE-INPUT, parse+lookup a name, then RESTORE-INPUT rewinds so the same name can be parsed again. Here we parse a following token twice and confirm both reads see it.
     inner = run([
         ": grab  BL WORD COUNT NIP ;",           # parses next token, returns len
-        # Keep the saved input spec on top across the parse by stashing grab's
-        # result on the return stack (as brainless option-exists? does with >R).
         ": twice  SAVE-INPUT grab >R RESTORE-INPUT DROP R> DROP grab ;",
         "twice hello",
     ])
-    # Second grab must still see "hello" (len 5) because RESTORE-INPUT rewound.
     assert inner.pop_ds_int() == 5
 
 

@@ -4,25 +4,13 @@ from rpython.rlib.objectmodel import we_are_translated
 
 from rpyforth.objects import W_FloatObject, make_int
 
-# Byte-addressed data space backed by one raw (GC-untracked) byte buffer, so
-# C! / C@ and ! / @ reinterpret the same storage exactly like real Forth
-# memory: a cell is the 8 little-endian bytes at its address, and both views
-# compile to single raw loads/stores under the JIT.
+# Byte-addressed raw (GC-untracked) buffer; C!/C@ and !/@ share the same storage; JIT folds to single raw load/store.
 import os
 
-# Dictionary + string space: HERE grows here from 0, and the boxed-string side
-# table (inner.buf) covers exactly this region. The fixed scratch cells
-# (parse cursor / BASE / STATE / WORD buffer) live at the top of THIS region so
-# they are always cheap to touch; the separate ALLOCATE region sits above it.
+# HERE grows from 0; scratch cells (parse cursor/BASE/STATE/WORD buffer) live at the top of this region.
 DICT_SIZE_BYTES = 1 << 23
 
-# ALLOCATE / FREE space: a separate high region so a program that ALLOCATEs a
-# large block (appbench benchgc's gc.fs grabs one ~120 MB memory block up front)
-# does not disturb dictionary space, the boxed-string table, or the scratch
-# cells. Its size is chosen at start-up (see _alloc_region_bytes) so the default
-# stays tiny -- untranslated the raw buffer is a simulated array whose creation
-# cost is O(size), and the whole test suite must keep it small. Programs that
-# need a big region set RPYFORTH_ALLOC_MB.
+# Separate ALLOCATE region above DICT (large ALLOCATE blocks like benchgc's ~120 MB don't disturb dict space); default tiny since untranslated the buffer costs O(size) to create, set RPYFORTH_ALLOC_MB to override.
 def _alloc_region_bytes():
     raw = os.environ.get("RPYFORTH_ALLOC_MB")
     mb = 0
@@ -43,19 +31,12 @@ def _alloc_region_bytes():
 
 
 def _default_alloc_mb(translated):
-    # Translated, the region is one calloc whose pages the OS maps lazily, so a
-    # generous default costs nothing and stock appbench programs (brainless's
-    # ttable ALLOCATEs several MB at load) run without an env var. Untranslated
-    # the raw buffer is a simulated array with O(size) creation cost, so the
-    # test suite default must stay at 1 MB.
+    # Translated: calloc pages are lazily mapped by the OS so 64 MB is free; untranslated: O(size) cost so keep at 1 MB.
     if translated:
         return 64
     return 1
 
-# Compile-time upper bound used only for RPython-friendly constants; the real
-# runtime heap size is DICT_SIZE_BYTES + _alloc_region_bytes(), computed in
-# InnerInterpreter. HEAP_SIZE_BYTES here is the DEFAULT (small) total, used by
-# the asserts and by any code that needs a conservative constant.
+# Compile-time constant (default/small total); real runtime size is DICT_SIZE_BYTES + _alloc_region_bytes().
 ALLOC_BASE = DICT_SIZE_BYTES
 HEAP_SIZE_BYTES = DICT_SIZE_BYTES + (1 << 20)
 HEAP_CELL_COUNT = HEAP_SIZE_BYTES >> 3
@@ -64,8 +45,7 @@ CELL_BYTES = 8
 
 
 class Heap(object):
-    # The raw buffer pointer never changes after __init__, so the JIT hoists
-    # the load once per trace.
+    # immutable reference: raw pointer never changes after __init__; JIT hoists the load once per trace.
     _immutable_fields_ = ["size", "raw"]
 
     def __init__(self, size):

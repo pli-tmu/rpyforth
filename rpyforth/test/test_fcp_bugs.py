@@ -11,18 +11,6 @@ def run_lines(lines):
     return inner
 
 
-# ---------------------------------------------------------------------------
-# Bug 1: POSTPONE in IMMEDIATE word must defer, not execute, the target.
-#
-# fcp defines:
-#   : Northerly? POSTPONE 0< ; IMMEDIATE
-# then compiles Northerly? inside a colon definition.
-# With the broken POSTPONE (emitting LIT/EXECUTE), Northerly? executes 0<
-# at compile time on whatever is on the runtime data stack, consuming it.
-# After the fix (emitting LIT/(POSTPONE)), Northerly? compiles 0< into
-# the enclosing definition and leaves the runtime stack unchanged.
-# ---------------------------------------------------------------------------
-
 def test_postpone_nonimmediate_defers_not_executes():
     """POSTPONE on a non-immediate word must compile the word, not run it."""
     inner = run_lines([
@@ -31,12 +19,6 @@ def test_postpone_nonimmediate_defers_not_executes():
         ": check my-0< ;",
         "-1 check",
     ])
-    # If POSTPONE correctly deferred 0<, then `check` behaves like `: check 0< ;`
-    # Running -1 check should push -1 (true, since -1 < 0).
-    # If POSTPONE wrongly executed 0< at compile time, 42 would have been
-    # consumed at definition time, and `check` would run 0< on -1 anyway
-    # (since the broken path still compiles EXECUTE which calls the wid), but
-    # the 42 would be gone from the stack and the runtime stack would be wrong.
     assert inner.pop_ds_int() == -1
 
 
@@ -48,12 +30,6 @@ def test_postpone_does_not_consume_stack_at_compile_time():
         ": skip wrap-drop ;",
         "999",
     ])
-    # wrap-drop is IMMEDIATE; when compiling `skip`, it should compile DROP
-    # into skip's body without touching the runtime stack.
-    # After `: skip wrap-drop ;`, the 999 pushed before must still be on stack.
-    # Running `999` afterwards leaves two 999s on the stack.
-    # If POSTPONE wrongly executed DROP at compile time, the first 999 is gone
-    # and only the second 999 would remain.
     assert inner.pop_ds_int() == 999
     assert inner.pop_ds_int() == 999
 
@@ -66,9 +42,6 @@ def test_fcp_northerly_pattern():
         ": sqAttacks? Northerly? ;",
     ])
     u0 = inner.pop_ds_int()
-    # UNUSED is always > 0 (some dictionary space remains).
-    # If POSTPONE fired 0< at compile time, u0 would be 0 (result of 0< on
-    # positive UNUSED) instead of the original positive UNUSED value.
     assert u0 > 0
 
 
@@ -97,16 +70,6 @@ def test_fcp_total_bytes_positive():
     assert u1 >= 0, "u1 must be non-negative"
     assert u0 >= u1, "bytes used must be non-negative (u0 - u1 >= 0)"
 
-
-# ---------------------------------------------------------------------------
-# Bug 2a: WORD must not advance HERE.
-#
-# Standard: WORD writes its counted string to a scratch area (typically PAD
-# or a fixed word-buffer) and returns its address. HERE must not change.
-# fcp's `inBkMv` calls `BL WORD` repeatedly while processing opening-book
-# lines.  If each call advances here by (1+len), book-bytes measurements
-# via `here delta` grow ~970 bytes beyond the actual node allocation.
-# ---------------------------------------------------------------------------
 
 def test_bl_word_does_not_advance_here():
     """BL WORD must leave HERE unchanged."""
@@ -146,10 +109,6 @@ def test_repeated_bl_word_stable_here():
     assert delta == 0, "HERE drifted by %d after repeated BL WORD calls" % delta
 
 
-# ---------------------------------------------------------------------------
-# Bug 2b: UNUSED must always return a non-negative value.
-# ---------------------------------------------------------------------------
-
 def test_unused_nonnegative():
     """UNUSED must always be >= 0."""
     inner = run_lines(["UNUSED"])
@@ -169,10 +128,6 @@ def test_unused_decreases_after_allot():
     assert u0 > u1, "UNUSED should decrease after ALLOT"
     assert u0 - u1 >= 64
 
-
-# ---------------------------------------------------------------------------
-# CPUTIME double-cell sanity: nps arithmetic must not go negative.
-# ---------------------------------------------------------------------------
 
 def test_cputime_pushes_four_cells():
     """CPUTIME pushes two double-cell values (user, sys) = 4 cells total."""

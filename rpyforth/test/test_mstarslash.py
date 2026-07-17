@@ -34,8 +34,7 @@ def test_no_overflow_scale():
 
 
 def test_triple_precision_overflow():
-    # 1000000000000 0 1000000 3 m*/ d. -> 333333333333333333  (gforth)
-    # d1*n1 overflows 64 bits, exercising the triple-cell path.
+    # 1000000000000 0 1000000 3 m*/ d. -> 333333333333333333  (gforth) d1*n1 overflows 64 bits, exercising the triple-cell path.
     assert mstarslash("1000000000000 0 1000000 3 m*/") == (333333333333333333, 0)
 
 

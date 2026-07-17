@@ -10,8 +10,7 @@ def run(line):
 
 
 def test_value_defines_readable_value():
-    # VALUE consumes the initializer; each `x` re-pushes it (depth discriminates
-    # a no-op VALUE, which would leave the initializer on the stack).
+    # VALUE consumes the initializer; each `x` re-pushes it (depth discriminates a no-op VALUE, which would leave the initializer on the stack).
     inner = run("123 VALUE x  x x")
     assert inner.ds_int_size() == 2
     assert inner.pop_ds_int() == 123

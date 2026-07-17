@@ -33,8 +33,7 @@ def _env_set(name):
     return bool(os.environ.get(name))
 
 
-# FRAME_SIZE: cells cached in the virtualizable frame array (default 8,
-# clamped to [1, 64]).
+# FRAME_SIZE: cells cached in the virtualizable frame array (default 8, clamped to [1, 64]).
 _frame_size = _uint_env("RPYFORTH_FRAME_SIZE")
 if _frame_size < 1:
     FRAME_SIZE = 8
@@ -44,8 +43,7 @@ else:
     FRAME_SIZE = _frame_size
 ACTIVE_MAX = NTOP + FRAME_SIZE
 
-# EFFECTIVE_NTOP: number of scalar tops actually in effect. The flagship uses
-# NTOP=2; the parametric-NTOP variant overrides it to one of 2/4/8/16.
+# EFFECTIVE_NTOP: scalar tops in effect (flagship NTOP=2; parametric variant overrides to 2/4/8/16).
 _requested_ntop = _uint_env("RPYFORTH_NTOP")
 if _requested_ntop in (2, 4, 8, 16):
     EFFECTIVE_NTOP = _requested_ntop
@@ -63,19 +61,11 @@ FRAGMENT_SIZE = 256
 TOP_CACHE_SIZE = 4
 STACK_SIZE = FRAGMENT_SIZE
 
-# The stack fragment is the master switch; every cache variant below requires
-# it. With it off, the interpreter uses the plain array-backed stacks.
+# Master switch for every cache variant below; off means plain array-backed stacks.
 USE_STACK_FRAGMENT = _env_set("RPYFORTH_STACK_FRAGMENT")
 STACK_FRAGMENT_STRICT = _env_set("RPYFORTH_STACK_FRAGMENT_STRICT")
 
-# The int cache has three mutually exclusive layouts, resolved here in priority
-# order so no later fixups are needed:
-#   * frame-only (RPYFORTH_FRAME_ONLY=1, NTOP=0): every cached cell lives in the
-#     virtualizable frame[*] array, no scalar tops.
-#   * parametric-NTOP (RPYFORTH_NTOP set): EFFECTIVE_NTOP scalar tops.
-#   * default: the two scalar tops t0, t1 plus the frame array.
-# The float fragment is an opt-in addon (measured a net loss) that rides only on
-# the default layout.
+# Three mutually exclusive int-cache layouts resolved in priority order: frame-only (NTOP=0, all cells in the virtualizable frame), parametric-NTOP, or default (t0/t1 + frame); the float fragment is a default-only opt-in addon.
 USE_FRAME_ONLY = USE_STACK_FRAGMENT and _env_is("RPYFORTH_FRAME_ONLY", "1")
 USE_NTOP_VARIANT = (USE_STACK_FRAGMENT and not USE_FRAME_ONLY
                     and _env_set("RPYFORTH_NTOP"))

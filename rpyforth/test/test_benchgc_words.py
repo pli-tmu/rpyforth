@@ -83,15 +83,10 @@ def test_2variable():
     assert inner.pop_ds_int() == 20
 
 
-# --- CS-ROLL: [ 1 ] cs-roll swaps the top two control-flow entries so a THEN
-#     after a BEGIN resolves an earlier IF (the gc.fs sweep1 idiom) ---
+# CS-ROLL: [ 1 ] cs-roll swaps the top two control-flow entries so a THEN after a BEGIN resolves an earlier IF (gc.fs sweep1 idiom).
 
 def test_cs_roll_resolves_earlier_if():
-    # Mirrors the gc.fs sweep1 idiom exactly (verified against gforth): an IF
-    # with no immediate THEN, a BEGIN loop, and inside it `[ 1 ] [cs-roll] THEN`
-    # where THEN resolves the earlier IF. cs-roll runs at compile time via the
-    # immediate [cs-roll] wrapper. There is no outer THEN and no fall-through.
-    #   n<>0: IF taken, jumps into the loop, pushes 222, EXITs -> 222.
+    # gc.fs sweep1: IF with no immediate THEN, BEGIN loop, inside it [cs-roll] THEN resolves the earlier IF; n<>0 pushes 222 and EXITs.
     src = (
         ": [cs-roll] cs-roll ; immediate "
         ": t ( n -- x ) "
@@ -107,8 +102,7 @@ def test_cs_roll_resolves_earlier_if():
 
 
 def test_cs_roll_false_branch():
-    #   n=0: IF not taken; the cs-roll'd THEN target sits just before EXIT, so
-    #   control EXITs without pushing 222 (matches gforth: stack stays empty).
+    # n=0: IF not taken; cs-roll'd THEN sits before EXIT so control exits without pushing 222.
     inner = run(
         ": [cs-roll] cs-roll ; immediate "
         ": t ( n -- ) "
@@ -119,11 +113,8 @@ def test_cs_roll_false_branch():
     assert inner.ds_int_size() == 0
 
 
-# --- POSTPONE of the immediate '(' comment word (compat/assert.fs assertn) ---
-
 def test_postpone_paren_comments_out():
-    # foo, when it runs during compilation of bar, executes '(' which eats the
-    # following text up to ')'. bar should compute 1 5 + = 6.
+    # POSTPONE of the immediate '(' word (compat/assert.fs assertn): foo executes '(' during bar's compilation, eating tokens up to ')'; bar computes 1+5=6.
     src = (
         ": foo postpone ( ; immediate "
         ": bar 1 foo 2 3 4 ) 5 + ; "

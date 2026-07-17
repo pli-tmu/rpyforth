@@ -6,9 +6,7 @@ def _is_space(ch):
             ch == '\v' or ch == '\f')
 
 
-# Words that open a string literal terminated by '"'. Inside such a literal a
-# backslash or paren is ordinary string content, not a comment, so comment
-# removal must copy the literal verbatim up to the closing quote.
+# Words opening a '"'-terminated string literal; '\' and '(' inside are content, not comments.
 _QUOTE_STRING_WORDS = {
     'S"': True, 'C"': True, '."': True, 'ABORT"': True, 'S\\"': True,
 }
@@ -78,11 +76,8 @@ def remove_comments_stateful(line, depth):
     result = ''
     i = 0
     n = len(line)
-    # If we start already inside a multi-line paren comment, consume characters
-    # (tracking nesting) until the matching ')' closes it, then fall through to
-    # normal processing of the remainder.
     if depth > 0:
-        # ANS ( does not nest: the first ')' closes the comment.
+        # ANS ( does not nest: first ')' closes the comment; consume until then.
         while i < n and depth > 0:
             if line[i] == ')':
                 depth = 0
@@ -94,10 +89,7 @@ def remove_comments_stateful(line, depth):
         ch = line[i]
         at_word_start = i == 0 or _is_space(line[i-1])
 
-        # At a word boundary, check whether this word opens a string literal
-        # ('"'-terminated, e.g. S" ." ABORT") or a .( print. Inside such a literal
-        # a '\' or '(' is ordinary content, so copy it verbatim to the closing
-        # delimiter rather than treating it as a comment.
+        # At a word boundary: if the word opens a string literal (S" ." ABORT" .() copy verbatim to the closing delimiter.
         if at_word_start and not _is_space(ch):
             we = i
             while we < n and not _is_space(line[we]):
@@ -113,13 +105,8 @@ def remove_comments_stateful(line, depth):
                     result += line[i]
                     i += 1
                 continue
-            # Only treat S" ." ABORT" etc as a string opener when a closing quote
-            # actually follows on this line. Without one the token is plain data
-            # (lexex lexinput.fth: `symbol ."` names the Forth word ." as a lexer
-            # keyword), so let normal '\' comment stripping apply.
+            # Only treat S" ." ABORT" as a string opener when a closing '"' follows on this line; otherwise it's a plain token (e.g. `symbol ."`).
             if wu in _QUOTE_STRING_WORDS and _delim_ahead(line, we, '"'):
-                # Copy the word plus one delimiter space, then the string body up
-                # to and including the closing '"'.
                 j = we
                 result += word
                 if j < n:  # the single delimiter space after the word
@@ -135,20 +122,14 @@ def remove_comments_stateful(line, depth):
                 continue
 
         if ch == '\\':
-            # A backslash comment needs a space before it or line start.
             if at_word_start:
                 break
 
-        # Handle parenthetical comment. '(' opens a comment only when it stands
-        # as its own word: whitespace (or start) before it AND whitespace (or
-        # end of line) after it. This leaves paren-named words like (checkTime)
-        # or (mv) -- where '(' is glued to the name -- intact.
+        # '(' opens a comment only when it is its own word (space/start before, space/end after); paren-named words like (checkTime) are left intact.
         if ch == '(':
             before_ok = at_word_start
             after_ok = i + 1 >= n or line[i+1] in ' \t\n\r\v\f'
-            # POSTPONE ( and [COMPILE] ( name the comment word '(' rather than
-            # opening a comment (gforth compat/assert.fs: `POSTPONE (`). Preserve
-            # the '(' token in that case so the compiler can look it up.
+            # POSTPONE ( names the comment word rather than opening a comment (gforth compat/assert.fs).
             if before_ok and after_ok and _prev_word_is_postpone(result):
                 result += ch
                 i += 1
@@ -162,8 +143,7 @@ def remove_comments_stateful(line, depth):
                         depth = 0
                     i += 1
                 if depth > 0:
-                    # Unterminated on this line: the comment continues onto the
-                    # next line (only meaningful inside an INCLUDEd file).
+                    # Unterminated: comment continues onto the next line (only meaningful inside an INCLUDEd file).
                     return result, depth
                 continue
 

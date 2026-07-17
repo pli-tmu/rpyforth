@@ -18,11 +18,11 @@ def test_state_false_when_interpreting():
 
 
 def test_state_true_when_compiling():
-    # A word that fetches STATE and stores it runs while its caller compiles.
+    # grab-state runs at compile time of t (STATE = -1 during compilation).
     inner = run([
         "VARIABLE saved",
         ": grab-state  STATE @ saved ! ; IMMEDIATE",
-        ": t  grab-state ;",   # grab-state runs while compiling t -> STATE true
+        ": t  grab-state ;",
         "saved @",
     ])
     assert inner.pop_ds_int() == -1
@@ -35,10 +35,10 @@ def test_state_addr_is_stable():
 
 
 def test_state_smart_word_compiles_or_runs():
-    # STATE @ inside a colon body is compiled (not a no-op) and reads live state.
+    # marker (IMMEDIATE) executes at compile time of t and pushes -1 onto the stack.
     inner = run([
         ": marker  STATE @ ; IMMEDIATE",
-        ": t  marker ;",   # marker executes at compile time -> pushes -1 onto stack
+        ": t  marker ;",
     ])
     # marker ran during compile of t and left -1 on the stack
     assert inner.pop_ds_int() == -1

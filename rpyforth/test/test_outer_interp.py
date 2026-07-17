@@ -22,9 +22,9 @@ def test_basic_primitives():
     assert run_and_pop(": INC 1 + ;  5 INC") == 6
 
 def test_ZEROs():
-    assert run_and_pop("0 0=") == -1 # True
-    assert run_and_pop("5 0=") == 0  # False
-    assert run_and_pop("0 0<") == 0  # False
+    assert run_and_pop("0 0=") == -1
+    assert run_and_pop("5 0=") == 0
+    assert run_and_pop("0 0<") == 0
     assert run_and_pop("-128 0<") == -1
     assert run_and_pop("-128 0>") == -0
     assert run_and_pop("47 0>") == -1
@@ -142,13 +142,9 @@ def test_lshift():
 
 
 def test_lshift_wraps_to_signed_cell():
-    # Shifting into the sign bit wraps to a signed cell (not an unbounded long),
-    # so results can round-trip through a cell store (brainless hash codes).
+    # Shifting into the sign bit wraps to a signed cell so results round-trip through a cell store (brainless hash codes).
     assert run_and_pop("1 63 LSHIFT") == -9223372036854775808
-    # Shift count >= cell width yields 0.
     assert run_and_pop("1 64 LSHIFT") == 0
-    # A high value that sets the top bits (65535 48 LSHIFT > 2**63) must wrap and
-    # still store/re-fetch identically -- this is the brainless hash-code path.
     inner = run("CREATE c 8 ALLOT  65535 48 LSHIFT c !  c @")
     stored = inner.pop_ds_int()
     inner2 = run("65535 48 LSHIFT")
@@ -227,7 +223,6 @@ def test_SDOUBLE_QUOTE():
     inner = run("S\" Hello, World!\"")
     assert inner.pop_ds_int() == len(str)
     ptr = inner.pop_ds_int()
-    # Verify the pointer points to valid buffer entry with the correct string
     buf_entry = inner.buf[ptr]
     assert buf_entry is not None
     assert buf_entry.strval == str
@@ -297,17 +292,15 @@ def test_sm_div_rem():
     assert inner.pop_ds_int() == -1
 
 def test_u_less():
-    assert run_and_pop("3 5 U<") == -1  # True
-    assert run_and_pop("5 3 U<") == 0   # False
-    assert run_and_pop("18446744073709551615 0 U<") == 0  # False
-    assert run_and_pop("0 18446744073709551615 U<") == -1  # True
-    assert run_and_pop("-1 0 U<") == 0  # False
-    assert run_and_pop("0 -1 U<") == -1 # True
-    # Negative first operand vs small positive: unsigned so -N is huge, never <.
-    # (brainless WITHIN hits this: OVER - >R - R> U< with a negative difference.)
+    assert run_and_pop("3 5 U<") == -1
+    assert run_and_pop("5 3 U<") == 0
+    assert run_and_pop("18446744073709551615 0 U<") == 0
+    assert run_and_pop("0 18446744073709551615 U<") == -1
+    assert run_and_pop("-1 0 U<") == 0
+    assert run_and_pop("0 -1 U<") == -1
+    # -N is huge unsigned, so it is never less than a small positive (brainless WITHIN path).
     assert run_and_pop("-46 8 U<") == 0
     assert run_and_pop("8 -46 U<") == -1
-    # WITHIN built on U<: 45 is outside [91,99), must be false.
     assert run_and_pop("45 91 99 WITHIN") == 0
     assert run_and_pop("45 21 29 WITHIN") == 0
     assert run_and_pop("95 91 99 WITHIN") == -1
@@ -315,7 +308,6 @@ def test_u_less():
 def test_u_dot():
     assert run_and_pop("10 10 U.") == 10
 
-# Floating point tests
 def test_float_literals():
     def run_and_pop(prog):
         inner = run(prog)
@@ -350,9 +342,9 @@ def test_float_division():
     assert run_and_pop_float("1.0 4.0 F/") == 0.25
 
 def test_float_comparison():
-    assert run_and_pop("5.0 3.0 F>") == -1  # True
-    assert run_and_pop("2.0 8.0 F>") == 0   # False
-    assert run_and_pop("3.0 3.0 F>") == 0   # False
+    assert run_and_pop("5.0 3.0 F>") == -1
+    assert run_and_pop("2.0 8.0 F>") == 0
+    assert run_and_pop("3.0 3.0 F>") == 0
 
 def test_float_swap():
     inner = run("1.0 2.0 FSWAP")
@@ -362,14 +354,12 @@ def test_float_swap():
 def test_float_in_colon_def():
     assert run_and_pop_float(": CIRCLE-AREA 3.14159 F* ; 5.0 5.0 F* CIRCLE-AREA") == 78.53975
 
-# DO...LOOP tests
 def test_simple_do_loop():
-    # : TEST 10 0 DO I LOOP ; should leave 0-9 on stack
     inner = run(": TEST 10 0 DO I LOOP ; TEST")
     results = []
     for i in range(10):
         results.append(inner.pop_ds_int())
-    assert results == list(range(9, -1, -1))  # popped in reverse order
+    assert results == list(range(9, -1, -1))
 
     inner = run(": SUM 0 5 0 DO I + LOOP ; SUM")
     assert inner.pop_ds_int() == 10
@@ -383,7 +373,7 @@ def test_nested_do_loops():
     results = []
     for i in range(9):
         results.append(inner.pop_ds_int())
-    assert results == expected[::-1]  # reversed because stack
+    assert results == expected[::-1]
 
 def test_leave_in_loop():
     inner = run(": EARLY 10 0 DO I DUP 5 = IF LEAVE THEN LOOP ; EARLY")
@@ -393,17 +383,17 @@ def test_leave_in_loop():
     assert results == [5, 4, 3, 2, 1, 0]
 
 def test_compare_op():
-    assert run_and_pop("5 3 >") == -1  # True
-    assert run_and_pop("2 8 >") == 0   # False
-    assert run_and_pop("3 3 >") == 0   # False
+    assert run_and_pop("5 3 >") == -1
+    assert run_and_pop("2 8 >") == 0
+    assert run_and_pop("3 3 >") == 0
 
     assert run_and_pop("5 3 <") == 0
     assert run_and_pop("2 8 <") == -1
     assert run_and_pop("3 3 <") == 0
 
-    assert run_and_pop("5 5 =") == -1  # True
-    assert run_and_pop("3 7 =") == 0   # False
-    assert run_and_pop("0 0 =") == -1  # True
+    assert run_and_pop("5 5 =") == -1
+    assert run_and_pop("3 7 =") == 0
+    assert run_and_pop("0 0 =") == -1
 
 def test_pick():
     assert run_and_pop("10 20 30 0 PICK") == 30
@@ -411,7 +401,6 @@ def test_pick():
     assert run_and_pop("10 20 30 2 PICK") == 10
 
 def test_char_bracket():
-    # [CHAR] A should compile character code for 'A'
     assert run_and_pop(": TEST [CHAR] A ; TEST") == ord('A')
     assert run_and_pop(": TEST [CHAR] Z ; TEST") == ord('Z')
     assert run_and_pop(": TEST [CHAR] 0 ; TEST") == ord('0')
@@ -434,7 +423,6 @@ def test_CHAR():
     assert run_and_pop("CHAR ello") == ord('e')
 
 def test_2STORE():
-    # Standard 2!: the top cell x2 lands at a-addr, x1 at the next cell.
     inner = run("2VARIABLE buf 10 20 buf 2!")
     assert inner.cell_fetch(0).intval == 20
     assert inner.cell_fetch(CELL_SIZE_BYTES).intval == 10
@@ -511,8 +499,6 @@ def test_return_stack_complex():
     assert result2 == 2
     assert result3 == 1
 
-# Data Space Tests
-
 def test_here():
     inner = run("HERE")
     addr1 = inner.pop_ds_int()
@@ -537,8 +523,6 @@ def test_allot():
     addr2 = inner.pop_ds_int()
     addr1 = inner.pop_ds_int()
     assert addr2 == addr1 + 10
-
-# Dictionary Tests
 
 def test_create():
     result = run_and_pop("CREATE MYDATA  MYDATA")
@@ -608,14 +592,11 @@ def test_to_body():
     var_addr = inner.pop_ds_int()
     assert body_addr == var_addr
 
-# Source Input Tests
-
 def test_source():
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
     test_line = "1 2 3 SOURCE"
     outer.interpret_line(test_line)
-    # SOURCE pushes ( c-addr u )
     u = inner.pop_ds_int()
     caddr = inner.pop_ds_int()
     assert u == len(test_line)
@@ -630,8 +611,6 @@ def test_to_in():
     pos = inner.cell_fetch(addr)
     assert isinstance(pos, W_IntObject)
     assert pos.intval == 1
-
-# Special Tests
 
 def test_tick():
     inner = InnerInterpreter()
@@ -661,8 +640,6 @@ def test_tick_execute():
     val1 = inner.pop_ds_int()
     assert val1 == 42
     assert val2 == 42
-
-# Memory Access Tests
 
 def test_plusstore():
     inner = InnerInterpreter()
@@ -710,13 +687,9 @@ def test_aligned():
     result = inner.pop_ds_int()
     assert result % CELL_SIZE_BYTES == 0
 
-# Parsing Tests
-
 def test_count():
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
-    # Create a counted string manually: length byte then the characters, all
-    # written with C, (COUNT reads the length as a char/byte, per gforth).
     outer.interpret_line("HERE  3 C,")
     addr = inner.pop_ds_int()
     outer.interpret_line("65 C,  66 C,  67 C,")
@@ -725,18 +698,15 @@ def test_count():
     u = inner.pop_ds_int()
     caddr2 = inner.pop_ds_int()
     assert u == 3
-    # caddr2 should be addr + 1 char (skipping the length byte)
     assert caddr2 == addr + 1
 
 def test_word():
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
-    # Use separate calls to avoid "World" being executed
     outer.interpret_line("32 WORD Hello")
     caddr = inner.pop_ds_int()
-    # caddr points to a counted string in character (byte) space
     length = inner.char_fetch(caddr)
-    assert length == 5  # "Hello"
+    assert length == 5
 
 def test_word_count():
     inner = InnerInterpreter()
@@ -746,11 +716,8 @@ def test_word_count():
     caddr2 = inner.pop_ds_int()
     assert u == 4
 
-# Pictured Numeric Output Tests
-
 def test_PNO():
-    # #S expects double-cell number (ud.lo ud.hi), so push 0 as high-order cell.
-    # #> returns an ANS ( c-addr u ) pair in char memory.
+    # #S expects (ud.lo ud.hi); #> returns ( c-addr u ) in char memory.
     def run_and_pop(line):
         inner = InnerInterpreter()
         outer = OuterInterpreter(inner)
@@ -762,20 +729,14 @@ def test_PNO():
             chars.append(chr(inner.char_fetch(c_addr + k)))
         return "".join(chars)
     assert run_and_pop("DECIMAL  12345 0 <# #S #>") == '12345'
-    # In HEX base the literal 255 is hex 0x255, printed back as "255" (matches
-    # gforth). Use a decimal magnitude to exercise hex digit output.
     assert run_and_pop("HEX      0FF 0   <# #S #>") == 'FF'
-    # 5 is not a binary digit; take the magnitude in decimal, then format binary.
     assert run_and_pop("DECIMAL 5 0  BINARY  <# #S #>") == '101'
 
 
 def test_sign_negative():
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
-    # #S expects (ud.lo ud.hi) on stack, so 123 0 gives ud=123
     outer.interpret_line("<# -1 SIGN 123 0 #S #> TYPE")
-    # This should output "-123" (the SIGN adds -, then #S converts 123)
-    # We can't easily test TYPE output, but we can verify SIGN doesn't crash
 
 def test_sign_positive():
     inner = InnerInterpreter()
@@ -789,14 +750,11 @@ def test_sign_positive():
 def test_sign_in_pno():
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
-    # #> now yields ( c-addr u ) ints.
     outer.interpret_line("<# -5 SIGN 0 0 #>")
     u = inner.pop_ds_int()
     c_addr = inner.pop_ds_int()
     chars = [chr(inner.char_fetch(c_addr + k)) for k in range(u)]
     assert "".join(chars) == '-'
-
-# System Tests
 
 def test_fill():
     inner = InnerInterpreter()
@@ -844,12 +802,6 @@ def test_abort_quote_true():
     assert inner.ds_int_size() == 0
 
 
-# ============================================
-# Tests for newly implemented Forth 2012 Core words
-# ============================================
-
-# Division Tests
-
 def test_divmod():
     inner = run("10 3 /MOD")
     quot = inner.pop_ds_int()
@@ -864,7 +816,6 @@ def test_starslashmod():
     inner = run("10 3 4 */MOD")
     quot = inner.pop_ds_int()
     rem = inner.pop_ds_int()
-    # (10*3)/4 = 30/4 = 7 remainder 2
     assert quot == 7
     assert rem == 2
 
@@ -889,24 +840,18 @@ def test_umslashmod():
     assert quot == 3
     assert rem == 1
 
-# Bitwise Tests
-
 def test_invert():
     assert run_and_pop("0 INVERT") == -1
     assert run_and_pop("-1 INVERT") == 0
 
-# Comparison Tests
-
 def test_u_less():
-    assert run_and_pop("1 2 U<") == -1  # True
-    assert run_and_pop("2 1 U<") == 0   # False
-    assert run_and_pop("-1 1 U<") == 0  # -1 is large when unsigned
-
-# Control Flow Tests
+    assert run_and_pop("1 2 U<") == -1
+    assert run_and_pop("2 1 U<") == 0
+    assert run_and_pop("-1 1 U<") == 0  # -1 is unsigned-large; never less than a small positive
 
 def test_plusloop():
     result = run_and_pop(": TEST 0 10 0 DO I + 2 +LOOP ; TEST")
-    assert result == 20  # 0+2+4+6+8 = 20
+    assert result == 20
 
 def test_again():
     """Test BEGIN...AGAIN loop (needs EXIT to break)"""
@@ -918,11 +863,8 @@ def test_until():
     assert result == 5
 
 def test_unloop():
-    # Keep I on stack before comparison by duplicating it
     result = run_and_pop(": TEST 5 0 DO I DUP 3 = IF UNLOOP EXIT THEN DROP LOOP 99 ; TEST")
-    assert result == 3  # Should exit when I=3
-
-# Compilation Tests
+    assert result == 3
 
 def test_immediate():
     inner = InnerInterpreter()
@@ -946,8 +888,6 @@ def test_bracket_tick():
     xt = inner.pop_ds_int()
     assert word_from_wid(xt).name == "DUP"
 
-# Number Conversion Tests
-
 def test_base():
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
@@ -967,17 +907,11 @@ def test_base_change():
     result2 = inner.pop_ds_int()
     assert result2 == 10
 
-# I/O Tests
-
 def test_space():
-    # Just verify it doesn't crash
     run("SPACE")
 
 def test_spaces():
-    # Just verify it doesn't crash
     run("5 SPACES")
-
-# Environment Tests
 
 def test_environment_core():
     inner = InnerInterpreter()
@@ -985,8 +919,8 @@ def test_environment_core():
     outer.interpret_line('S" CORE" ENVIRONMENT?')
     flag = inner.pop_ds_int()
     result = inner.pop_ds_int()
-    assert flag == -1  # True
-    assert result == -1  # CORE is present
+    assert flag == -1
+    assert result == -1
 
 def test_environment_stack_cells():
     inner = InnerInterpreter()
@@ -994,28 +928,24 @@ def test_environment_stack_cells():
     outer.interpret_line('S" STACK-CELLS" ENVIRONMENT?')
     flag = inner.pop_ds_int()
     result = inner.pop_ds_int()
-    assert flag == -1  # True
-    assert result == 64  # Stack size
+    assert flag == -1
+    assert result == 64
 
 def test_environment_unknown():
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
     outer.interpret_line('S" UNKNOWN-QUERY" ENVIRONMENT?')
     flag = inner.pop_ds_int()
-    assert flag == 0  # False - unknown
+    assert flag == 0
 
-
-# RECURSE Tests
 
 def test_recurse_factorial():
     result = run_and_pop(": FACT DUP 1 > IF DUP 1- RECURSE * THEN ; 5 FACT")
-    assert result == 120  # 5! = 120
+    assert result == 120
 
 def test_recurse_countdown():
     result = run_and_pop(": COUNTDOWN DUP 0 > IF 1- RECURSE THEN ; 5 COUNTDOWN")
     assert result == 0
-
-# Compiled ABORT" Tests
 
 def test_abort_quote_compiled_false():
     inner = InnerInterpreter()
@@ -1036,10 +966,8 @@ def test_abort_quote_compiled_true():
 
 def test_utime():
     inner = run("UTIME")
-    # UTIME pushes ( d.low d.high )
     high = inner.pop_ds_int()
     low = inner.pop_ds_int()
-    # On 64-bit systems, high should typically be 0 for reasonable times
     assert high >= 0
     assert low >= 0
     usecs = low + (high << 64)
@@ -1064,7 +992,6 @@ def test_utime_increases():
 
 def test_cputime():
     inner = run("CPUTIME")
-    # CPUTIME pushes ( duser.low duser.high dsystem.low dsystem.high )
     sys_high = inner.pop_ds_int()
     sys_low = inner.pop_ds_int()
     user_high = inner.pop_ds_int()
@@ -1096,7 +1023,6 @@ def test_cputime_user_increases():
 
 
 def test_d_plus():
-    # 100 as double (100 0) + 200 as double (200 0) = 300 as double (300 0)
     inner = run("100 S>D 200 S>D D+")
     high = inner.pop_ds_int()
     low = inner.pop_ds_int()
@@ -1105,7 +1031,6 @@ def test_d_plus():
 
 
 def test_d_minus():
-    # 500 as double (500 0) - 200 as double (200 0) = 300 as double (300 0)
     inner = run("500 S>D 200 S>D D-")
     high = inner.pop_ds_int()
     low = inner.pop_ds_int()
@@ -1146,14 +1071,6 @@ def test_argv_out_of_range():
     assert inner.pop_ds_int() == 0
 
 
-# ---------------------------------------------------------------------------
-# Value-word inlining: a reference to a VARIABLE/CONSTANT/CREATE word inside a
-# colon definition should compile to an inline literal push, not a nested-thread
-# call. Calls show up in the JIT trace as cs_threads/cs_ips array traffic plus
-# two guard_value ops per reference (the dominant cost in the `ary` shootout
-# inner loop); inlining the constant push removes that overhead entirely.
-# ---------------------------------------------------------------------------
-
 def _compile(*lines):
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
@@ -1166,9 +1083,7 @@ def test_variable_reference_is_inlined():
     inner, outer = _compile("VARIABLE X", ": GETX X ;")
     thread = outer.dict["GETX"].thread
     x_word = outer.dict["X"]
-    # The X reference must NOT compile to a call to the X word.
     assert x_word not in thread.code
-    # It must compile to an inline literal push of X's address.
     assert thread.code[0] is outer.wLIT
     outer.interpret_line("X")
     assert thread.lits[0].intval == inner.pop_ds_int()
@@ -1189,8 +1104,7 @@ def test_inlined_value_words_preserve_semantics():
 
 
 def test_inlining_does_not_break_tick_or_body():
-    # Inlining direct references must not remove the word from the dictionary,
-    # so ' (tick) and >BODY still resolve the value-word.
+    # Inlining direct references must not remove the word from the dictionary; tick and >BODY must still resolve it.
     inner, outer = _compile("VARIABLE X", ": GETX X ;")
     outer.interpret_line("' X >BODY   GETX")
     getx_addr = inner.pop_ds_int()
@@ -1198,28 +1112,16 @@ def test_inlining_does_not_break_tick_or_body():
     assert getx_addr == body_addr
 
 
-# ---------------------------------------------------------------------------
-# Leaf-colon-word inlining: a reference to a *small straight-line* colon word
-# (no branches/loops/early-EXIT) is spliced inline at its call site instead of
-# emitting a nested-thread call. A call costs cs_threads/cs_ips array
-# read+write+null-store plus two guard_value ops in the JIT trace -- the
-# dominant remaining cost of the `heap` shootout inner loop (a@/a!/set-rra/...).
-# Words containing control flow are NOT inlined (their branch targets are
-# absolute indices into their own thread and cannot be relocated).
-# ---------------------------------------------------------------------------
-
 def test_leaf_colon_word_is_inlined():
     inner, outer = _compile(
         "VARIABLE B  0 B !",
-        ": geta  B @ 1 + ;",          # straight-line: LIT b, @, LIT 1, +, EXIT
+        ": geta  B @ 1 + ;",
         ": useit  geta geta ;",
     )
     geta = outer.dict["GETA"]
     thread = outer.dict["USEIT"].thread
-    # geta must NOT be called -- neither as a code word nor a TAILCALL literal.
     assert geta not in thread.code
     assert not any(getattr(l, "word", None) is geta for l in thread.lits)
-    # Only the trailing EXIT remains; the body is spliced straight-line.
     assert thread.code[-1] is outer.wEXIT
 
 
@@ -1233,29 +1135,25 @@ def test_transitive_inlining():
 
 
 def test_control_flow_word_not_inlined_but_correct():
-    # classify contains IF/ELSE (branch words). It must NOT be inline-spliced
-    # (which would corrupt its absolute branch targets), and must still work.
+    # IF/ELSE branch targets are absolute indices; inlining would corrupt them, so control-flow words must not be spliced.
     assert run_and_pop(": classify dup 0 < if drop -1 else drop 1 then ;  : u -5 classify ;  u") == -1
     assert run_and_pop(": classify dup 0 < if drop -1 else drop 1 then ;  : u 5 classify ;  u") == 1
 
 
 def test_loop_word_not_miscompiled_when_referenced():
-    # sumto has a DO loop; referencing it twice must not splice its loop body
-    # (whose (LOOP) target is an absolute index into sumto's own thread).
+    # (LOOP) targets are absolute indices into sumto's own thread; they must not be spliced.
     src = (": sumto  0 swap 0 do i + loop ;  "
            ": twice  5 sumto  5 sumto + ;  twice")
-    assert run_and_pop(src) == 20      # sum(0..4)=10, twice=20
+    assert run_and_pop(src) == 20
 
 
 def test_inlining_grows_code_buffer_beyond_128():
-    # A small leaf referenced many times must grow the compile buffer past 128.
-    leaf = ": leaf 1 2 3 4 5 drop drop drop drop ;"   # nets one value (1)
+    leaf = ": leaf 1 2 3 4 5 drop drop drop drop ;"
     src = leaf + " : big " + (" ".join(["leaf"] * 20)) + " ;  big"
     assert run_and_pop(src) == 1
 
 
 def test_rshift_is_logical():
-    # Forth RSHIFT is a logical (zero-fill) shift: all-ones shifted right once
-    # gives the largest positive cell, not -1.
+    # Forth RSHIFT is a logical (zero-fill) shift; -1 shifted right once gives the largest positive cell.
     assert run_and_pop("-1 1 RSHIFT") == 0x7FFFFFFFFFFFFFFF
     assert run_and_pop("8 2 RSHIFT") == 2

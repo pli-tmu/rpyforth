@@ -63,9 +63,7 @@ def test_does_mask_pattern():
 
 
 def test_does_body_with_branch_interpret():
-    # A DOES> body containing IF/ELSE/THEN is carved into its own thread. Its
-    # branch-target literals are absolute indices into the parent definition and
-    # must be relocated to the carved body, else the ELSE path jumps wrong.
+    # DOES> body with IF/ELSE/THEN is carved into its own thread; branch targets must be rebased to the carved body or the ELSE path jumps wrong.
     inner = run_lines([
         ": arr  CREATE CELLS ALLOT"
         "   DOES> 0 IF DROP ELSE SWAP CELLS + THEN ;",
@@ -77,8 +75,7 @@ def test_does_body_with_branch_interpret():
 
 
 def test_does_body_state_smart_interpret_path():
-    # brainless's ARRAY: STATE-smart DOES>. Read at interpret time (STATE 0)
-    # takes the ELSE branch: SWAP CELLS + must yield the addressed cell.
+    # STATE-smart DOES> (brainless ARRAY): at interpret time (STATE 0) takes ELSE branch; SWAP CELLS + yields the addressed cell.
     inner = run_lines([
         ": create-array  CREATE IMMEDIATE CELLS ALLOT"
         "   DOES> STATE @ IF POSTPONE CELLS POSTPONE LITERAL POSTPONE +"
@@ -94,8 +91,7 @@ def test_does_body_state_smart_interpret_path():
 
 
 def test_does_body_with_do_leave_loop():
-    # DO/LEAVE/LOOP inside a DOES> body: the LOOP branch-back target and the
-    # LEAVE loop-end target are both absolute parent indices needing rebasing.
+    # DO/LEAVE/LOOP inside DOES>: LOOP branch-back and LEAVE exit targets are absolute parent indices that must be rebased.
     inner = run_lines([
         ": countup  CREATE CELLS ALLOT"
         "   DOES> DROP 0 5 0 DO I 3 = IF LEAVE THEN I + LOOP ;",
@@ -135,8 +131,7 @@ def test_base_restored_decimal():
 
 
 def test_dot_paren():
-    # .( prints during parse and consumes through the closing ) without leaving
-    # anything on the stack; tokens after ) are still interpreted.
+    # .( prints during parse, consumes through ')', leaves nothing on the stack; tokens after ) are still interpreted.
     inner = run(".( hello world ) 5")
     assert inner.ds_int_size() == 1
     assert inner.pop_ds_int() == 5
@@ -162,8 +157,7 @@ def test_xt_table():
 
 
 def test_redefinition_chain():
-    # Each redefinition of a large (non-inlinable) word calls the previous one,
-    # not itself (cd16sim's process chain). Must not infinitely recurse.
+    # Each redefinition calls the previous version (cd16sim process chain), not itself; must not recurse infinitely.
     inner = run_lines([
         ": acc 0 ;",
         ": step1 1 2 3 4 5 6 7 8 9 10 + + + + + + + + + ;",
@@ -177,8 +171,7 @@ def test_redefinition_chain():
 
 
 def test_runtime_immediate_marks_child():
-    # IMMEDIATE run from inside a colon body (after CREATE) marks the freshly
-    # created child immediate. Assert directly on the dictionary flag.
+    # IMMEDIATE run inside a colon body must mark the freshly created child immediate in the dictionary.
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
     outer.interpret_line(": defimm  CREATE IMMEDIATE ;")
@@ -188,11 +181,7 @@ def test_runtime_immediate_marks_child():
 
 
 def test_runtime_immediate_child_is_immediate():
-    # The child made by CREATE IMMEDIATE must be immediate: used inside a colon
-    # body it runs at compile time (STATE @ true -> compiles CELLS LITERAL +),
-    # so the resulting word indexes the array at runtime.
-    # ( n board -- board+n*cells ), matching gforth: the ELSE branch does
-    # SWAP CELLS +, so an index must be supplied. Storing needs 3 allotted cells.
+    # CREATE IMMEDIATE child runs at compile time (compiles CELLS LITERAL +); ELSE branch does SWAP CELLS + at interpret time.
     inner = run_lines([
         ": create-array  CREATE IMMEDIATE"
         "   DOES>  STATE @ IF POSTPONE CELLS POSTPONE LITERAL POSTPONE +"
@@ -212,8 +201,7 @@ def test_recurse_still_works():
 
 
 def test_parsing_immediate_word_during_compilation():
-    # brainless's [DEF?] pattern: an IMMEDIATE word running BL WORD FIND while
-    # another definition is being compiled must see the correct next token.
+    # brainless's [DEF?] pattern: IMMEDIATE word running BL WORD FIND during compilation must see the correct next token.
     from rpyforth.outer_interp import OuterInterpreter
     from rpyforth.inner_interp import InnerInterpreter
     inner = InnerInterpreter()

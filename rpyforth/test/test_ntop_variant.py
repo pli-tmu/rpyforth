@@ -33,10 +33,6 @@ def _run_snippet(ntop, body):
     return out.decode("utf-8").strip().splitlines()
 
 
-# ---------------------------------------------------------------------------
-# Unit level: drive DSIntMetaStackN directly across scalar/frame/spill tiers.
-# ---------------------------------------------------------------------------
-
 _UNIT_PROLOGUE = (
     "from rpyforth.metastack import EFFECTIVE_NTOP, FRAME_SIZE, CALL_WINDOW\n"
     "from rpyforth.metastack_int_ntop import DSIntMetaStackN, NTOP_ACTIVE_MAX\n"
@@ -53,8 +49,7 @@ def test_selected_ntop(ntop):
 
 @pytest.mark.parametrize("ntop", NTOPS)
 def test_push_pop_across_all_tiers(ntop):
-    # Straddle the scalar boundary (N), the frame boundary (N+FRAME_SIZE) and
-    # spill by pushing well past NTOP_ACTIVE_MAX, then read the whole stack back.
+    # Push past NTOP_ACTIVE_MAX to straddle scalar/frame/spill boundaries, then drain.
     body = _UNIT_PROLOGUE + (
         "n = 2 * AMAX + 3\n"
         "s = DSIntMetaStackN()\n"
@@ -69,9 +64,7 @@ def test_push_pop_across_all_tiers(ntop):
 
 @pytest.mark.parametrize("ntop", NTOPS)
 def test_peek_poke_straddling_boundaries(ntop):
-    # Depths chosen to straddle N-1/N (scalar->frame) and N+FRAME_SIZE
-    # (frame->spill): peek every depth, then poke at a scalar, a frame and a
-    # spill slot and read them back.
+    # Peek every depth and poke at scalar/frame/spill slots across all tier boundaries.
     body = _UNIT_PROLOGUE + (
         "n = AMAX + 5\n"
         "s = DSIntMetaStackN()\n"
@@ -93,9 +86,7 @@ def test_peek_poke_straddling_boundaries(ntop):
 
 @pytest.mark.parametrize("ntop", NTOPS)
 def test_park_commit_roundtrips(ntop):
-    # Park/commit at depths {1, 2, N, N+3, N+12}: fill to each depth, take a call
-    # fragment (normalizes to <= CALL_WINDOW cached cells), verify the window
-    # tops stay readable and size is preserved, then commit and drain in order.
+    # Park/commit at depths spanning scalar/frame/spill; verify window tops and drain order.
     body = _UNIT_PROLOGUE + (
         "depths = [1, 2, N, N + 3, N + 12]\n"
         "for depth in depths:\n"
@@ -151,11 +142,6 @@ def test_snapshot_restore(ntop):
     assert _run_snippet(ntop, body)[-1] == "OK"
 
 
-# ---------------------------------------------------------------------------
-# End-to-end: whole Forth programs with the flag-gated dispatch, call-boundary
-# parking and CATCH restore paths exercised together.
-# ---------------------------------------------------------------------------
-
 def _run_forth(ntop, line):
     body = (
         "from rpyforth.outer_interp import OuterInterpreter\n"
@@ -177,7 +163,6 @@ def _run_forth(ntop, line):
 
 @pytest.mark.parametrize("ntop", NTOPS)
 def test_e2e_deep_stack_sum(ntop):
-    # Sum more ints than the cache holds, crossing frame->spill.
     n = 40
     prog = " ".join("1" for _ in range(n)) + " " + " ".join("+" for _ in range(n - 1))
     assert _run_forth(ntop, prog) == [n]
@@ -208,8 +193,7 @@ def test_e2e_catch_no_throw(ntop):
 
 @pytest.mark.parametrize("ntop", NTOPS)
 def test_e2e_catch_deep_stack(ntop):
-    # THROW from a word that grew the stack past the cache, with a live pre-CATCH
-    # tail below it: unwind must restore the scalars + frame + spill pointers.
+    # Unwind after deep-stack THROW must restore scalars + frame + spill pointers.
     pushes = " ".join(str(v) for v in range(20))
     got = _run_forth(ntop, "%s : boom 1 2 3 4 5 42 THROW ; ' boom CATCH" % pushes)
     # top: throw-code 42, then the 20 pre-CATCH cells (19..0 top-first)
@@ -223,11 +207,6 @@ def test_e2e_deep_pick(ntop):
     prog = " ".join(str(v) for v in range(n)) + " " + str(n - 1) + " PICK"
     assert _run_forth(ntop, prog)[0] == 0
 
-
-# ---------------------------------------------------------------------------
-# Validation: N=2 parametric must behave identically to the NTOP=2 flagship on
-# a mixed program touching scalars, frame, spill, calls and CATCH.
-# ---------------------------------------------------------------------------
 
 _MIXED_PROG = (
     ": sq dup * ; "

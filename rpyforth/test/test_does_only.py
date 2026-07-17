@@ -13,9 +13,7 @@ def run(lines):
 
 
 def test_does_only_word_rebinds_prior_create():
-    # DOES>-only idiom (lexex 1darray): a defining word with no CREATE of its own
-    # patches a separately CREATEd word so it runs the DOES> body. Must consume
-    # its index argument and leave exactly the computed address.
+    # DOES>-only idiom (lexex 1darray): a defining word with no CREATE of its own patches a separately CREATEd word so it runs the DOES> body. Must consume its index argument and leave exactly the computed address.
     inner, _ = run([
         "create dat 111 , 222 , 333 , 444 , 555 ,",
         ": arr does> @ swap cells + ;",   # ( i -- ad ) ad = dat + i*cells; body holds dat
@@ -27,8 +25,7 @@ def test_does_only_word_rebinds_prior_create():
 
 
 def test_does_only_consumes_index_no_leak():
-    # The bug: aa retained default CREATE behavior (push body addr) and left the
-    # index on the stack, leaking one cell per call.
+    # The bug: aa retained default CREATE behavior (push body addr) and left the index on the stack, leaking one cell per call.
     inner, _ = run([
         "create dat 10 , 20 , 30 ,",
         ": arr does> @ swap cells + ;",

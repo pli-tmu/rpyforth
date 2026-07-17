@@ -56,8 +56,7 @@ def test_throw_from_deep_call_chain():
 
 
 def test_throw_inside_loop_restores_loop_state():
-    # THROW from inside DO..LOOP must restore the loop-control stack so the
-    # handler's own loop still works.
+    # THROW from inside DO..LOOP must restore the loop-control stack so the handler's own loop still works.
     inner = run(": bad 10 0 do i 3 = if 7 throw then loop ;"
                 "  : go ['] bad catch 100 + 3 0 do 10 + loop ;  go")
     assert inner.pop_ds_int() == 137
@@ -70,9 +69,7 @@ def test_throw_restores_return_stack():
 
 
 def test_execute_dispatch_in_tight_loop():
-    # Repeated EXECUTE dispatch (the CALL_SENTINEL/pending-target channel) in a
-    # loop, as OOP method dispatch does: every iteration hands a fresh colon-word
-    # target to the loop and must return the right result.
+    # Repeated EXECUTE in a loop (OOP dispatch pattern); each iteration must return the right result.
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
     prog = [
@@ -87,18 +84,13 @@ def test_execute_dispatch_in_tight_loop():
 
 
 def test_execute_reentrant_nested():
-    # EXECUTE of a word that itself EXECUTEs another: the pending-target channel
-    # must survive nesting without clobbering the outer call.
+    # EXECUTE of a word that itself EXECUTEs: pending-target channel must survive nesting.
     inner = run(": inner 3 * ;  : outer ['] inner execute 1+ ;  10 ' outer execute")
     assert inner.pop_ds_int() == 31
 
 
 def test_nested_catch_in_loop_bounds_recursion():
-    # Nested CATCH where an inner protected word returns normally after handling
-    # a THROW, driven from a loop. execute_word_now must stop when its word is
-    # done rather than draining the shared call stack into the caller's frames;
-    # otherwise the loop's continuation runs nested inside each CATCH and the
-    # native call stack grows with the iteration count (StackOverflow at scale).
+    # execute_word_now must stop at its word boundary; leaking into the caller's frames causes native StackOverflow at scale.
     inner = InnerInterpreter()
     outer = OuterInterpreter(inner)
     prog = [

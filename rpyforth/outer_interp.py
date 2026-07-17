@@ -24,11 +24,7 @@ CTRL_WHILE = 4
 CTRL_CASE = 5
 CTRL_OF   = 6
 
-# POSTPONE/[COMPILE] replay codes for the built-in immediate control-flow words.
-# These words are not stored in the dictionary (the tokenizer handles them in
-# compile mode), so POSTPONE cannot look them up. Instead it emits the matching
-# code below followed by the (CF) primitive, which re-runs the compile action
-# when the enclosing immediate word executes during compilation.
+# POSTPONE/[COMPILE] replay codes for control-flow words not in the dictionary; (CF) re-runs the compile action.
 CF_IF      = 0
 CF_ELSE    = 1
 CF_THEN    = 2
@@ -112,89 +108,51 @@ class OuterInterpreter(object):
         # Input source tracking for SOURCE and >IN
         self.source_buffer = ''  # Current input line
         self.source_index = 0    # Current parse position (>IN)
-        # Line-buffered source of the file currently being INCLUDEd, so REFILL
-        # (executed from a colon body) can pull the next physical line and make
-        # it the current parse buffer. include_pos indexes the next unread line.
+        # include_lines/include_pos: line buffer for the INCLUDEd file, so REFILL can pull the next line.
         self.include_lines = []
         self.include_pos = 0
-        # Per-spelling occurrence counters for string tokens (S", .", C") on
-        # the current line: each spelling scans for its own nth occurrence.
+        # Per-spelling occurrence counters for string tokens (S", .", C") on the current line.
         self.string_token_counts = {}
 
-        # NEXTNAME ( c-addr u -- ) (gforth): overrides the name the *next*
-        # defining word (CREATE, :, CONSTANT, VALUE, ...) parses for itself.
-        # Consumed once, then cleared, so it never leaks into later defs.
+        # NEXTNAME: overrides the name the next defining word parses; consumed once then cleared.
         self.nextname_str = ''
         self.has_nextname = False
 
-        # Runtime parse cursor. Defining words (CONSTANT/CREATE/VARIABLE/DEFER/')
-        # can execute inside a colon body; when they do, they consume the next
-        # token of the line currently being interpreted. self.toks holds that
-        # line's tokens and the cursor lives in a dedicated heap cell (to_in_addr)
-        # so >IN save/restore round-trips through @ / ! naturally. The cursor is a
-        # token index, not a character offset -- adequate for save/restore, which
-        # is all the appbench sources do with >IN.
+        # Runtime parse cursor in a dedicated heap cell (to_in_addr) so >IN save/restore works via @ / !; token index, not byte offset.
         self.toks = []
-        # Reserve dedicated cells for the parse cursor / BASE / STATE / WORD
-        # buffer at the top of the DICTIONARY region (just below the separate
-        # ALLOCATE region). They are always in the small low region so touching
-        # them is cheap, they never collide with here-managed user allocations
-        # (which grow from 0), and they stay clear of ALLOCATEd blocks. Fixed,
-        # not here-allocated, so tests that use low addresses (0, 4) are
-        # undisturbed.
+        # Reserved fixed cells at top of DICTIONARY region; never collide with HERE-managed allocations, stable for tests.
         from rpyforth.heap import DICT_SIZE_BYTES
         self.to_in_addr = DICT_SIZE_BYTES - 8
         inner.cell_store(self.to_in_addr, 0)
         self.base_addr = DICT_SIZE_BYTES - 16
         inner.cell_store(self.base_addr, inner.base)
         self.state_addr = DICT_SIZE_BYTES - 24
-        # Fixed scratch buffer for WORD's counted string, below the reserved
-        # cells: WORD must not advance HERE (fcp measures dictionary growth
-        # with HERE deltas around book loading).
+        # Fixed scratch for WORD's counted string; must not advance HERE (fcp measures HERE deltas around book loading).
         self.word_scratch_addr = DICT_SIZE_BYTES - 280
-        # Fixed scratch buffer for XT>STRING / NAME>STRING: like WORD, these must
-        # not advance HERE. brew's gene metaprogramming interleaves xt>string with
-        # `,` and ALLOT while building a gene's token array, so allocating the name
-        # off HERE would splice bytes into that array and corrupt it.
+        # Fixed scratch for XT>STRING / NAME>STRING: must not advance HERE (brew interleaves xt>string with `,`/ALLOT).
         self.xt_string_scratch_addr = DICT_SIZE_BYTES - 600
-        # Fixed rotating scratch for PARSE-NAME / PARSE-WORD: gforth returns a
-        # pointer into the input buffer, allocating nothing. brew's gene compiler
-        # calls parse-word inside a loop that also `,`-compiles token xts, so an
-        # alloc-off-HERE parse-name would splice name bytes into that token array.
-        # A small ring of slots covers the few results that can be live at once.
+        # Fixed rotating scratch for PARSE-NAME/PARSE-WORD; alloc-off-HERE would corrupt brew's xt array, so ring of slots.
         self.parse_name_scratch_base = DICT_SIZE_BYTES - 2200
         self.parse_name_scratch_slots = 4
         self.parse_name_scratch_slot_size = 256
         self.parse_name_scratch_next = 0
-        # Scratch cell for SP@: this VM's data stack is an array, not byte-addressed
-        # memory, so SP@ cannot return a real stack address. mutation-0.3.fs uses it
-        # only as `sp@ cell cat` to copy the top cell's bytes, so SP@ stashes the
-        # current top-of-stack value here and returns this address.
+        # SP@ scratch: data stack is an array so SP@ can't return a real address; stashes top value here instead.
         self.sp_scratch_addr = DICT_SIZE_BYTES - 2400
         inner.cell_store(self.state_addr, 0)
 
-        # Position of a DOES> body within the definition currently compiling
-        # (-1 = none). At finalize this body is sliced into a standalone thread
-        # and bound as the runtime action of the words the definition CREATEs.
+        # DOES> body start index in current code (-1 = none); sliced into a standalone thread at finalize.
         self.does_ip_mark = -1
 
-        # True when the word currently compiling was bound early (RECURSE /
-        # RECURSIVE) so its dict Word must be reused at finalize. A plain
-        # redefinition instead installs a fresh Word, leaving earlier references
-        # (e.g. the process chain in cd16sim) pointing at the prior definition.
+        # True when RECURSE/RECURSIVE pre-bound the word; finalize reuses the existing Word object rather than creating a fresh one.
         self.current_predefined = False
 
         self.reset_code()
 
         self.ctrl = []         # control stack at compilation
 
-        # Saved compilation contexts for runtime :NONAME (lexex setOutputFile runs
-        # ':noname ... postpone sliteral postpone ;' from inside a colon body). A
-        # word already being compiled can start a fresh nameless definition; the
-        # outer state is pushed here and restored when that definition closes.
+        # Saved compilation contexts for runtime :NONAME nesting (lexex setOutputFile).
         self.comp_stack = []
 
-        # install minimal core words into dictionary
         install_primitives(self)
 
         self.wBR = self.dict["BRANCH"]
@@ -217,12 +175,7 @@ class OuterInterpreter(object):
         # Slot id backing each DEFER name (for IS to locate its binding).
         self.defer_ids = {}
 
-        # Search order (A5). Wordlist 0 is the FORTH-WORDLIST -- the base dict
-        # installed above, so ordinary lookups keep hitting self.dict directly.
-        # A wordlist is just a name->Word dict; wordlist_ids indexes them.
-        # search_order lists wordlist ids searched front-first; current_wl is
-        # where new definitions land. While the order is the lone default list
-        # (order_is_default), lookups stay on the single-dict fast path.
+        # Search order (A5): wordlist 0 is FORTH-WORDLIST; search_order is front-first; lone default stays on the fast path.
         self.forth_wl = self.dict
         self.wordlists = [self.dict]
         self.search_order = [0]
@@ -237,14 +190,10 @@ class OuterInterpreter(object):
         self.cond_skip_depth = 0
         self.cond_skip_to_else = False
 
-        # Open ( ) comment nesting carried across lines. An unterminated '('
-        # comment in an INCLUDEd file continues onto following lines (gforth
-        # behaviour); this counts how many are still open at line start.
+        # Open-paren comment depth carried across lines (gforth: unterminated '(' continues onto following lines).
         self.paren_depth = 0
 
-        # Define LITERAL as an immediate word (for POSTPONE to find it)
         self._define_literal_word()
-        # Define FLITERAL as an immediate word for floating point literals
         self._define_fliteral_word()
 
     def reset_code(self):
@@ -405,14 +354,12 @@ class OuterInterpreter(object):
         if length == 0:
             return False
 
-        # Handle negative sign
         idx = 0
         if s[idx] == '-':
             idx += 1
             if idx >= length:
                 return False
 
-        # Must have at least one digit or decimal point
         has_digit = False
         has_dot = False
         has_e = False
@@ -427,7 +374,6 @@ class OuterInterpreter(object):
                 if has_e or not has_digit:
                     return False
                 has_e = True
-                # Check for optional sign after E
                 if idx + 1 < length and (s[idx + 1] == '+' or s[idx + 1] == '-'):
                     idx += 1
             elif '0' <= ch <= '9':
@@ -436,13 +382,11 @@ class OuterInterpreter(object):
                 return False
             idx += 1
 
-        # Must have at least a dot or E to be a float
         return has_digit and (has_dot or has_e)
 
     def _to_float(self, s):
         """Convert string to float"""
-        # Handle Forth-style notation like '1e' (meaning 1e0)
-        # Python requires a digit after 'e', so append '0' if needed
+        # Forth allows '1e' (= 1e0); Python needs a digit after 'e', so append '0'.
         if s.endswith('e') or s.endswith('E'):
             s = s + '0'
         elif s.endswith('e+') or s.endswith('E+') or s.endswith('e-') or s.endswith('E-'):
@@ -506,8 +450,6 @@ class OuterInterpreter(object):
         self.nextname_str = self._string_from_c_addr(c_addr, length)
         self.has_nextname = True
 
-    # Helper methods for interpret_line refactoring
-
     @unroll_safe
     def _find_nth_occurrence(self, line, token, n):
         """Find the Nth occurrence (0-indexed) of token in line. Returns position after token, or -1."""
@@ -517,13 +459,10 @@ class OuterInterpreter(object):
         pos = 0
 
         while pos < line_len:
-            # Skip whitespace
             while pos < line_len and line[pos] in ' \t\n\r\v\f':
                 pos += 1
             if pos >= line_len:
                 break
-
-            # Read a token
             tok_start = pos
             while pos < line_len and line[pos] not in ' \t\n\r\v\f':
                 pos += 1
@@ -549,11 +488,8 @@ class OuterInterpreter(object):
         if pos < 0:
             return ''
 
-        # Skip one space after token
         if pos < line_len and line[pos] == ' ':
             pos += 1
-
-        # Read the string content until closing quote
         str_start = pos
         while pos < line_len and line[pos] != '"':
             pos += 1
@@ -651,7 +587,6 @@ class OuterInterpreter(object):
         end = self._find_close_paren(line, occ)
         assert 0 <= occ <= end
         self.inner.print_str(W_StringObject(line[occ:end]))
-        # advance the token index past the ')'
         toks_len = len(toks)
         while i < toks_len:
             tok = toks[i]
@@ -734,7 +669,6 @@ class OuterInterpreter(object):
         offset1 = self.inner.pop_ds_int()
         align1 = self.inner.pop_ds_int()
         field_offset = self._naligned(offset1, align)
-        # name execution: ( addr -- addr + field_offset )
         code = [self.wLIT, self.forth_wl["+"], self.wEXIT]
         lits = [W_IntObject(field_offset), ZERO, ZERO]
         self.define_colon(name, CodeThread(code, lits))
@@ -924,10 +858,7 @@ class OuterInterpreter(object):
             print "ELSE without IF"
             return False
         entry = self.ctrl.pop()
-        # A dangling WHILE (from BEGIN ... WHILE ... UNTIL) is resolved by ELSE
-        # just like an IF: patch its forward branch to the ELSE clause, then emit
-        # the unconditional skip and hand a CTRL_ELSE to the following THEN
-        # (brew's basics.fs char-search-backwards / clone-file).
+        # A dangling WHILE is also resolved by ELSE (brew's basics.fs char-search-backwards).
         if entry.kind != CTRL_IF and entry.kind != CTRL_WHILE:
             print "ELSE without IF"
             return False
@@ -1042,8 +973,6 @@ class OuterInterpreter(object):
             return False
         self._emit_with_target(self.wBR, begin_index)
         self._patch_here(while_entry.index)
-        # The BEGIN is consumed by this REPEAT; drop it so a following THEN
-        # resolves the remaining WHILE(s), not the BEGIN.
         self._drop_nearest_begin()
         return True
 
@@ -1121,13 +1050,11 @@ class OuterInterpreter(object):
         return True
 
     def _compile_leave(self):
-        # Find the innermost DO loop on the control stack
         for i in range(len(self.ctrl) - 1, -1, -1):
             entry = self.ctrl[i]
             if entry.kind == CTRL_DO:
-                # Emit LEAVE with a placeholder target (will be patched by LOOP/+LOOP)
                 leave_addr = self.cc_ptr
-                self._emit_with_target(self.wLEAVE, 0)  # 0 is placeholder
+                self._emit_with_target(self.wLEAVE, 0)
                 entry.leave_addrs.append(leave_addr)
                 return True
         print "LEAVE without DO"
@@ -1260,7 +1187,6 @@ class OuterInterpreter(object):
             if wTAILCALL is not None and cw is wTAILCALL:
                 return None
             if self._is_branch_target_word(cw):
-                # Reject a malformed target rather than splice a wild branch.
                 lit = thread.lits[i]
                 if not isinstance(lit, W_IntObject):
                     return None
@@ -1302,7 +1228,6 @@ class OuterInterpreter(object):
         """Compile word or literal in COMPILE mode."""
         if w is not None:
             if w.immediate:
-                # LITERAL and FLITERAL have primitives that pop from the stack and emit literals
                 self.inner.execute_word_now(w)
             else:
                 lit = self._value_word_literal(w)
@@ -1353,8 +1278,7 @@ class OuterInterpreter(object):
         self.wordlists.append({})
         self.inner.push_ds_int(wid)
 
-    # VOCABULARY ( "name" -- ) create a new wordlist and a word that, when run,
-    # makes it the top of the search order (gforth/ANS TOOLS-EXT).
+    # VOCABULARY ( "name" -- )
     def _handle_vocabulary(self, toks, i):
         toks_len = len(toks)
         if i >= toks_len:
@@ -1369,12 +1293,7 @@ class OuterInterpreter(object):
         return i
 
     def runtime_vocab_select(self, wid):
-        # A VOCABULARY word replaces the top of the search order with its wordlist
-        # (ANS / gforth). gforth keeps FORTH-WORDLIST permanently searchable below
-        # the replaced top (its ORDER shows "<vocab> Forth Root"), so ensure wid 0
-        # stays in the order as a base -- otherwise selecting a vocab would hide
-        # every core word (brew's `also genes definitions` + gene metaprogramming
-        # rely on FORTH still being found).
+        # Always keep wid 0 (FORTH-WORDLIST) in the order so selecting a vocab never hides core words.
         if wid < 0 or wid >= len(self.wordlists):
             return
         if len(self.search_order) == 0:
@@ -1392,26 +1311,23 @@ class OuterInterpreter(object):
             self.search_order.append(0)
         self._recompute_order_default()
 
-    # GET-CURRENT ( -- wid )
+    # GET-CURRENT ( -- wid ) / SET-CURRENT ( wid -- ) / FORTH-WORDLIST ( -- wid )
     def _handle_get_current(self):
         self.inner.push_ds_int(self.current_wl)
 
-    # SET-CURRENT ( wid -- )
     def _handle_set_current(self):
         wid = self.inner.pop_ds_int()
         if 0 <= wid < len(self.wordlists):
             self._set_current_wl(wid)
 
-    # FORTH-WORDLIST ( -- wid )
     def _handle_forth_wordlist(self):
         self.inner.push_ds_int(0)
 
-    # DEFINITIONS ( -- ) make the top of the search order the current wordlist
+    # DEFINITIONS ( -- ) / FORTH ( -- ) / ONLY ( -- ) / ALSO ( -- ) / PREVIOUS ( -- )
     def _handle_definitions(self):
         if len(self.search_order) > 0:
             self._set_current_wl(self.search_order[0])
 
-    # FORTH ( -- ) replace the top of the search order with FORTH-WORDLIST
     def _handle_forth(self):
         if len(self.search_order) == 0:
             self.search_order = [0]
@@ -1419,12 +1335,10 @@ class OuterInterpreter(object):
             self.search_order[0] = 0
         self._recompute_order_default()
 
-    # ONLY ( -- ) minimal search order (just FORTH here)
     def _handle_only(self):
         self.search_order = [0]
         self._recompute_order_default()
 
-    # ALSO ( -- ) duplicate the top of the search order
     def _handle_also(self):
         if len(self.search_order) > 0:
             self.search_order.insert(0, self.search_order[0])
@@ -1432,32 +1346,27 @@ class OuterInterpreter(object):
             self.search_order = [0]
         self._recompute_order_default()
 
-    # >ORDER ( wid -- ) push wid onto the top of the search order (gforth)
+    # >ORDER ( wid -- ) / GET-ORDER / SET-ORDER
     def _handle_to_order(self):
         wid = self.inner.pop_ds_int()
         if 0 <= wid < len(self.wordlists):
             self.search_order.insert(0, wid)
             self._recompute_order_default()
 
-    # PREVIOUS ( -- ) drop the top of the search order
     def _handle_previous(self):
         if len(self.search_order) > 1:
             del self.search_order[0]
         self._recompute_order_default()
 
-    # GET-ORDER ( -- wid_n ... wid_1 n )
     def _handle_get_order(self):
-        # push bottom-first so wid_1 (top) ends up just under the count
         n = len(self.search_order)
         for k in range(n - 1, -1, -1):
             self.inner.push_ds_int(self.search_order[k])
         self.inner.push_ds_int(n)
 
-    # SET-ORDER ( wid_n ... wid_1 n -- )
     def _handle_set_order(self):
         n = self.inner.pop_ds_int()
         if n < 0:
-            # standard: restore the implementation default
             self.search_order = [0]
             self._recompute_order_default()
             return
@@ -1472,8 +1381,6 @@ class OuterInterpreter(object):
         wid = self.inner.pop_ds_int()
         length = self.inner.pop_ds_int()
         c_addr = self.inner.pop_ds_int()
-        # Honour u against S" boxed strings *and* raw char memory (READ-LINE /
-        # MOVE into CREATE buffers — spellcheck, wordfreq, hash2).
         name_upper = to_upper(self._string_from_c_addr(c_addr, length))
         if 0 <= wid < len(self.wordlists):
             wl = self.wordlists[wid]
@@ -1837,9 +1744,7 @@ class OuterInterpreter(object):
                 pos += 1
             if pos >= n:
                 break
-            # Skip comment regions so token counting matches self.toks (built from
-            # the comment-stripped line); a '( -- )' stack comment before a parsing
-            # word must not shift the counted index.
+            # Skip comment regions so token index matches self.toks (built from comment-stripped line).
             skipped = self._comment_skip(line, pos, n)
             if skipped != pos:
                 pos = skipped
@@ -1848,8 +1753,6 @@ class OuterInterpreter(object):
                 pos += 1
             count += 1
             if count == tok_index:
-                # pos is at the whitespace after token (tok_index-1); skip exactly
-                # one delimiter char to land where gforth's >IN would be.
                 if pos < n:
                     return pos + 1
                 return n
@@ -1864,7 +1767,6 @@ class OuterInterpreter(object):
         if pos >= n:
             return pos
         ch = line[pos]
-        # A standalone '(' (followed by space/EOL) or '\' opens a comment.
         if ch == '\\':
             nxt = pos + 1
             if nxt >= n or line[nxt] in ' \t\n\r\v\f':
@@ -1928,22 +1830,12 @@ class OuterInterpreter(object):
         assert 0 <= start <= pos <= n
         parsed = line[start:pos]
         if pos < n:
-            # skip the delimiter itself
             new_char_pos = pos + 1
         else:
             new_char_pos = n
-        # The line tokenizer strips '(' comments and '\\' line comments, but a
-        # parsing word takes that text as data (gforth keeps '(' inside a parsed
-        # string). When the consumed span contains such a character, self.toks was
-        # truncated there and no longer covers the rest of the line (e.g. the ';'
-        # that closes `help-node" ... ( ... "`). Re-tokenize the raw line so the
-        # interpret loop -- which re-reads self.toks after this word -- can keep
-        # going, and clear any paren depth the tokenizer wrongly opened.
+        # If consumed text contains '(' / ')' / '\', self.toks was truncated by the tokenizer; re-tokenize raw.
         consumed = line[start:new_char_pos]
         if '(' in consumed or ')' in consumed or '\\' in consumed:
-            # The parsed text held comment-looking chars; keep them as data. Switch
-            # self.toks to a verbatim tokenization so the rest of the line is read,
-            # and resync the cursor against that raw numbering (no comment skip).
             self.toks = _tokenize_raw(line)
             self.paren_depth = 0
             new_idx = self._token_index_at_char_pos(new_char_pos, True)
@@ -2029,12 +1921,8 @@ class OuterInterpreter(object):
         lexex symbol declares such words as scanner keywords."""
         idx = self.inner.cell_fetch_int(self.to_in_addr)
         name = self._raw_token_at_index(idx)
-        # Advance the token cursor past the token just consumed.
         self.inner.cell_store(self.to_in_addr, idx + 1)
-        # If the consumed keyword is one the tokenizer treats as a paren comment
-        # opener ('(' or '.('), it wrongly bumped this line's paren depth, which
-        # would swallow every following line as comment. Clear it: PARSE-NAME just
-        # took that '(' as data (lexex declares '(' as a scanner keyword).
+        # If name contains '(' / ')', the tokenizer wrongly bumped paren_depth; reset it.
         if '(' in name or ')' in name:
             self.paren_depth = 0
         size = len(name)
@@ -2148,8 +2036,6 @@ class OuterInterpreter(object):
 
         length = len(word_str)
         addr = self.word_scratch_addr
-        # Store as a counted string in character (byte) space so COUNT / C@ read
-        # it back consistently. The fixed scratch buffer keeps HERE untouched.
         self.inner.char_store(addr, length)
         k = 0
         while k < length:
@@ -2198,10 +2084,6 @@ class OuterInterpreter(object):
         c_addr = self.inner.pop_ds_int()
         if length < 0:
             length = 0
-        # The string may be a boxed S"-style buffer (buf_get) or plain bytes laid
-        # down in char memory (PAD assembly, WORD, etc.). Prefer the boxed content
-        # when present but bound it by the requested length; otherwise decode the
-        # bytes directly so EVALUATE works for both (brew EVALUATEs assembled text).
         buf_str = self.inner.buf_get(c_addr)
         if isinstance(buf_str, W_StringObject) and len(buf_str.strval) >= length:
             text = buf_str.strval[:length]
@@ -2252,7 +2134,7 @@ class OuterInterpreter(object):
             chars_processed += 1
 
         self.inner.push_ds_int(value)
-        self.inner.push_ds_int(0)  # ud2 high
+        self.inner.push_ds_int(0)
         self.inner.push_ds_int(addr + chars_processed)
         self.inner.push_ds_int(length - chars_processed)
 
@@ -2270,61 +2152,58 @@ class OuterInterpreter(object):
         query_upper = to_upper(query)
 
         if query_upper == "/COUNTED-STRING":
-            self.inner.push_ds_int(255)  # max counted string length
+            self.inner.push_ds_int(255)
             self.inner.push_ds_int(-1)
         elif query_upper == "/HOLD":
-            self.inner.push_ds_int(128)  # hold buffer size
+            self.inner.push_ds_int(128)
             self.inner.push_ds_int(-1)
         elif query_upper == "/PAD":
-            self.inner.push_ds_int(256)  # pad buffer size
+            self.inner.push_ds_int(256)
             self.inner.push_ds_int(-1)
         elif query_upper == "ADDRESS-UNIT-BITS":
-            self.inner.push_ds_int(8)  # bits per address unit
+            self.inner.push_ds_int(8)
             self.inner.push_ds_int(-1)
         elif query_upper == "CORE":
-            self.inner.push_ds_int(-1)  # CORE wordset is present
+            self.inner.push_ds_int(-1)
             self.inner.push_ds_int(-1)
         elif query_upper == "CORE-EXT":
-            self.inner.push_ds_int(0)  # CORE-EXT not fully present
+            self.inner.push_ds_int(0)
             self.inner.push_ds_int(-1)
         elif query_upper == "FLOORED":
-            # / and MOD here are floored (e.g. -7 2 / = -4), like gforth.
             self.inner.push_ds_int(-1)
             self.inner.push_ds_int(-1)
         elif query_upper == "GFORTH":
-            # Report as gforth so programs with a gforth-specific adaptation
-            # section (brew's system-dependent.fs) take that path instead of a
-            # generic fallback. The value is the version string ( c-addr u ).
+            # Report as gforth so brew's system-dependent.fs takes the gforth path.
             ver = "0.7.9"
             addr = self.inner.alloc_buf(ver, len(ver))
             self.inner.push_ds_int(addr)
             self.inner.push_ds_int(len(ver))
             self.inner.push_ds_int(-1)
         elif query_upper == "MAX-CHAR":
-            self.inner.push_ds_int(255)  # max character value
+            self.inner.push_ds_int(255)
             self.inner.push_ds_int(-1)
         elif query_upper == "MAX-N":
-            self.inner.push_ds_int((1 << 62) - 1 + (1 << 62))  # max signed cell
+            self.inner.push_ds_int((1 << 62) - 1 + (1 << 62))
             self.inner.push_ds_int(-1)
         elif query_upper == "MAX-U":
-            self.inner.push_ds_int(-1)  # max unsigned (all bits set)
+            self.inner.push_ds_int(-1)
             self.inner.push_ds_int(-1)
         elif query_upper == "MAX-D":
-            self.inner.push_ds_int(-1)  # max signed double: low cell
-            self.inner.push_ds_int((1 << 62) - 1 + (1 << 62))  # high cell
+            self.inner.push_ds_int(-1)
+            self.inner.push_ds_int((1 << 62) - 1 + (1 << 62))
             self.inner.push_ds_int(-1)
         elif query_upper == "MAX-UD":
-            self.inner.push_ds_int(-1)  # max unsigned double: low cell
-            self.inner.push_ds_int(-1)  # high cell
+            self.inner.push_ds_int(-1)
+            self.inner.push_ds_int(-1)
             self.inner.push_ds_int(-1)
         elif query_upper == "RETURN-STACK-CELLS":
-            self.inner.push_ds_int(64)  # return stack size
+            self.inner.push_ds_int(64)
             self.inner.push_ds_int(-1)
         elif query_upper == "STACK-CELLS":
-            self.inner.push_ds_int(64)  # data stack size
+            self.inner.push_ds_int(64)
             self.inner.push_ds_int(-1)
         else:
-            self.inner.push_ds_int(0)  # false - unknown query
+            self.inner.push_ds_int(0)
 
     # BASE ( -- a-addr )
     def _handle_base(self):
@@ -2369,7 +2248,7 @@ class OuterInterpreter(object):
             self.inner.ds_ptr_locals = 0
             self.inner.rs_ptr = 0
             self.state = INTERPRET
-            return i, True  # Signal to return from interpret_line
+            return i, True
         return i, False
 
     # QUIT ( -- )
@@ -2549,9 +2428,7 @@ class OuterInterpreter(object):
     def _dispatch_compile(self, tkey, toks, i, toks_len):
         """Dispatch compile-mode words. Returns (handled, new_i, should_return)."""
         if tkey == "IMMEDIATE":
-            # IMMEDIATE inside a colon body (CREATE IMMEDIATE ... DOES>) compiles
-            # a call that marks the runtime-defined word immediate when the
-            # defining word executes.
+            # In compile mode, emit a call that marks the runtime-defined word immediate.
             self._emit_word(self.forth_wl["(IMMEDIATE)"])
             return True, i, False
 
@@ -2712,15 +2589,12 @@ class OuterInterpreter(object):
             name_upper = to_upper(name)
             cf = cf_code_for(name_upper)
             if cf >= 0:
-                # Built-in immediate control-flow word (not in the dictionary):
-                # emit a deferred replay of its compile action.
+                # Control-flow word not in the dictionary: emit a deferred (CF) replay.
                 self._emit_lit(W_IntObject(cf))
                 self._emit_word(self.forth_wl["(CF)"])
                 return True, i, False
             if name == ';':
-                # ; is an immediate defining word handled lexically, so it is not
-                # in the dictionary. POSTPONE ; emits the runtime (;) so the
-                # enclosing word closes a definition it opened with :NONAME.
+                # ';' is handled lexically and not in the dictionary; emit (;) to close a runtime :NONAME.
                 self._emit_word(self.forth_wl["(;)"])
                 return True, i, False
             word = self._lookup(name_upper)
@@ -2734,10 +2608,7 @@ class OuterInterpreter(object):
                 print "POSTPONE: word not found:", name
             return True, i, False
 
-        # [COMPILE] name: force-compile the next word into the current definition.
-        # For immediate words it emits the word itself (so it runs at the compiled
-        # word's runtime); for ordinary words it compiles a normal call. Used by
-        # gforth.fs's `: [defined] [compile] defined ; immediate` bootstrap.
+        # [COMPILE] name: force-compile the next word (gforth.fs bootstrap).
         if tkey == "[COMPILE]":
             if i >= toks_len:
                 print "[COMPILE] requires a following word"
@@ -2770,11 +2641,7 @@ class OuterInterpreter(object):
             return True, i, False
 
         if tkey == "DOES>":
-            # End the CREATE portion, then mark where the DOES> body begins. The
-            # body (up to the trailing EXIT) becomes the runtime action bound to
-            # each child word by CREATE. (DOES>) rebinds the most recent CREATEd
-            # word at runtime, covering the DOES>-only idiom where the defining
-            # word has no CREATE of its own (lexex 1darray).
+            # Mark the DOES> body start; (DOES>) also handles the DOES>-only idiom (lexex 1darray).
             self._emit_word(self.forth_wl["(DOES>)"])
             self._emit_word(self.wEXIT)
             self.does_ip_mark = self.cc_ptr
@@ -2788,14 +2655,11 @@ class OuterInterpreter(object):
         try:
             self._interpret_line_tokens(line)
         except Abort:
-            # QUIT / ABORT" abandon the rest of the input line; interpretation
-            # resumes with the next line. The reset runs here, outside any
-            # portal, so compiled frames never unwind over half-cleared state.
+            # Reset here (outside any portal) so compiled frames never unwind over half-cleared state.
             self.inner.reset_after_abort()
             self.state = INTERPRET
 
     def _interpret_line_tokens(self, line):
-        # Store the source line for SOURCE word
         self.source_buffer = line
         self.source_index = 0
         self.string_token_counts = {}
@@ -2807,9 +2671,7 @@ class OuterInterpreter(object):
         while i < toks_len:
             t, i = self._read_tok(toks, i)
 
-            # Conditional compilation. While skipping, only [IF]/[ELSE]/[THEN]
-            # adjust nesting -- everything else (including : ; definitions) is
-            # dropped. This runs before any other handling and spans lines.
+            # Conditional compilation: while skipping only [IF]/[ELSE]/[THEN] adjust nesting (spans lines).
             ckey = to_upper(t)
             if self.cond_skipping:
                 if ckey == "[IF]":
@@ -2848,7 +2710,6 @@ class OuterInterpreter(object):
                     self.inner.push_ds_int(0)
                 continue
 
-            # Handle string / parse specials (case-insensitive dispatch).
             tup = to_upper(t)
             if tup == 'S"' or tup == 'C"':
                 i = self._handle_s_quote(toks, i, t)
@@ -2870,13 +2731,7 @@ class OuterInterpreter(object):
                     self.inner.push_ds_int(0)
                 continue
 
-            # :INLINE (fcp) defines an inlining word. Its true implementation
-            # metaprograms with : PARSE SLITERAL POSTPONE EVALUATE, which needs a
-            # compilable ':'; that machinery is absent here. fcp's own profiling
-            # fallback is ': :inline : ;' -- i.e. a plain colon definition -- so
-            # treat :INLINE as ':' (structurally identical, only the inlining perf
-            # optimization is dropped). A dict stub for :INLINE is installed so
-            # fcp's [UNDEFINED] :inline guard skips its metaprogramming variant.
+            # :INLINE (fcp): treat as plain ':'; stub in dict so fcp's [UNDEFINED] guard still fires.
             if tup == ":INLINE":
                 if not self.has_nextname and i >= toks_len:
                     print ":inline requires a name"
@@ -2889,21 +2744,16 @@ class OuterInterpreter(object):
                 self.reset_code()
                 continue
 
-            # :NONAME inside a colon body compiles a call that opens a nameless
-            # definition at runtime (lexex setOutputFile). It is a regular
-            # non-immediate word, so in interpret mode it is handled lexically.
+            # :NONAME in compile mode emits a runtime-definition call (lexex setOutputFile).
             if self.state == COMPILE and to_upper(t) == ":NONAME":
                 self._emit_word(self.forth_wl["(:NONAME)"])
                 continue
 
-            # A bare ':' inside a definition being compiled opens a new named
-            # definition at RUN time (brew's basics.fs offset words). Emit (:)
-            # rather than lexically starting a nested definition now.
+            # ':' in compile mode opens a new named definition at RUN time (brew's basics.fs offset words).
             if t == ':' and self.state == COMPILE:
                 self._emit_word(self.forth_wl["(:)"])
                 continue
 
-            # Handle ':' / ':NONAME' / ';' lexically (not as immediate words).
             if t == ':' or to_upper(t) == ":NONAME":
                 if to_upper(t) == ":NONAME":
                     self.current_name = "NONAME"
@@ -2927,7 +2777,6 @@ class OuterInterpreter(object):
                 self._finalize_definition()
                 continue
 
-            # Dispatch based on current state
             tkey = to_upper(t)
 
             if self.state == INTERPRET:
@@ -2944,16 +2793,13 @@ class OuterInterpreter(object):
                         return
                     continue
 
-            # Default: look up word in dictionary and execute/compile.
-            # order_is_default keeps the common case on the single-dict fast path.
+            # Default: look up and execute/compile; order_is_default keeps the common case on the fast path.
             if self.order_is_default:
                 w = self.dict.get(tkey, None)
             else:
                 w = self._lookup(tkey)
             w = promote(w)
             if self.state == INTERPRET:
-                # Publish the parse cursor so a defining word executed here can
-                # consume the following token(s); pick up any advance afterward.
                 self.inner.cell_store(self.to_in_addr, i)
                 self._execute_or_push(w, t)
                 i = self.inner.cell_fetch_int(self.to_in_addr)
@@ -2961,14 +2807,11 @@ class OuterInterpreter(object):
                     toks = self.toks
                     toks_len = len(toks)
             elif self.state == COMPILE:
-                # Immediate words executed during compilation may parse too
-                # (brainless's [DEF?] runs BL WORD FIND) -- keep the runtime
-                # parse cursor in sync here as well.
+                # Keep parse cursor in sync; immediate words may parse (brainless's [DEF?] runs BL WORD FIND).
                 self.inner.cell_store(self.to_in_addr, i)
                 self._compile_word_or_literal(w, t)
                 i = self.inner.cell_fetch_int(self.to_in_addr)
-                # A parsing word (PARSE over text with '(') may have re-tokenized
-                # the line into self.toks; adopt it so the rest of the line is read.
+                # A PARSE call may have re-tokenized self.toks; adopt it.
                 if self.toks is not toks:
                     toks = self.toks
                     toks_len = len(toks)
@@ -2992,14 +2835,8 @@ class OuterInterpreter(object):
         tail_call_applied = False
         if self.cc_ptr > 0 and self.does_ip_mark < 0:
             last_word = self.current_code[self.cc_ptr - 1]
-            # Check if it's a colon definition (not a primitive) and not a control word
             if last_word is not None and last_word.prim is None and last_word.thread is not None:
-                # Replace the last word with TAILCALL and store the word in its
-                # literal slot. TAILCALL lives in the FORTH wordlist, not
-                # necessarily the current one -- gc.fs defines words while the
-                # current wordlist is `garbage-collector`, so looking it up in
-                # self.dict would miss it. Only strip the last word once TAILCALL
-                # is confirmed present, or it would be silently dropped.
+                # Look TAILCALL up in forth_wl (not current_wl: gc.fs compiles while garbage-collector is current).
                 wTAILCALL = self.forth_wl.get("TAILCALL", None)
                 if wTAILCALL is not None:
                     self.cc_ptr -= 1
@@ -3014,8 +2851,6 @@ class OuterInterpreter(object):
         code = [self.current_code[idx] for idx in range(self.cc_ptr)]
         lits = [self.current_lits[idx] for idx in range(self.lit_ptr)]
 
-        # If this definition contains a DOES>, carve out the DOES> body as a
-        # standalone word; CREATE binds it as each child's runtime action.
         does_word = None
         if self.does_ip_mark >= 0:
             mark = self.does_ip_mark
@@ -3027,9 +2862,7 @@ class OuterInterpreter(object):
             while j < dlen:
                 w = code[mark + j]
                 cl = lits[mark + j]
-                # Branch-target literals (and LEAVE's patched loop-end) are
-                # absolute indices into the parent code; rebase them onto the
-                # carved body.
+                # Branch-target literals are absolute parent indices; rebase onto the carved body.
                 if self._is_branch_target_word(w) or w is self.wLEAVE:
                     assert isinstance(cl, W_IntObject)
                     cl = W_IntObject(cl.intval - mark)
@@ -3050,8 +2883,7 @@ class OuterInterpreter(object):
             if self.current_predefined and name_upper in self.dict:
                 existing_word = self.dict[name_upper]
                 if does_word is None:
-                    # A DOES> body sits past the create-time code; splicing
-                    # copies would tear it, so such words stay uninlined.
+                    # DOES> body sits past create-time code; splicing would tear it, so stay uninlined.
                     code, lits = self._inline_self_calls(code, lits, existing_word)
                 thread = CodeThread(code, lits)
                 thread.does_word = does_word
@@ -3088,13 +2920,11 @@ class OuterInterpreter(object):
             if code[i] is selfword:
                 sites += 1
             i += 1
-        # Cap the expansion: many-site words with large bodies (e.g. tak's four
-        # sites) explode the trace length and run slower inlined.
+        # Cap expansion: many-site words with large bodies explode trace length and run slower inlined.
         if sites == 0 or sites > 4 or n * (sites + 1) > 96:
             return code, lits
         wTAILCALL = self.forth_wl.get("TAILCALL", None)
-        # Pass 1: map every original instruction index (plus the one-past-end
-        # position, a valid branch target) to its position in the new code.
+        # Pass 1: map every original instruction index (including one-past-end, a valid branch target) to its new position.
         newpos = [0] * (n + 1)
         p = 0
         i = 0
@@ -3106,8 +2936,7 @@ class OuterInterpreter(object):
                 p += 1
             i += 1
         newpos[n] = p
-        # Pass 2: emit into pre-sized lists (CodeThread requires non-resizable
-        # lists), relocating branch targets.
+        # Pass 2: emit into pre-sized lists, relocating branch targets.
         total = newpos[n]
         newcode = [None] * total
         newlits = [ZERO] * total
@@ -3131,9 +2960,7 @@ class OuterInterpreter(object):
                             newcode[out] = self.wBR
                             newlits[out] = W_IntObject(base)
                         else:
-                            # A mid-thread TAILCALL would misread its literal;
-                            # demote to a plain call (it falls through to
-                            # copy_end, which is the site's continuation).
+                            # Mid-thread TAILCALL would misread its literal; demote to plain call.
                             newcode[out] = cl.word
                             newlits[out] = ZERO
                     elif self._is_branch_target_word(cw):

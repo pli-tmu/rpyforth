@@ -12,8 +12,7 @@ def run_lines(lines):
 
 
 def test_paren_word_name_not_a_comment():
-    # (checkTime) is a NAME (no space after '('), not a comment. fcp defines
-    # : (checkTime) ... ; and words like (mv), (checkTime).
+    # (checkTime) is a NAME (no space after '('), not a comment. fcp defines : (checkTime) ... ; and words like (mv), (checkTime).
     toks = split_whitespace(": (checkTime) ( -- )")
     assert toks == [":", "(checkTime)"]
 

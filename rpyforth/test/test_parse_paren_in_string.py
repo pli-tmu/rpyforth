@@ -17,8 +17,7 @@ def _chars(inner, c_addr, u):
 
 
 def test_parse_keeps_paren_as_data():
-    # gforth-verified: `[char] " parse` keeps a '(' inside the parsed text (it is
-    # data, not a comment). brew's help-node" / cvs" strings rely on this.
+    # gforth-verified: `[char] " parse` keeps a '(' inside the parsed text (it is data, not a comment). brew's help-node" / cvs" strings rely on this.
     inner, outer = run_lines([
         ": grab [char] \" parse ;",
         "grab abc ( def\"",
@@ -29,8 +28,7 @@ def test_parse_keeps_paren_as_data():
 
 
 def test_definition_with_paren_string_closes_and_following_lines_run():
-    # The ';' that closes a definition containing a parse-string with '(' must
-    # still be seen, and later lines must not be swallowed as a paren comment.
+    # The ';' that closes a definition containing a parse-string with '(' must still be seen, and later lines must not be swallowed as a paren comment.
     inner, outer = run_lines([
         ": hn 2drop ;",
         ": hnq [char] \" parse hn ; IMMEDIATE",

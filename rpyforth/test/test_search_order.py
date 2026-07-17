@@ -33,12 +33,10 @@ def test_words_defined_after_setup_are_found():
 def test_wordlist_and_search_wordlist():
     inner, outer = make()
     outer.interpret_line("WORDLIST CONSTANT MY-WL")
-    # switch current definitions to MY-WL and define a private word
     outer.interpret_line("GET-CURRENT  MY-WL SET-CURRENT")
     outer.interpret_line(": PRIV 111 ;")
-    outer.interpret_line("SET-CURRENT")   # restore prior current wordlist
-    # PRIV is not in the FORTH search order, so SEARCH-WORDLIST must find it
-    # only when MY-WL is searched explicitly.
+    outer.interpret_line("SET-CURRENT")
+    # PRIV is not in the FORTH search order; must be found only via explicit SEARCH-WORDLIST on MY-WL.
     outer.interpret_line('S" PRIV" MY-WL SEARCH-WORDLIST')
     found = inner.pop_ds_int()
     assert found != 0     # 1 or -1: found, xt beneath
@@ -46,8 +44,7 @@ def test_wordlist_and_search_wordlist():
 
 
 def test_search_wordlist_from_char_memory():
-    # shootout spellcheck/wordfreq: READ-LINE fills a CREATE buffer; SEARCH-WORDLIST
-    # must honour (c-addr u) against raw char memory, not only S" W_StringObject.
+    # shootout spellcheck/wordfreq: READ-LINE fills a CREATE buffer; SEARCH-WORDLIST must honour (c-addr u) against raw char memory, not only S" W_StringObject.
     inner, outer = make()
     outer.interpret_line("WORDLIST CONSTANT MY-WL")
     outer.interpret_line("GET-CURRENT MY-WL SET-CURRENT")
@@ -70,8 +67,7 @@ def test_also_previous_restore_order():
     outer.interpret_line("HIDDEN")
     assert inner.pop_ds_int() == 999
     outer.interpret_line("PREVIOUS")
-    # now HIDDEN is no longer reachable; a fresh lookup should push nothing
-    # (UNKNOWN printed). Guard by checking a core word still works.
+    # after PREVIOUS, HIDDEN is no longer reachable; a core word must still work.
     outer.interpret_line("7 8 +")
     assert inner.pop_ds_int() == 15
 
@@ -81,14 +77,11 @@ def test_get_order_set_order_roundtrip():
     outer.interpret_line("GET-ORDER")
     n = inner.pop_ds_int()
     assert n >= 1
-    # drop the wordlist ids GET-ORDER pushed
     for _ in range(n):
         inner.pop_ds_int()
 
 
-# --- benchgc coverage: WORDLIST / GET-ORDER / SET-ORDER usable when COMPILED
-#     into a colon body (compat/vocabulary.fs defines `vocabulary` this way) ---
-
+# benchgc coverage: WORDLIST/GET-ORDER/SET-ORDER must work when compiled into a colon body (compat/vocabulary.fs uses this pattern).
 def test_wordlist_compiles_in_definition():
     inner = run(": mkwl wordlist ; mkwl")
     assert inner.pop_ds_int() >= 1  # 0 is FORTH-WORDLIST
@@ -102,10 +95,7 @@ def test_set_order_negative_restores_default():
 
 
 def test_tailcall_word_defined_in_other_wordlist():
-    # A word defined while the current wordlist is NOT the FORTH wordlist and
-    # ending in a call to a colon word must not lose that last call: the
-    # tail-call optimisation looks TAILCALL up in the FORTH wordlist. Regression
-    # for gc.fs, whose words are compiled into the `garbage-collector` wordlist.
+    # Regression for gc.fs: tail-call optimisation looks up TAILCALL in FORTH-WORDLIST, so words in other wordlists must not lose their final colon-call.
     inner, outer = make()
     outer.interpret_line(": vocabulary wordlist create , "
                          "does> @ >r get-order dup 0= -50 and throw nip r> swap set-order ; ")
@@ -120,8 +110,7 @@ def test_tailcall_word_defined_in_other_wordlist():
 
 
 def test_vocabulary_defined_in_forth():
-    # Exactly compat/vocabulary.fs. Proves wordlist/get-order/set-order and
-    # also/definitions/previous cooperate for a Forth-defined vocabulary.
+    # Exactly compat/vocabulary.fs: wordlist/get-order/set-order and also/definitions/previous cooperate for a Forth-defined vocabulary.
     src = (
         ": vocabulary wordlist create , "
         "does> @ >r get-order dup 0= -50 and throw nip r> swap set-order ; "

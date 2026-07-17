@@ -11,8 +11,7 @@ def run_lines(lines):
 
 
 def test_self_call_sites_are_inlined():
-    # One non-tail recursive site: the finalized thread must contain a spliced
-    # copy of the body, so it is roughly twice the plain compilation.
+    # Non-tail recursive site: the finalized thread must contain a spliced copy of the body (roughly 2x plain).
     inner, outer = run_lines([": g dup 1 > if dup 1- recurse 1+ then ;"])
     w = outer.dict["G"]
     assert len(w.thread.code) > 14
@@ -29,7 +28,7 @@ def test_inlined_fibo_is_correct():
 
 
 def test_inlined_recursion_with_loop_body():
-    # DO..LOOP back-branch targets inside the copied body must be remapped.
+    # DO..LOOP back-branch targets inside the copied body must be remapped on inline.
     inner, outer = run_lines([
         ": r2 dup 0 > if dup 3 0 do 1+ loop swap 1- recurse + else drop 0 then ;",
         "3 r2",
@@ -38,8 +37,7 @@ def test_inlined_recursion_with_loop_body():
 
 
 def test_inlined_early_exit_in_branch():
-    # An EXIT inside the copied body must leave only the inlined call, not the
-    # enclosing word.
+    # EXIT inside the copied body must leave only the inlined call, not the enclosing word.
     inner, outer = run_lines([
         ": s dup 0 = if exit then dup 1- recurse + ;",
         "4 s 100 +",
@@ -56,8 +54,7 @@ def test_tail_recursive_word_still_works():
 
 
 def test_inlined_tak_four_sites_by_name():
-    # Four self-call sites named via RECURSIVE (not RECURSE), the shape of the
-    # tak benchmark.
+    # Four self-call sites via RECURSIVE (not RECURSE), matching the shape of the tak benchmark.
     inner, outer = run_lines([
         ": tak recursive 2 pick 2 pick > if "
         "2 pick 1- 2 pick 2 pick tak "

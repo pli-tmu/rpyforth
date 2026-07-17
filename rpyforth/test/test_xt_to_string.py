@@ -17,9 +17,7 @@ def _chars(inner, c_addr, u):
 
 
 def test_xt_to_string_does_not_advance_here():
-    # gforth returns a pointer into the word header without allocating; xt>string
-    # must not move HERE, or code that interleaves it with `,` / ALLOT (brew's gene
-    # compiler builds a token array that way) gets its data spliced apart.
+    # gforth returns a pointer into the word header without allocating; xt>string must not move HERE, or code that interleaves it with `,` / ALLOT (brew's gene compiler builds a token array that way) gets its data spliced apart.
     inner, outer = run_lines([
         ": bar ;",
         "here",
@@ -33,8 +31,7 @@ def test_xt_to_string_does_not_advance_here():
 
 
 def test_xt_to_string_returns_word_name():
-    # gforth-verified (via brew's `: xt>string look IF name>string THEN ;`):
-    # xt>string ( xt -- addr len ) returns the word's name text.
+    # gforth-verified (via brew's `: xt>string look IF name>string THEN ;`): xt>string ( xt -- addr len ) returns the word's name text.
     inner, _ = run_lines([
         ": foo ;",
         "' foo xt>string",
@@ -63,8 +60,7 @@ def test_xt_to_string_defined_marker():
 
 
 def test_see_is_defined():
-    # brew guards on [UNDEFINED] see; the word must exist (a definition-display
-    # word; not exercised on the benchmark path).
+    # brew guards on [UNDEFINED] see; the word must exist (a definition-display word; not exercised on the benchmark path).
     inner, outer = run_lines([
         "[undefined] see [if] 1 [else] 0 [then]",
     ])

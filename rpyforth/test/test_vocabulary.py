@@ -20,8 +20,7 @@ def test_vocabulary_defines_selector_word():
 
 
 def test_word_defined_in_vocab_found_when_selected():
-    # gforth-verified: a word defined into a vocabulary is found once that
-    # vocabulary is on the search order (selected by the vocab word).
+    # gforth-verified: a word defined into a vocabulary is found once that vocabulary is on the search order.
     inner, outer = run_lines([
         "vocabulary myv",
         "myv definitions",
@@ -45,10 +44,7 @@ def test_vocabulary_brew_words_pattern():
 
 
 def test_vocab_select_keeps_forth_searchable():
-    # gforth-verified: after selecting a vocabulary, FORTH-WORDLIST stays in the
-    # search order (gforth ORDER shows "<vocab> Forth Root"). Selecting a vocab to
-    # reach one of its words must not hide core words -- brew's gene metaprogramming
-    # does `genes <name>` and still needs '.', EXECUTE, etc.
+    # gforth-verified: selecting a vocabulary must not remove FORTH-WORDLIST from the search order (brew's gene metaprogramming relies on core words remaining visible).
     inner, outer = run_lines([
         "vocabulary genes",
         "genes definitions",

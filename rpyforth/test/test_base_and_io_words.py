@@ -22,8 +22,7 @@ def test_base_store_sets_radix():
 
 
 def test_base_save_restore_roundtrip():
-    # fcp idiom: BASE @ >R DECIMAL ... R> BASE ! must restore the radix. Run it
-    # at interpret time so number parsing sees the radix changes live.
+    # BASE @ >R ... R> BASE ! must restore the radix; number parsing sees changes live.
     inner = run_lines([
         "HEX",
         "BASE @ >R DECIMAL",

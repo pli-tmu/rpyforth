@@ -33,34 +33,25 @@ def test_split_whitespace_with_comments():
 
 
 def test_split_whitespace_no_false_positives():
-    # Backslash not at word boundary shouldn't be treated as comment
-    # (though in Forth it typically would need a space before)
+    # Backslash and parens not at word boundaries must not trigger comment parsing.
     assert split_whitespace("test\\value") == ["test\\value"]
-
-    # Parentheses in the middle of a token shouldn't trigger comment
     assert split_whitespace("test(value)") == ["test(value)"]
 
 
 def test_paren_comment_spanning_lines():
-    # An unterminated '(' comment leaves depth open for the next line.
     res, depth = remove_comments_stateful("( this comment", 0)
     assert res == ""
     assert depth == 1
-
-    # A middle line entirely inside the comment produces no tokens, depth stays.
     res, depth = remove_comments_stateful("spans multiple", depth)
     assert res == ""
     assert depth == 1
-
-    # The closing ')' ends the comment; the remainder is live code.
     res, depth = remove_comments_stateful("lines ) 42", depth)
     assert res == " 42"
     assert depth == 0
 
 
 def test_paren_comment_nested_across_lines():
-    # ANS ( does not nest: one open comment regardless of inner '(' -- the
-    # first ')' closes it, even on a later line.
+    # ANS ( does not nest: the first ')' closes the comment regardless of inner '(' on an earlier line.
     res, depth = remove_comments_stateful("( outer ( inner", 0)
     assert res == ""
     assert depth == 1
@@ -79,8 +70,7 @@ def test_split_whitespace_stateful_multiline():
 
 
 def test_split_colon_words_kept_whole():
-    # Words that merely contain ':' (e.g. cd16sim's r: in: w: ev:) are single
-    # tokens; ':' / ';' are only their own tokens when whitespace-delimited.
+    # Words that merely contain ':' (e.g. cd16sim's r: in:) are single tokens; ':' / ';' are delimited only by whitespace.
     assert split_whitespace(": r: registers @ CONSTANT ;") == \
         [":", "r:", "registers", "@", "CONSTANT", ";"]
     assert split_whitespace("' undef in: reset") == ["'", "undef", "in:", "reset"]
@@ -88,7 +78,7 @@ def test_split_colon_words_kept_whole():
 
 
 def test_paren_comment_does_not_nest():
-    # ANS ( parses up to the FIRST ')': an inner '(' does not nest (gforth).
+    # ANS ( parses up to the first ')'; an inner '(' does not nest (gforth).
     from rpyforth.util import remove_comments_stateful
     out, depth = remove_comments_stateful("a ( x ( y ) b", 0)
     assert depth == 0

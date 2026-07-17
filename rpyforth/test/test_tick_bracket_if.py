@@ -13,8 +13,7 @@ def run_lines(lines):
 
 
 def test_tick_bracket_if_returns_xt():
-    # brew's gene engine does `' [IF] ... >gene-evaluated-xt !`; [IF]/[ELSE]/[THEN]
-    # must be tickable (real dictionary words), not only lexical dispatch.
+    # [IF]/[ELSE]/[THEN] must be real dictionary words (brew's gene engine does ' [IF]).
     inner, outer = run_lines(["' [IF]"])
     xt = inner.pop_ds_int()
     assert xt >= 0
@@ -29,8 +28,7 @@ def test_tick_bracket_else_then():
 
 
 def test_normal_bracket_if_still_conditional():
-    # The lexical [IF] path is unaffected: a false flag skips its branch so the
-    # word defined in the [ELSE] arm is the one that exists.
+    # Making [IF] tickable must not break the lexical path: a false flag skips the [IF] branch.
     inner, outer = run_lines([
         "0 [IF]",
         ": t 111 ;",

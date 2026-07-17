@@ -101,8 +101,7 @@ def test_begin_while_repeat_callee_inlined():
 
 
 def test_nested_loops_relocate_inside_caller_loop():
-    # The callee's loop is spliced inside the caller's own DO loop: both the
-    # relocated targets and I/J indexing must survive.
+    # Callee spliced inside caller's DO loop: relocated branch targets and I/J indexing must both survive.
     inner, outer = run_lines([
         ": inner-sum 0 3 0 DO I + LOOP ;",
         ": t8 0 4 0 DO inner-sum + LOOP ;",
@@ -113,7 +112,7 @@ def test_nested_loops_relocate_inside_caller_loop():
 
 
 def test_two_splices_of_same_callee():
-    # Two splice sites at different offsets must each get their own relocation.
+    # Two splice sites at different offsets each need independent relocation.
     inner, outer = run_lines([
         ": absv DUP 0< IF 0 SWAP - THEN ;",
         ": t9 -4 absv 6 absv + ;",

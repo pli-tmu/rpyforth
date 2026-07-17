@@ -15,7 +15,7 @@ def _chars(inner, c_addr, u):
 
 
 def test_parse_returns_string():
-    # BL PARSE reads the next token and returns ( c-addr u ) (fcp FEN uses it).
+    # BL PARSE reads the next token and returns ( c-addr u ) (used by fcp FEN).
     inner, _ = run_lines([
         ": grab BL PARSE ;",
         "grab hello",
@@ -35,8 +35,7 @@ def test_parse_at_interpret_time():
 
 
 def test_marker_defines_name():
-    # MARKER name defines a word; executing it is a no-op here (dictionary
-    # rollback is not modeled, which is harmless for a single load).
+    # MARKER defines a word; dictionary rollback is not modeled (harmless for single load).
     inner, outer = run_lines([
         "MARKER wipe",
         ": foo 1 ;",
@@ -55,13 +54,11 @@ def test_marker_word_executes_without_error():
 
 
 def test_quit_in_colon_unwinds():
-    # QUIT compiled in a colon body clears the stacks and returns to the
-    # interpreter without raising past the outer loop.
+    # QUIT compiled in a colon body must clear stacks and return to the interpreter without raising past the outer loop.
     inner, outer = run_lines([
         ": maybe-quit 1 IF QUIT THEN ;",
         "99 maybe-quit",
         "7",
     ])
-    # QUIT cleared the 99; only the later 7 remains.
     assert inner.pop_ds_int() == 7
     assert inner.ds_int_size() == 0

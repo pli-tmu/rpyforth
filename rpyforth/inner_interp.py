@@ -45,14 +45,7 @@ from rpyforth.metastack import (
     reset_ds_fragments,
 )
 
-# CATCH saves a full copy of the int cache. In the flagship the frame holds
-# FRAME_SIZE cells (the two scalar tops are saved separately in ca_t0/ca_t1);
-# in the frame-only ablation the whole cache is the frame, so its rows are
-# ACTIVE_MAX wide. In the parametric-NTOP ablation the EFFECTIVE_NTOP scalar tops
-# have no dedicated ca_t* arrays -- they are folded into the ca_frames row,
-# stored at offsets 0..EFFECTIVE_NTOP-1 with the frame cells at EFFECTIVE_NTOP..,
-# so the row is EFFECTIVE_NTOP + FRAME_SIZE wide. A flag-constant width keeps
-# every path a single sized array.
+# CATCH copies the whole int cache; row width is the flag-constant CA_FRAME_WIDTH covering scalar tops + frame for whichever layout is active.
 if USE_FRAME_ONLY:
     CA_FRAME_WIDTH = ACTIVE_MAX
 elif USE_NTOP_VARIANT:
@@ -86,16 +79,13 @@ EXIT_SENTINEL = -1
 # Sentinel value for TAILCALL - indicates a tail call to another word
 TAILCALL_SENTINEL = -2
 
-# Sentinel value for a primitive-initiated call (EXECUTE, CATCH): the primitive
-# has already pushed the return frame(s); the dispatch loop transfers control to
-# self.pending_box's thread, keeping the call inside the traced loop.
+# Sentinel for a primitive-initiated call (EXECUTE, CATCH): frames already pushed, dispatch loop transfers to pending_box's thread, keeping the call in the traced loop.
 CALL_SENTINEL = -3
 
 # Maximum number of simultaneously active CATCH frames.
 CATCH_DEPTH = 16384
 
-# Call-stack packing: a return address is (tid << CS_IP_BITS) | ip. 24 bits
-# bound the ip within one code thread; tids are bounded by MAX_THREADS.
+# Call-stack packing: a return address is (tid << CS_IP_BITS) | ip; 24 bits bound the ip within a thread, tids bounded by MAX_THREADS.
 CS_IP_BITS = 24
 CS_IP_MASK = (1 << CS_IP_BITS) - 1
 
@@ -113,17 +103,11 @@ class Abort(Exception):
     pass
 
 
-# Portal-boundary sentinel: execute_thread pushes it on entry, and popping it
-# ends that invocation's dispatch loop. Inside a trace the return thread id is
-# promoted, so the halt test constant-folds away on real returns.
+# Portal-boundary sentinel: pushed on entry, popping it ends the dispatch loop; the promoted return thread id constant-folds the halt test away in traces.
 HALT_THREAD = CodeThread([], [])
 
 def get_printable_location(ip, thread):
-    # Must be total for every (ip, thread) the JIT ever logs: ip == len(code)
-    # is the thread-end/return state and code/lits slots may hold None, both
-    # legitimate at merge points. Translated builds drop bounds checks, so an
-    # out-of-range index or None dereference here segfaults the VM whenever
-    # PYPYLOG jit logging is enabled.
+    # Must be total for every (ip, thread) the JIT logs (ip==len(code), None slots at merge points): translated builds drop bounds checks, so a bad index/None deref here segfaults under PYPYLOG.
     if ip < 0 or ip >= len(thread.code):
         return "ip=%d <thread-end>" % ip
     w = thread.code[ip]
@@ -155,10 +139,7 @@ else:
 
 
 class InnerInterpreter(InterpBase, object):
-    # The metastack spill is allocated once and never reassigned, so its
-    # reference is immutable even though its elements are mutated in place; this
-    # lets the JIT hoist the array-pointer load to the loop header instead of
-    # reloading it on every spill/refill.
+    # Spill is allocated once and never reassigned (immutable reference), so the JIT hoists the array-pointer load to the loop header instead of reloading it every spill/refill.
     _immutable_fields_ = ["cell_size", "cell_size_bytes", "base", "spill",
                           "lc_is", "lc_ls", "rs", "ds_locals", "heap",
                           "ca_tids", "ca_ips", "ca_dsi", "ca_dsf", "ca_dsl",
@@ -204,18 +185,10 @@ class InnerInterpreter(InterpBase, object):
         self.lc_is = [0] * STACK_SIZE
         self.lc_ls = [0] * STACK_SIZE
 
-        # Virtualized call stack for JIT optimization. A return address is one
-        # packed int (thread id << CS_IP_BITS | ip): no GC write barrier, one
-        # array access per push/pop. Only the thread id is promoted on return so
-        # the THREAD_REGISTRY lookup folds and the target thread inlines; the
-        # return ip is left as a runtime value, so a caller that returns to many
-        # different positions (EXECUTE/opcode-table dispatch) does not spawn a
-        # guard_value per return site and shatter the trace into bridges.
+        # Virtualized call stack: return address packed (tid << CS_IP_BITS | ip); only the tid is promoted so THREAD_REGISTRY folds and the target inlines, while the runtime ip avoids a guard_value/bridge per return site.
         self.cs_pcs = [0] * STACK_SIZE
         self.cs_ptr = 0
-        # Lower bound for execute_thread: it stops popping return frames when the
-        # call stack drains back to this depth. execute_word_now raises it so a
-        # nested run (e.g. CATCH) returns instead of escaping into outer frames.
+        # Lower bound for execute_thread: stop popping frames at this depth; execute_word_now raises it so a nested run (CATCH) returns instead of escaping into outer frames.
         self.cs_base = 0
 
         # Total heap = dictionary region + a runtime-sized ALLOCATE region.
@@ -224,20 +197,13 @@ class InnerInterpreter(InterpBase, object):
         self.cell_size = CELL_SIZE
         self.cell_size_bytes = CELL_SIZE_BYTES
 
-        # for string. Sized to the dictionary region only: boxed strings are only
-        # ever parked at HERE-allocated (dictionary) addresses, never in the
-        # separate high ALLOCATE region.
+        # Boxed-string side table, sized to the dictionary region only: boxed strings park at HERE-allocated addresses, never in the high ALLOCATE region.
         self.buf = [None] * (DICT_SIZE_BYTES >> 3)
         self.here = 0
-        # Bump pointer for ALLOCATE, in the high region above dictionary space,
-        # and the highest address it may reach.
+        # Bump pointer for ALLOCATE in the high region, and the highest address it may reach.
         self.alloc_ptr = ALLOC_BASE
         self.alloc_limit = self.heap_size
-        # Free-list reuse for ALLOCATE/FREE: freed blocks are bucketed by usable
-        # size so a later same-size ALLOCATE hands the block back instead of
-        # bumping. gc.fs FREEs and re-ALLOCATEs same-size grain-info bitvectors on
-        # every collection, so without this the bump pointer would grow without
-        # bound across a long run. Keyed by usable size -> list of user addresses.
+        # Free-list reuse for ALLOCATE/FREE, bucketed by usable size: gc.fs re-ALLOCATEs same-size blocks every collection, so without reuse the bump pointer grows without bound.
         self.alloc_free = {}
 
         self.base = 10
@@ -248,10 +214,7 @@ class InnerInterpreter(InterpBase, object):
         # Words bound to DEFER slots; a deferred word executes deferred_words[id].
         self.deferred_words = []
 
-        # Catch-frame stack: flat parallel arrays (no allocation per CATCH).
-        # A frame records the resume address plus every piece of machine state
-        # THROW must restore; catch_ptr indexes the top. The frame's cached
-        # stack-cache cells live at ca_frames[i*FRAME_SIZE : (i+1)*FRAME_SIZE].
+        # Catch-frame stack: flat parallel arrays (no per-CATCH allocation) holding the resume address plus all machine state THROW restores; cached cells at ca_frames[i*FRAME_SIZE:...].
         self.ca_tids = [0] * CATCH_DEPTH
         self.ca_ips = [0] * CATCH_DEPTH
         self.ca_dsi = [0] * CATCH_DEPTH
@@ -276,12 +239,7 @@ class InnerInterpreter(InterpBase, object):
         self.ca_fframes = [0.0] * (CATCH_DEPTH * FRAME_SIZE)
         self.catch_ptr = 0
 
-        # Target of a CALL_SENTINEL transfer, set by the initiating primitive.
-        # Held in a one-element list whose reference never changes: writing the
-        # slot is an array store on a separate object, not a store to a field
-        # of the virtualizable self. A field store on the vable would force it
-        # to materialize at the handoff point; the stable box keeps that store
-        # off the vable so EXECUTE/CATCH dispatch cannot force an escape here.
+        # CALL_SENTINEL target in a one-element list whose reference never changes: a field store on the virtualizable self would force a vable escape at the handoff, so the stable box keeps EXECUTE/CATCH dispatch escape-free.
         self.pending_box = [None]
 
         if USE_STACK_FRAGMENT:
@@ -289,10 +247,7 @@ class InnerInterpreter(InterpBase, object):
             if USE_FLOAT_FRAGMENT:
                 self.init_float_fields()
         else:
-            # Placeholders so the attribute set is consistent; unused on the
-            # fixed path (the translator folds the dead USE_STACK_FRAGMENT
-            # branch, so the active frame and fragment pool are only built when
-            # fragmented).
+            # Placeholders for a consistent attribute set; unused on the fixed path (translator folds the dead USE_STACK_FRAGMENT branch).
             self.t0 = 0
             self.t1 = 0
             self.cache_depth = 0
@@ -317,17 +272,9 @@ class InnerInterpreter(InterpBase, object):
             pop_ds_fragments_commit(self)
         self.cs_ptr = ptr
         pc = self.cs_pcs[ptr]
-        # Clear the slot (mirrors the old null write): helps the JIT treat the
-        # tail above cs_ptr as dead and elide the reads on recursive traces.
+        # Clear the slot so the JIT treats the tail above cs_ptr as dead and elides the reads on recursive traces.
         self.cs_pcs[ptr] = 0
-        # Promote only the thread id: the registry lookup folds and the return
-        # thread inlines, while the return ip stays a runtime value so a
-        # polymorphic caller (EXECUTE/opcode dispatch) does not guard_value each
-        # return site into its own bridge. An adaptive variant that skipped the
-        # promote for statically-megamorphic callees (>=8 compiled call sites)
-        # was measured 2x SLOWER on cd16sim: ending the trace at every such
-        # return and re-entering through the green-keyed trace map costs more
-        # than the guard_value bridge chain it replaces.
+        # Promote only the thread id (registry folds, target inlines) but leave the runtime ip, so a polymorphic caller avoids a guard_value/bridge per return site; skipping the promote for megamorphic callees measured 2x slower on cd16sim.
         tid = promote(pc >> CS_IP_BITS)
         ip = pc & CS_IP_MASK
         thread = THREAD_REGISTRY.threads[tid]
@@ -700,10 +647,7 @@ class InnerInterpreter(InterpBase, object):
         self.buf[i] = w_str
 
     def alloc_buf(self, content, size):
-        # The string lives both as a boxed object (legacy consumers use
-        # buf_get) and as real bytes in data space, so char-level words
-        # (MOVE, COUNT, filename assembly) see the same characters. here
-        # is aligned first so each string owns a distinct buf slot.
+        # String lives as both a boxed object (buf_get) and real bytes in data space so char-level words see the same characters; here is aligned first so each owns a distinct buf slot.
         addr = (self.here + CELL_SIZE_BYTES - 1) & ~(CELL_SIZE_BYTES - 1)
         assert size >= 0
         self.buf_set(addr, W_StringObject(content[:size]))
@@ -765,9 +709,7 @@ class InnerInterpreter(InterpBase, object):
         return self.heap.float_fetch(addr)
 
     def execute_thread(self, thread, ip=0):
-        # A halt frame marks the portal boundary. Every return pops
-        # unconditionally; the pop's promoted return address folds the halt test
-        # away inside traces, so returning costs one guard and no depth compare.
+        # A halt frame marks the portal boundary; every return pops unconditionally and the promoted return address folds the halt test away, so returning costs one guard.
         self.push_call(HALT_THREAD, 0)
         if USE_STACK_FRAGMENT:
             push_ds_fragments(self)
@@ -832,10 +774,7 @@ class InnerInterpreter(InterpBase, object):
                 jitdriver.can_enter_jit(ip=ip, thread=thread, self=self)
 
     def execute_word_now(self, w):
-        # Run w as a self-contained call: bound the interpreter to the current
-        # call-stack depth so it returns when w finishes instead of draining the
-        # shared call stack into the caller's frames. CATCH relies on this to
-        # avoid native-stack growth when nested inside a loop.
+        # Run w as a self-contained call bounded to the current call-stack depth so it returns when w finishes; CATCH relies on this to avoid native-stack growth inside a loop.
         nt = w.now_thread
         if nt is None:
             nt = CodeThread([w], [ZERO])

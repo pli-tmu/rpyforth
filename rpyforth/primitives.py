@@ -317,13 +317,11 @@ def prim_S_TO_D(inner, cur, ip):
 # D+ ( d1 d2 -- d3 )
 def prim_D_PLUS(inner, cur, ip):
     """GForth double 2012: add d1 to d2, giving the sum d3."""
-    # Stack: d1.lo d1.hi d2.lo d2.hi (d2.hi on top)
     d2_hi = inner.pop_ds_int()
     d2_lo = inner.pop_ds_int()
     d1_hi = inner.pop_ds_int()
     d1_lo = inner.pop_ds_int()
-    # Treat low cells as unsigned; propagate carry into hi.
-    # Avoids word-width shifts (1 << LONG_BIT = 0 translated).
+    # No word-width shift (1<<LONG_BIT = 0 translated); carry detected by unsigned overflow.
     ulo1 = r_uint(d1_lo)
     ulo2 = r_uint(d2_lo)
     lo_sum = ulo1 + ulo2
@@ -337,13 +335,11 @@ def prim_D_PLUS(inner, cur, ip):
 # D- ( d1 d2 -- d3 )
 def prim_D_MINUS(inner, cur, ip):
     """GForth double 2012: subtract d2 from d1, giving the difference d3."""
-    # Stack: d1.lo d1.hi d2.lo d2.hi (d2.hi on top)
     d2_hi = inner.pop_ds_int()
     d2_lo = inner.pop_ds_int()
     d1_hi = inner.pop_ds_int()
     d1_lo = inner.pop_ds_int()
-    # Treat low cells as unsigned; propagate borrow into hi.
-    # Avoids word-width shifts (1 << LONG_BIT = 0 translated).
+    # No word-width shift (1<<LONG_BIT = 0 translated); borrow detected by unsigned underflow.
     ulo1 = r_uint(d1_lo)
     ulo2 = r_uint(d2_lo)
     lo_diff = ulo1 - ulo2
@@ -358,12 +354,8 @@ def prim_D_MINUS(inner, cur, ip):
 def prim_D2SLASH(inner, cur, ip):
     d_hi = inner.pop_ds_int()
     d_lo = inner.pop_ds_int()
-    # Arithmetic right-shift of a 128-bit double by one bit.
-    # hi shifts right arithmetically (sign-preserving); its LSB feeds into
-    # lo's MSB.  lo shifts right logically (unsigned) with the bit from hi.
-    # Avoids word-width shifts (1 << LONG_BIT = 0 translated).
+    # hi keeps its sign; its LSB becomes lo's MSB. No word-width shift (1<<LONG_BIT = 0 translated).
     new_hi = d_hi >> 1
-    # The LSB of hi fills the MSB of lo (bit LONG_BIT-1).
     hi_lsb = r_uint(d_hi) & r_uint(1)
     ulo = r_uint(d_lo)
     new_lo = (ulo >> 1) | (hi_lsb << (LONG_BIT - 1))
@@ -375,14 +367,11 @@ def prim_D2SLASH(inner, cur, ip):
 # D. ( d -- )
 def prim_D_DOT(inner, cur, ip):
     """GForth double 2012: display d according to current BASE."""
-    # Stack: d.lo d.hi (d.hi on top)
     d_hi = inner.pop_ds_int()
     d_lo = inner.pop_ds_int()
-    # Build the 128-bit signed value from (lo unsigned, hi signed).
-    # Avoids word-width shifts; uses _ud_divmod_base for digit extraction.
+    # No word-width shift (1<<LONG_BIT = 0 translated); _ud_divmod_base extracts digits.
     negative = d_hi < 0
     if negative:
-        # Negate the 128-bit value: ~lo + 1, ~hi + carry
         ulo = ~r_uint(d_lo)
         carry = 1 if ulo == r_uint(0) - r_uint(1) else 0
         ulo = ulo + r_uint(1)
@@ -390,7 +379,6 @@ def prim_D_DOT(inner, cur, ip):
     else:
         ulo = r_uint(d_lo)
         uhi = d_hi
-    # Convert unsigned (ulo, uhi) to decimal string.
     buf = []
     lo = intmask(ulo)
     hi = uhi
@@ -465,7 +453,6 @@ def prim_MUL(inner, cur, ip):
 # / ( n1 n2 -- n3 )
 def prim_DIV(inner, cur, ip):
     """GForth core 2012: divide n1 by n2, giving the single-cell quotient n3."""
-    # top2_ds pops in correct order: second-to-top (a), then top (b)
     a, b = inner.top2_ds_int()
     assert b != 0, "Division by zero"
     inner.push_ds_int(a // b)
@@ -535,7 +522,7 @@ def prim_MOD(inner, cur, ip):
 def prim_DIVMOD(inner, cur, ip):
     """GForth core 2012: divide n1 by n2, giving remainder n3 and quotient n4."""
     a, b = inner.top2_ds_int()
-    # Symmetric division
+    # Symmetric division: quotient rounds toward zero.
     q = int(a / b)
     r = a - (q * b)
     inner.push_ds_int(r)
@@ -549,7 +536,6 @@ def prim_STARSLASH(inner, cur, ip):
     n3 = inner.pop_ds_int()
     n2 = inner.pop_ds_int()
     n1 = inner.pop_ds_int()
-    # Use intermediate double-cell precision
     product = n1 * n2
     result = int(product / n3)
     inner.push_ds_int(result)
@@ -562,7 +548,6 @@ def prim_STARSLASHMOD(inner, cur, ip):
     n3 = inner.pop_ds_int()
     n2 = inner.pop_ds_int()
     n1 = inner.pop_ds_int()
-    # Use intermediate double-cell precision
     product = n1 * n2
     q = int(product / n3)
     r = product - (q * n3)
@@ -578,17 +563,14 @@ def prim_FMSLASHMOD(inner, cur, ip):
     d_hi = inner.pop_ds_int()
     d_lo = inner.pop_ds_int()
 
-    # Reconstruct double-cell dividend (simplified: use d_lo for single-cell)
     dividend = d_lo
     divisor = n1
 
-    # Floored division: quotient rounded toward negative infinity
     if divisor == 0:
         inner.push_ds_int(0)
         inner.push_ds_int(0)
         return ip
 
-    # Python's // is floored division
     q = dividend // divisor
     r = dividend - (q * divisor)
 
@@ -604,7 +586,6 @@ def prim_SMSLASHREM(inner, cur, ip):
     d_hi = inner.pop_ds_int()
     d_lo = inner.pop_ds_int()
 
-    # Reconstruct double-cell dividend (simplified: use d_lo for single-cell)
     dividend = d_lo
     divisor = n1
 
@@ -613,7 +594,7 @@ def prim_SMSLASHREM(inner, cur, ip):
         inner.push_ds_int(0)
         return ip
 
-    # Symmetric division: quotient rounded toward zero
+    # Symmetric division: quotient rounds toward zero.
     q = int(dividend / divisor)
     r = dividend - (q * divisor)
 
@@ -634,8 +615,7 @@ def prim_UMSLASHMOD(inner, cur, ip):
         inner.push_ds_int(0)
         return ip
 
-    # Full 128-bit unsigned divide using _ud_divmod_base.
-    # Replaces word-width shifts (BIT_MASK=-1, hi<<LONG_BIT=0 translated).
+    # Full 128-bit unsigned divide; avoids word-width shifts (BIT_MASK=-1, hi<<LONG_BIT=0 translated).
     qlo, qhi, rem = _ud_divmod_base(ud_lo, ud_hi, u1)
     inner.push_ds_int(rem)
     inner.push_ds_int(qlo)
@@ -662,9 +642,7 @@ def prim_DEC(inner, cur, ip):
 def prim_MUL_STAR(inner, cur, ip):
     """GForth core 2012: d is the signed product of n1 times n2."""
     a, b = inner.top2_ds_int()
-    # Compute the signed 128-bit product via unsigned 64-bit mulhi.
-    # Avoids word-width shifts and BIT_MASK=-1 translated.
-    # Sign-magnitude: compute |a|*|b| unsigned then adjust hi for sign.
+    # Signed 128-bit product via unsigned mulhi (no word-width shift, no BIT_MASK=-1).
     ua = r_uint(a)
     ub = r_uint(b)
     HALF = r_uint(32)
@@ -682,8 +660,6 @@ def prim_MUL_STAR(inner, cur, ip):
     carry_mid = r_uint(1) if lo < ll else r_uint(0)
     carry_lh = r_uint(1) if mid < lh else r_uint(0)
     uhi = hh + (mid >> HALF) + (carry_lh << HALF) + carry_mid
-    # Adjust hi for the sign: if a is negative, subtract ub from hi.
-    # if b is negative, subtract ua from hi.  (Standard signed mulhi correction)
     if a < 0:
         uhi = uhi - ub
     if b < 0:
@@ -696,8 +672,7 @@ def prim_MUL_STAR(inner, cur, ip):
 def prim_U_MUL_STAR(inner, cur, ip):
     """GForth core 2012: multiply u1 by u2, giving the unsigned double-cell product ud."""
     a, b = inner.top2_ds_int()
-    # Classic 32-bit-halves unsigned multiply (mulhi).  Avoids word-width shifts
-    # and produces a correct 128-bit unsigned product split into (lo, hi).
+    # 32-bit-halves unsigned mulhi: no word-width shift.
     ua = r_uint(a)
     ub = r_uint(b)
     HALF = r_uint(32)
@@ -710,12 +685,9 @@ def prim_U_MUL_STAR(inner, cur, ip):
     lh = a_lo * b_hi
     hl = a_hi * b_lo
     hh = a_hi * b_hi
-    # Combine: result_lo = ll + (lh + hl) << 32 (keeping lo 64 bits)
     mid = lh + hl
     lo = ll + (mid << HALF)
-    # Carry from lo: did the addition of (mid<<32) into ll overflow?
     carry_mid = r_uint(1) if lo < ll else r_uint(0)
-    # Carry from mid: did lh+hl overflow 64 bits?
     carry_lh = r_uint(1) if mid < lh else r_uint(0)
     hi = hh + (mid >> HALF) + (carry_lh << HALF) + carry_mid
     inner.push_ds_int(intmask(lo))
@@ -747,7 +719,6 @@ def prim_MSTARSLASH(inner, cur, ip):
     if n1 < 0:
         neg = not neg
 
-    # |d1| as unsigned 128-bit (ulo, uhi).
     if d1_hi < 0:
         tlo = ~r_uint(d1_lo)
         carry = r_uint(1) if tlo == r_uint(0) - r_uint(1) else r_uint(0)
@@ -757,20 +728,18 @@ def prim_MSTARSLASH(inner, cur, ip):
         ulo = r_uint(d1_lo)
         uhi = r_uint(d1_hi)
 
-    # |n1| unsigned.
     if n1 < 0:
         un1 = r_uint(0) - r_uint(n1)
     else:
         un1 = r_uint(n1)
 
-    # |n2| unsigned (n2 is positive by spec).
+    # n2 is positive by spec, but handle negative to flip sign.
     if n2 < 0:
         un2 = r_uint(0) - r_uint(n2)
         neg = not neg
     else:
         un2 = r_uint(n2)
 
-    # 128-bit (ulo, uhi) times un1, giving 192-bit product as six 32-bit halves.
     a0 = ulo & LOMASK
     a1 = ulo >> HALF
     a2 = uhi & LOMASK
@@ -792,7 +761,6 @@ def prim_MSTARSLASH(inner, cur, ip):
         p[i + 2] = p[i + 2] + carry
         i += 1
 
-    # Divide the 192-bit product by un2, processing 32-bit chunks MSB->LSB.
     chunks = [p[5], p[4], p[3], p[2], p[1], p[0]]
     q = [r_uint(0), r_uint(0), r_uint(0), r_uint(0), r_uint(0), r_uint(0)]
     r = r_uint(0)
@@ -852,16 +820,11 @@ def prim_XOR(inner, cur, ip):
 def prim_FM_DIV_MOD(inner, cur, ip):
     """GForth core 2012: divide d1 by n1, giving the floored quotient n3 and the remainder n2."""
     n1 = inner.pop_ds_int()
-    d_hi = inner.pop_ds_int()  # d1's high 64-bit cell (signed)
-    d_lo = inner.pop_ds_int()  # d1's low 64-bit cell
+    d_hi = inner.pop_ds_int()
+    d_lo = inner.pop_ds_int()
     assert n1 != 0, "Division by zero"
-    # For the common case where d1 is a sign-extended single (hi = 0 or -1),
-    # fall through to exact single-cell arithmetic.  For genuine 128-bit
-    # dividends use the full algorithm.
-    # Determine the sign of d1: hi < 0 means d1 is negative.
     d_negative = d_hi < 0
     if d_negative:
-        # Negate the 128-bit value to get its absolute magnitude.
         ulo = ~r_uint(d_lo)
         carry = r_uint(1) if ulo == r_uint(0) - r_uint(1) else r_uint(0)
         ulo = ulo + r_uint(1)
@@ -871,12 +834,11 @@ def prim_FM_DIV_MOD(inner, cur, ip):
         uhi = d_hi
     n1_negative = n1 < 0
     un1 = r_uint(-n1 if n1_negative else n1)
-    # 128-bit unsigned divide |d1| by |n1| using _ud_divmod_base structure.
+    # 128-bit unsigned divide |d1| by |n1|; BIT_MASK and SIGN_BIT avoided via _ud_divmod_base.
     qlo, qhi, rem_u = _ud_divmod_base(intmask(ulo), uhi, intmask(un1))
-    # rem_u is the unsigned remainder; sign follows d1.
     rem = -rem_u if d_negative else rem_u
     quot = -qlo if (d_negative ^ n1_negative) else qlo
-    # Floored: if remainder != 0 and sign(d1) != sign(n1), adjust.
+    # Floored: adjust when remainder != 0 and signs differ.
     if rem != 0 and (d_negative ^ n1_negative):
         quot = quot - 1
         rem = rem + n1
@@ -888,15 +850,11 @@ def prim_FM_DIV_MOD(inner, cur, ip):
 def prim_UM_DIV_MOD(inner, cur, ip):
     """GForth core 2012: divide ud by u1, giving the quotient u3 and the remainder u2."""
     u1 = inner.pop_ds_int()
-    ud_hi = inner.pop_ds_int()  # ud's high 64-bit cell
-    ud_lo = inner.pop_ds_int()  # ud's low 64-bit cell
+    ud_hi = inner.pop_ds_int()
+    ud_lo = inner.pop_ds_int()
     assert u1 != 0, "Division by zero"
-    # Full 128-bit unsigned divide using _ud_divmod_base.
-    # Avoids word-width shifts (b << LONG_BIT = 0 translated) and
-    # the SIGN_BIT sign-correction code that used 1 << LONG_BIT = 0.
+    # No word-width shift (b<<LONG_BIT=0) and no SIGN_BIT correction (1<<LONG_BIT=0).
     qlo, qhi, rem = _ud_divmod_base(ud_lo, ud_hi, u1)
-    # qhi should be 0 for a valid (non-overflow) UM/MOD; if not, the result
-    # is implementation-defined (overflow).  Push lo cell as quotient.
     inner.push_ds_int(rem)
     inner.push_ds_int(qlo)
     return ip
@@ -905,21 +863,16 @@ def prim_UM_DIV_MOD(inner, cur, ip):
 def prim_SM_DIV_REM(inner, cur, ip):
     """GForth core 2012: divide d1 by n1, giving the symmetric quotient n3 and the remainder n2."""
     a = inner.pop_ds_int()
-    b = inner.pop_ds_int() # d1's high 64bits (discarded: see below)
-    c = inner.pop_ds_int() # d1's low 64bits
+    b = inner.pop_ds_int()
+    c = inner.pop_ds_int()
     assert a != 0, "Division by zero"
-    # The dividend was historically reassembled as (b << LONG_BIT) | (c & mask).
-    # On the translated 64-bit backend that left-shift is a word-width shift
-    # whose result is masked away, so the high cell never contributed and the
-    # dividend was effectively just the signed low cell c. Compute that directly:
-    # a word-width int_lshift makes the JIT optimizer infer contradictory {0,-1}
-    # bounds and abort every enclosing loop ("two integer ranges don't overlap").
+    # Do NOT reassemble via (b<<LONG_BIT)|c: word-width int_lshift makes the JIT infer contradictory {0,-1} bounds and abort enclosing loops ("two integer ranges don't overlap").
     d = c
     a_abs = abs(a)
     d_abs = abs(d)
     e = d_abs // a_abs
     f = d_abs % a_abs
-    if (d < 0) ^ (a < 0):  # if signs of d and a are different
+    if (d < 0) ^ (a < 0):
         e = -e
     if d < 0:
         f = -f
@@ -956,9 +909,7 @@ def prim_STORE(inner, cur, ip):
     addr = inner.pop_ds_int()
     val = inner.pop_ds_int()
     inner.cell_store(addr, val)
-    # A store to the sentinel BASE cell also drives the parsing radix, so
-    # `BASE !` takes effect immediately (storage semantics for ordinary
-    # addresses are unchanged).
+    # A store to the sentinel BASE cell also updates the parsing radix immediately.
     if inner.outer is not None and addr == inner.outer.base_addr and val >= 2:
         inner.base = val
     return ip
@@ -1100,7 +1051,6 @@ def prim_DO_RUNTIME(inner, cur, ip):
     """Runtime for DO: pop limit and start from data stack, push to loop stack."""
     start = inner.pop_ds_int()
     limit = inner.pop_ds_int()
-    # Push to dedicated loop stack (raw integers, no boxing!)
     inner.push_loop(limit, start)
     return ip
 
@@ -1120,12 +1070,7 @@ def prim_QDO_RUNTIME(inner, cur, ip):
     return ip
 
 
-# (LOOP) ( -- ) ( R: limit counter -- limit counter+1 | )
-# Promoting variant: emitted by the compiler only when the DO limit came from a
-# compile-time literal (e.g. "10 0 DO" or "NUM 0 DO" where NUM is a CONSTANT).
-# Promoting a literal limit folds the exit compare, making the tight literal-bound
-# nests (nestedloop/matrix) ~40% faster. Loops whose limit is computed at runtime
-# get (LOOPNP) instead, so a distinct limit per activation does not storm bridges.
+# (LOOP) ( -- ) ( R: limit counter -- limit counter+1 | ) -- promoting; runtime limits use (LOOPNP) to avoid bridge storms.
 def prim_LOOP_RUNTIME(inner, cur, ip):
     counter_val = inner.peek_loop_counter(0)
     limit_val = promote(inner.peek_loop_limit(0))
@@ -1144,11 +1089,7 @@ def prim_LOOP_RUNTIME(inner, cur, ip):
     return ip
 
 
-# (LOOPNP) ( -- ) ( R: limit counter -- limit counter+1 | )
-# Non-promoting variant of (LOOP): identical semantics, but the limit stays a
-# plain runtime red value. Emitted when the DO limit is computed at runtime (e.g.
-# brainless's variable board dimensions), where a promoted limit would fail its
-# guard_value on every distinct limit and spawn a bridge per loop activation.
+# (LOOPNP) ( -- ) ( R: limit counter -- limit counter+1 | ) -- non-promoting; distinct limit per activation does not fail guard_value and spawn a bridge.
 def prim_LOOPNP_RUNTIME(inner, cur, ip):
     counter_val = inner.peek_loop_counter(0)
     limit_val = inner.peek_loop_limit(0)
@@ -1171,27 +1112,18 @@ def prim_PLUSLOOP_RUNTIME(inner, cur, ip):
     """Runtime for +LOOP: increment counter by n and conditionally branch back."""
     inc_val = inner.pop_ds_int()
 
-    # Use dedicated integer loop stack - no object allocation!
-    # +LOOP limits are routinely runtime addresses (list scans): promoting
-    # them specializes a trace per limit value, which storms bridges on
-    # megamorphic scans (fcp), so the limit stays a plain value here.
+    # +LOOP limits not promoted: promoting would specialize per limit value, storming bridges on megamorphic scans.
     counter_val = inner.peek_loop_counter(0)
     limit_val = inner.peek_loop_limit(0)
     new_counter_val = counter_val + inc_val
 
-    # Check if loop should continue based on crossing the boundary
-    # For positive increment: continue while new_counter < limit
-    # For negative increment: continue while new_counter >= limit
     continue_loop = False
     if inc_val >= 0:
-        # Positive increment: continue if we haven't reached limit
         if counter_val < limit_val and new_counter_val < limit_val:
             continue_loop = True
         elif counter_val >= limit_val:
-            # Already past limit, check wrap-around
             continue_loop = False
     else:
-        # Negative increment: continue if we haven't gone below limit
         if counter_val >= limit_val and new_counter_val >= limit_val:
             continue_loop = True
 
@@ -1235,7 +1167,6 @@ def prim_I(inner, cur, ip):
 # J ( -- n ) ( R: limit1 counter1 limit2 counter2 -- limit1 counter1 limit2 counter2 )
 def prim_J(inner, cur, ip):
     """Get the outer loop counter (second innermost loop)."""
-    # Read from dedicated integer loop stack (depth 1 = outer loop)
     counter_val = inner.peek_loop_counter(1)
     inner.push_ds_int(counter_val)
     return ip
@@ -1424,7 +1355,6 @@ def prim_DOT(inner, cur, ip):
     stdin, stdout, stderr = create_stdio()
     stdout.write(str(x))
     stdout.write(' ')
-    #stdout.flush()
     return ip
 
 # .S ( -- )
@@ -1449,7 +1379,7 @@ def prim_DOT_S(inner, cur, ip):
 def prim_U_DOT(inner, cur, ip):
     """GForth core 2012: display u in field format according to current BASE."""
     x = inner.pop_ds_int()
-    # r_uint treats the signed cell as unsigned; avoids BIT_MASK = -1 translated.
+    # r_uint treats the signed cell as unsigned; avoids BIT_MASK=-1 translated.
     lo, hi, digit = _ud_divmod_base(x, 0, inner.base)
     buf = [digit_to_char(digit)]
     while lo != 0 or hi != 0:
@@ -1460,7 +1390,6 @@ def prim_U_DOT(inner, cur, ip):
     stdin, stdout, stderr = create_stdio()
     stdout.write(s)
     stdout.write(' ')
-    #stdout.flush()
     return ip
 
 
@@ -1511,8 +1440,7 @@ def prim_CR(inner, cur, ip):
 def prim_UDOT(inner, cur, ip):
     """GForth core 2012: display u as unsigned according to current BASE."""
     x = inner.pop_ds_int()
-    # Treat as unsigned via r_uint; avoids BIT_MASK = (1<<LONG_BIT)-1 = -1 translated.
-    # _ud_divmod_base handles the digit extraction correctly.
+    # r_uint avoids BIT_MASK = (1<<LONG_BIT)-1 = -1 translated.
     lo, hi, digit = _ud_divmod_base(x, 0, inner.base)
     buf = [digit_to_char(digit)]
     while lo != 0 or hi != 0:
@@ -1573,7 +1501,7 @@ def prim_UDOTR(inner, cur, ip):
     n = inner.pop_ds_int()
     u = inner.pop_ds_int()
 
-    # Build unsigned decimal string via _ud_divmod_base (r_uint, no BIT_MASK).
+    # r_uint, no BIT_MASK.
     lo, hi, digit = _ud_divmod_base(u, 0, 10)
     buf = [digit_to_char(digit)]
     while lo != 0 or hi != 0:
@@ -1605,9 +1533,7 @@ def prim_DOTR(inner, cur, ip):
     return ip
 
 
-# KEY? ( -- flag ) -- true if a character is available at the input device. The
-# batch driver has no interactive terminal, so report none available (fcp only
-# uses KEY? to poll for an interrupt while searching).
+# KEY? ( -- flag ) -- batch driver has no terminal; always reports none available.
 @dont_look_inside
 def prim_KEY_QUESTION(inner, cur, ip):
     inner.push_ds_int(0)
@@ -1636,11 +1562,7 @@ def prim_EXIT(inner, cur, ip):
     return EXIT_SENTINEL
 
 
-# TAILCALL ( -- ) internal primitive for tail-call optimization
-# This is used internally when a colon definition ends with a call to another word followed by EXIT.
-# Instead of pushing a return address and then immediately popping it on EXIT,
-# we directly replace the current thread with the target's thread.
-
+# TAILCALL ( -- ) -- emitted when a colon body ends with a call followed by EXIT; avoids push/pop round-trip.
 def prim_TAILCALL(inner, cur, ip):
     """Execute a tail call: jump to the target word (its W_WordObject is the
     literal at ip-1) without pushing a return address, via TAILCALL_SENTINEL."""
@@ -1664,7 +1586,6 @@ def prim_ABORT_QUOTE_RUNTIME(inner, cur, ip):
         stdout.write("ABORT: ")
         stdout.write(msg)
         stdout.write("\n")
-        # State clearing happens at the Abort catch site (see prim_QUIT).
         raise Abort
     return ip
 
@@ -1676,8 +1597,6 @@ def prim_FMUL(inner, cur, ip):
     """Multiply two floating point numbers."""
     f2 = inner.pop_ds_float()
     f1 = inner.pop_ds_float()
-    #assert isinstance(f1, W_FloatObject)
-    #assert isinstance(f2, W_FloatObject)
     inner.push_ds_float(f1 * f2)
     return ip
 
@@ -1873,9 +1792,7 @@ def _call_word_inline(inner, cur, ip, word):
     return CALL_SENTINEL
 
 
-# [IF] / [ELSE] / [THEN] executed via a stored xt (brew's gene engine ticks these
-# and stores them as gene "evaluated" words). These drive the same conditional-
-# compilation skip state the interpret loop uses.
+# [IF] / [ELSE] / [THEN] -- brew's gene engine stores and re-executes these as evaluated words.
 def prim_BRACKET_IF(inner, cur, ip):
     inner.outer.runtime_bracket_if()
     return ip
@@ -1891,10 +1808,7 @@ def prim_BRACKET_THEN(inner, cur, ip):
     return ip
 
 
-# SP@ ( -- addr ) -- address of the top data-stack cell. This VM keeps the data
-# stack in an array, not byte-addressed memory, so SP@ cannot expose a real stack
-# address. brew's one use is `sp@ cell cat` (copy the top cell's bytes), so stash
-# the current top value in a scratch cell and return that address.
+# SP@ ( -- addr ) -- stack is an array, not byte-addressed; stashes top cell in scratch and returns that address.
 def prim_SP_FETCH(inner, cur, ip):
     addr = inner.outer.sp_scratch_addr
     if inner.ds_int_size() > 0:
@@ -1921,14 +1835,7 @@ def prim_EXECUTE(inner, cur, ip):
     return ip
 
 
-# XT>STRING ( xt -- addr len ) -- return the name text of the word xt names.
-# gforth defines it via `look IF name>string THEN`; brew's system-dependent.fs
-# guards on [UNDEFINED] xt>string. gforth returns a pointer into the word's
-# dictionary header WITHOUT allocating; we mirror that by writing the name into a
-# fixed scratch buffer rather than advancing HERE, so callers that interleave
-# xt>string with `,` / ALLOT (brew's gene compiler) keep an intact data area. The
-# name is bounded to the scratch size; longer names are truncated (name tokens
-# are short in practice).
+# XT>STRING ( xt -- addr len ) -- writes name into a fixed scratch buffer (not HERE) so interleaved `,` / ALLOT stays intact.
 def prim_XT_TO_STRING(inner, cur, ip):
     word = word_from_wid(inner.pop_ds_int())
     name = word.name
@@ -1946,8 +1853,7 @@ def prim_XT_TO_STRING(inner, cur, ip):
     return ip
 
 
-# (VOCABULARY) ( wid -- ) -- replace the top of the search order with wid. The
-# word a VOCABULARY defines runs this to make its wordlist the searched one.
+# (VOCABULARY) ( wid -- ) -- replace the top of the search order with wid.
 def prim_VOCAB_SELECT(inner, cur, ip):
     inner.outer.runtime_vocab_select(inner.pop_ds_int())
     return ip
@@ -1973,35 +1879,25 @@ def prim_IS_STORE(inner, cur, ip):
     return ip
 
 
-# (POSTPONE) ( wid -- ) -- append the word identified by wid to the definition
-# currently being compiled. Compiled by POSTPONE for a non-immediate target, so
-# that when the (immediate) enclosing word runs during compilation it defers the
-# target rather than executing it.
+# (POSTPONE) ( wid -- ) -- compiled by POSTPONE for non-immediate targets; defers the target into the enclosing word.
 def prim_POSTPONE(inner, cur, ip):
     inner.outer.runtime_postpone(word_from_wid(inner.pop_ds_int()))
     return ip
 
 
-# (CF) ( code -- ) -- replay a built-in control-flow compile action (IF, THEN,
-# BEGIN ...). Compiled by POSTPONE/[COMPILE] of a control-flow word so that,
-# when the enclosing immediate word runs during compilation, the structure is
-# built in the definition currently being compiled (lexex ansify.fth: endif).
+# (CF) ( code -- ) -- replay a built-in control-flow compile action inside a definition being compiled.
 def prim_COMPILE_CF(inner, cur, ip):
     inner.outer.runtime_compile_cf(inner.pop_ds_int())
     return ip
 
 
-# COMPILE, ( xt -- ) -- append the execution token to the definition currently
-# being compiled. Runs from an immediate word that metaprograms compilation
-# (lexex xmini_oof.fth: :: fetches a method xt and COMPILE,s it).
+# COMPILE, ( xt -- ) -- append xt to the definition currently being compiled.
 def prim_COMPILE_COMMA(inner, cur, ip):
     inner.outer.runtime_postpone(word_from_wid(inner.pop_ds_int()))
     return ip
 
 
-# Search-order words as primitives so they also work compiled into colon bodies
-# (lexex lexarrays.fth: updateArrayName runs GET-CURRENT SEARCH-WORDLIST while
-# compiling). Each delegates to the outer interpreter's handler.
+# Search-order words as primitives so they work compiled into colon bodies.
 def prim_GET_CURRENT(inner, cur, ip):
     inner.outer._handle_get_current()
     return ip
@@ -2023,44 +1919,36 @@ def prim_FORTH_WORDLIST(inner, cur, ip):
 
 
 # (:NONAME) ( -- ) -- open a nameless definition from within a running word.
-# Compiled where :NONAME appears in a colon body (lexex setOutputFile).
 def prim_BEGIN_NONAME(inner, cur, ip):
     inner.outer.runtime_begin_noname()
     return ip
 
 
-# (:) ( "name" -- ) -- open a NAMED definition from within a running word, parsing
-# the name at run time. Compiled where a bare ':' appears in a colon body (brew's
-# basics.fs offset-defining words: `: (zero-offset:) : POSTPONE ; ;`).
+# (:) ( "name" -- ) -- open a named definition from within a running word, parsing the name at run time.
 def prim_BEGIN_NAMED(inner, cur, ip):
     inner.outer.runtime_begin_named()
     return ip
 
 
-# (;) ( -- xt ) -- finish the definition currently being compiled and restore the
-# enclosing compilation context. Compiled by POSTPONE ; (lexex setOutputFile).
+# (;) ( -- xt ) -- finish the definition being compiled and restore the enclosing context.
 def prim_END_DEF(inner, cur, ip):
     inner.outer.runtime_end_definition()
     return ip
 
 
-# SLITERAL ( c-addr u -- ) -- compile the string so the current definition pushes
-# ( c-addr u ) at runtime. Runs while compiling (lexex setOutputFile).
+# SLITERAL ( c-addr u -- ) -- compile the string so the current definition pushes ( c-addr u ) at runtime.
 def prim_SLITERAL(inner, cur, ip):
     inner.outer.runtime_sliteral()
     return ip
 
 
-# CHAR ( "<spaces>name" -- c ) -- parse the next token and push its first
-# character's code. Compiled where CHAR appears in a colon body so it parses at
-# run time (lexex 'char' = char 'lit').
+# CHAR ( "<spaces>name" -- c ) -- parse the next token and push its first character's code.
 def prim_CHAR(inner, cur, ip):
     inner.outer.runtime_char()
     return ip
 
 
-# PARSE-NAME ( "<spaces>name" -- c-addr u ) -- parse the next token, returning its
-# address and length in data space (lexex symbol reads keywords with it).
+# PARSE-NAME ( "<spaces>name" -- c-addr u ) -- parse the next token, returning its address and length.
 def prim_PARSE_NAME(inner, cur, ip):
     inner.outer.runtime_parse_name()
     return ip
@@ -2072,17 +1960,13 @@ def prim_DEFINED(inner, cur, ip):
     return ip
 
 
-# STATE ( -- a-addr ) -- push the address of the compilation-state cell. Runs
-# from a colon body so state-smart words (STATE @ IF ... POSTPONE ...) compile.
+# STATE ( -- a-addr ) -- push the address of the compilation-state cell.
 def prim_STATE(inner, cur, ip):
     inner.outer.runtime_state()
     return ip
 
 
-# (IMMEDIATE) ( -- ) -- mark the most recently defined word immediate. Compiled
-# by IMMEDIATE when it appears in a colon body, so a defining word can run
-# CREATE IMMEDIATE ... DOES> to build immediate child words at runtime (brainless
-# create-array / vector-table: / offset).
+# (IMMEDIATE) ( -- ) -- mark the most recently defined word immediate.
 def prim_IMMEDIATE(inner, cur, ip):
     inner.outer.runtime_immediate()
     return ip
@@ -2137,10 +2021,7 @@ def prim_COMPARE(inner, cur, ip):
     return ip
 
 
-# SEARCH ( c-addr1 u1 c-addr2 u2 -- c-addr3 u3 flag ) -- STRING. Locate the
-# string c-addr2/u2 inside c-addr1/u1. On a match c-addr3/u3 is the tail of the
-# first string starting at the match and flag is true; otherwise c-addr1/u1 is
-# returned unchanged with flag false.
+# SEARCH ( c-addr1 u1 c-addr2 u2 -- c-addr3 u3 flag ) -- STRING; locate c-addr2/u2 inside c-addr1/u1.
 def prim_SEARCH(inner, cur, ip):
     u2 = inner.pop_ds_int()
     a2 = inner.pop_ds_int()
@@ -2181,8 +2062,7 @@ def prim_SEARCH(inner, cur, ip):
     return ip
 
 
-# DEFER! ( xt xt-deferred -- ) -- bind xt as the action of a deferred word. The
-# slot id lives in the deferred word's body (LIT id (DEFER) EXIT).
+# DEFER! ( xt xt-deferred -- ) -- bind xt as the action of a deferred word.
 def prim_DEFER_STORE(inner, cur, ip):
     xt_def = word_from_wid(inner.pop_ds_int())
     xt = word_from_wid(inner.pop_ds_int())
@@ -2192,8 +2072,7 @@ def prim_DEFER_STORE(inner, cur, ip):
     return ip
 
 
-# CONSTANT ( x "<name>" -- ) -- runtime defining word. Executable inside a colon
-# body (e.g. r: in cd16sim), it names the next input token as a constant.
+# CONSTANT ( x "<name>" -- ) -- runtime defining word.
 def prim_CONSTANT(inner, cur, ip):
     inner.outer.runtime_constant()
     return ip
@@ -2205,9 +2084,7 @@ def prim_VARIABLE(inner, cur, ip):
     return ip
 
 
-# 2CONSTANT ( x1 x2 "<name>" -- ) -- runtime defining word (DOUBLE). Names the
-# next token; the child word pushes x1 x2. Executable inside a colon body, which
-# is how compat/struct.fs uses it (end-struct is a 2constant-defining word).
+# 2CONSTANT ( x1 x2 "<name>" -- ) -- runtime defining word (DOUBLE); child word pushes x1 x2.
 def prim_2CONSTANT(inner, cur, ip):
     inner.outer.runtime_2constant()
     return ip
@@ -2219,17 +2096,13 @@ def prim_2VARIABLE(inner, cur, ip):
     return ip
 
 
-# CREATE ( "<name>" -- ) -- runtime defining word. When the enclosing definition
-# had a DOES>, its body (carried on cur.does_word) becomes the child's action.
+# CREATE ( "<name>" -- ) -- runtime defining word; uses cur.does_word if the enclosing definition had a DOES>.
 def prim_CREATE(inner, cur, ip):
     inner.outer.runtime_create(cur.does_word)
     return ip
 
 
-# (DOES>) ( -- ) -- emitted where DOES> appears in a defining word. Rebinds the
-# most recent CREATEd word to run this thread's carved DOES> body. Supports the
-# DOES>-only idiom (a word with no CREATE of its own that patches a separately
-# CREATEd word, e.g. lexex 1darray).
+# (DOES>) ( -- ) -- rebinds the most recent CREATEd word to run this thread's carved DOES> body.
 def prim_DODOES(inner, cur, ip):
     inner.outer.runtime_does(cur.does_word)
     return ip
@@ -2247,16 +2120,13 @@ def prim_TICK(inner, cur, ip):
     return ip
 
 
-# ( ( "ccc<paren>" -- ) -- the comment word, as an immediate dictionary word so
-# it can be POSTPONEd (compat/assert.fs). When executed it consumes input up to
-# and including the next ')'.
+# ( ( "ccc<paren>" -- ) -- comment word, immediate so it can be POSTPONEd; consumes input to next ')'.
 def prim_PAREN(inner, cur, ip):
     inner.outer.runtime_paren()
     return ip
 
 
-# WORDLIST ( -- wid ) -- SEARCH. A prim so it works when compiled into a colon
-# body (compat/vocabulary.fs: `wordlist create ,`).
+# WORDLIST ( -- wid ) -- SEARCH; prim so it works compiled into a colon body.
 def prim_WORDLIST(inner, cur, ip):
     inner.outer._handle_wordlist()
     return ip
@@ -2274,9 +2144,7 @@ def prim_SET_ORDER(inner, cur, ip):
     return ip
 
 
-# ALSO / PREVIOUS / DEFINITIONS / FORTH -- SEARCH-EXT. Prims so they take effect
-# when compiled into a colon body; interpret mode still uses _dispatch_interpret,
-# which handles these keywords before dictionary lookup.
+# ALSO / PREVIOUS / DEFINITIONS / FORTH -- SEARCH-EXT; prims so they take effect compiled into a colon body.
 def prim_ALSO(inner, cur, ip):
     inner.outer._handle_also()
     return ip
@@ -2287,24 +2155,19 @@ def prim_PREVIOUS(inner, cur, ip):
     return ip
 
 
-# >ORDER ( wid -- ) -- SEARCH-EXT. A prim (not just an interpret-mode token)
-# so it also takes effect when compiled into a colon body.
+# >ORDER ( wid -- ) -- SEARCH-EXT; prim so it also takes effect compiled into a colon body.
 def prim_TO_ORDER(inner, cur, ip):
     inner.outer._handle_to_order()
     return ip
 
 
-# >NUMBER ( ud1 c-addr1 u1 -- ud2 c-addr2 u2 ) — CORE. Prim so colon bodies
-# (sumcol, moments, ARG parsing) can call it; interpret mode still uses
-# _dispatch_interpret.
+# >NUMBER ( ud1 c-addr1 u1 -- ud2 c-addr2 u2 ) -- CORE; prim so colon bodies can call it.
 def prim_TO_NUMBER(inner, cur, ip):
     inner.outer._handle_to_number()
     return ip
 
 
-# NEXTNAME ( c-addr u -- ) (gforth): set the name the next defining word
-# (CREATE, :, CONSTANT, VALUE, ...) will use for itself instead of parsing
-# one from the input. Consumed once then cleared.
+# NEXTNAME ( c-addr u -- ) -- override the name the next defining word will use instead of parsing one.
 def prim_NEXTNAME(inner, cur, ip):
     inner.outer.runtime_nextname()
     return ip
@@ -2320,39 +2183,31 @@ def prim_FORTH(inner, cur, ip):
     return ip
 
 
-# CS-ROLL ( C: origN..orig0 N -- origN-1..orig0 origN ) -- TOOLS-EXT. A plain
-# (non-immediate) word that rolls the compile-time control-flow stack; used by
-# gc.fs via `: [cs-roll] cs-roll ; immediate`.
+# CS-ROLL ( C: origN..orig0 N -- origN-1..orig0 origN ) -- TOOLS-EXT; rolls the compile-time control-flow stack.
 def prim_CS_ROLL(inner, cur, ip):
     inner.outer.runtime_cs_roll()
     return ip
 
 
-# WORD ( char "<chars>ccc<char>" -- c-addr ) -- parse the next token off the input
-# line and store it as a counted string. Executable inside a colon body (brainless
-# load-part does BL WORD at runtime).
+# WORD ( char "<chars>ccc<char>" -- c-addr ) -- parse the next token and store as a counted string.
 def prim_WORD(inner, cur, ip):
     inner.outer.runtime_word()
     return ip
 
 
-# INCLUDED ( c-addr u -- ) -- load a source file named by the string. Executable
-# inside a colon body (brainless load-part includes files at runtime).
+# INCLUDED ( c-addr u -- ) -- load a source file named by the string.
 def prim_INCLUDED(inner, cur, ip):
     inner.outer.runtime_included()
     return ip
 
 
-# PARSE ( char "ccc<char>" -- c-addr u ) -- parse the next token off the input
-# line. Executable inside a colon body (fcp FEN uses BL PARSE).
+# PARSE ( char "ccc<char>" -- c-addr u ) -- parse the next token off the input line.
 def prim_PARSE(inner, cur, ip):
     inner.outer.runtime_parse()
     return ip
 
 
-# REFILL ( -- flag ) -- read the next line of the file being INCLUDEd into the
-# input buffer and push true, or push false at end of file. Executable inside a
-# colon body (brainless squares: reads a board-square table row by row).
+# REFILL ( -- flag ) -- read the next line into the input buffer; push false at EOF.
 def prim_REFILL(inner, cur, ip):
     inner.outer.runtime_refill()
     return ip
@@ -2364,28 +2219,22 @@ def prim_MARKER(inner, cur, ip):
     return ip
 
 
-# QUIT ( -- ) -- abandon the current activity and return to the interpreter.
-# Executable inside a colon body (fcp's think aborts with QUIT). Clears the
-# stacks and unwinds via Abort, which the outer interpreter catches.
+# QUIT ( -- ) -- abandon the current activity and return to the interpreter via Abort.
 @dont_look_inside
 def prim_QUIT(inner, cur, ip):
-    # State clearing happens at the Abort catch site (outside the portal):
-    # zeroing the virtualizable stacks inside a compiled frame and then
-    # raising would unwind through frames whose bookkeeping is already gone.
-    inner.outer.state = 0  # INTERPRET
+    # State cleared here: zeroing virtualizable stacks inside a compiled frame before raising would unwind through already-gone bookkeeping.
+    inner.outer.state = 0
     raise Abort
     return ip
 
 
-# FIND ( c-addr -- c-addr 0 | xt 1 | xt -1 ) -- look up a counted string in the
-# dictionary. Executable inside a colon body (fcp's [UNDEFINED]/[DEFINED]).
+# FIND ( c-addr -- c-addr 0 | xt 1 | xt -1 ) -- look up a counted string in the dictionary.
 def prim_FIND(inner, cur, ip):
     inner.outer.runtime_find()
     return ip
 
 
-# BASE ( -- a-addr ) -- address of the radix variable. Executable inside a colon
-# body (fcp saves/restores BASE around hex move-string parsing).
+# BASE ( -- a-addr ) -- address of the radix variable.
 def prim_BASE(inner, cur, ip):
     inner.outer.runtime_base()
     return ip
@@ -2400,9 +2249,7 @@ def prim_UNUSED(inner, cur, ip):
     return ip
 
 
-# :INLINE ( -- ) -- dict stub so fcp's [UNDEFINED] :inline guard reports it as
-# defined. The actual defining behavior is handled lexically in interpret_line
-# (treated as a plain colon), so this body is never executed.
+# :INLINE ( -- ) -- dict stub so [UNDEFINED] :inline reports it defined; body never executed.
 def prim_INLINE_STUB(inner, cur, ip):
     return ip
 
@@ -2421,15 +2268,13 @@ def prim_EVALUATE(inner, cur, ip):
     return ip
 
 
-# >IN ( -- a-addr ) -- address of the runtime parse cursor (a token index).
+# >IN ( -- a-addr ) -- address of the parse cursor.
 def prim_TO_IN(inner, cur, ip):
     inner.push_ds_int(inner.outer.to_in_addr)
     return ip
 
 
-# SOURCE ( -- c-addr u ) -- push the address and length of the current input
-# buffer. A primitive (not just an interpret-mode token) so it also compiles into
-# colon bodies (lexex ansify.fth: parse-name = SOURCE >IN @ /string ...).
+# SOURCE ( -- c-addr u ) -- push address and length of current input buffer; primitive so it also compiles into colon bodies.
 def prim_SOURCE(inner, cur, ip):
     inner.outer._handle_source()
     return ip
@@ -2449,8 +2294,6 @@ def prim_ABORT(inner, cur, ip):
 def prim_TOBODY(inner, cur, ip):
     """GForth core 2012: return the parameter field address corresponding to xt."""
     word = word_from_wid(inner.pop_ds_int())
-    # For words created with CREATE, VARIABLE, CONSTANT, etc.,
-    # the body is in the first literal of the code thread
     if word.thread is not None and len(word.thread.lits) > 0:
         body = word.thread.lits[0]
         if isinstance(body, W_IntObject):
@@ -2458,7 +2301,6 @@ def prim_TOBODY(inner, cur, ip):
         else:
             inner.push_ds(body)
     else:
-        # For primitive words, there's no body
         inner.push_ds_int(0)
     return ip
 
@@ -2558,7 +2400,6 @@ def prim_C_FETCH(inner, cur, ip):
 def prim_CHAR_PLUS(inner, cur, ip):
     """GForth core 2012: add the size of a character to c-addr1."""
     addr = inner.pop_ds_int()
-    # In our implementation, characters are 1 byte
     inner.push_ds_int(addr + 1)
     return ip
 
@@ -2567,7 +2408,6 @@ def prim_CHAR_PLUS(inner, cur, ip):
 def prim_CHARS(inner, cur, ip):
     """GForth core 2012: convert n1 characters to address units."""
     n = inner.pop_ds_int()
-    # In our implementation, 1 char = 1 address unit
     inner.push_ds_int(n)
     return ip
 
@@ -2793,15 +2633,11 @@ def prim_FROT(inner, cur, ip):
 def prim_FLOATPLUS(inner, cur, ip):
     """Add size of float to address."""
     addr = inner.pop_ds_int()
-    inner.push_ds_int(addr + 8)  # 8 bytes for a double
+    inner.push_ds_int(addr + 8)
     return ip
 
 
-# File access -------------------------------------------------------------
-#
-# fam encoding (private to these words; the standard leaves it implementation
-# defined): bit 0/1 select the read/write access, bit 2 is the BIN flag. The
-# BIN flag is ignored on POSIX (all files are binary) but must round-trip.
+# File access -- fam encoding: bit 0/1 = read/write access, bit 2 = BIN flag (ignored on POSIX but must round-trip).
 FAM_RO = 0
 FAM_WO = 1
 FAM_RW = 2
@@ -2876,13 +2712,7 @@ def prim_STDERR(inner, cur, ip):
     return ip
 
 
-# File-word structure: the prim itself stays traceable (stack and heap access
-# happen on the virtualizable inside the trace) and only the OS call sits in a
-# @dont_look_inside helper that never receives `inner`. Passing the
-# virtualizable to an opaque residual call forces it and aborts the enclosing
-# trace ("vable escape"); cd16sim re-loads its ROM with OPEN-FILE/READ-LINE/
-# CLOSE-FILE inside its benchmark loop, so these three must stay escape-free.
-
+# OS calls are in @dont_look_inside helpers that never receive `inner`; passing a virtualizable to an opaque residual forces it and aborts the trace (vable escape).
 @dont_look_inside
 def _open_file_raw(name, flags):
     import os
@@ -3057,8 +2887,7 @@ def prim_WRITE_FILE(inner, cur, ip):
     return ip
 
 
-# FLUSH-FILE ( fileid -- ior ) -- force buffered output to the file. WRITE-FILE
-# here uses unbuffered os.write, so there is nothing to flush: succeed with 0.
+# FLUSH-FILE ( fileid -- ior ) -- WRITE-FILE uses unbuffered os.write; nothing to flush.
 def prim_FLUSH_FILE(inner, cur, ip):
     inner.pop_ds_int()
     inner.push_ds_int(0)
@@ -3153,13 +2982,11 @@ def prim_ALLOCATE(inner, cur, ip):
         inner.push_ds_int(0)
         inner.push_ds_int(-1)
         return ip
-    # Round the usable size up to a whole cell so every user address is
-    # cell-aligned and the free-list buckets stay aligned.
+    # Round up to a whole cell to keep user addresses cell-aligned.
     usable = size
     rem = usable & (CELL_SIZE_BYTES - 1)
     if rem != 0:
         usable += (CELL_SIZE_BYTES - rem)
-    # Reuse a freed block of exactly this usable size, if any.
     bucket = inner.alloc_free.get(usable, None)
     if bucket is not None and len(bucket) > 0:
         addr = bucket.pop()
@@ -3209,11 +3036,7 @@ def prim_RESIZE(inner, cur, ip):
         inner.push_ds_int(old_addr)
         inner.push_ds_int(-1)
         return ip
-    # In-place fast path: if the existing block's usable size already covers the
-    # request, keep the SAME address (like gforth). Moving on every resize would
-    # invalidate addresses a caller cached -- brew's allocation-pointer list and
-    # stringbuf handles resize in place and expect the address to stay put when it
-    # can.
+    # In-place fast path: if existing block is large enough, keep the same address (invalidating cached addresses would break brew).
     if old_addr >= ALLOC_BASE + CELL_SIZE_BYTES and old_addr <= inner.alloc_limit:
         cur_usable = inner.cell_fetch_int(old_addr - CELL_SIZE_BYTES)
         if 0 < new_size <= cur_usable:
@@ -3239,7 +3062,7 @@ def prim_RESIZE(inner, cur, ip):
             k += 1
         inner.push_ds_int(old_addr)
         prim_FREE(inner, cur, ip)
-        inner.pop_ds_int()  # discard FREE's ior (always 0)
+        inner.pop_ds_int()
     inner.push_ds_int(new_addr)
     inner.push_ds_int(0)
     return ip
@@ -3254,8 +3077,7 @@ def prim_THROW(inner, cur, ip):
     return ip
 
 
-# (CATCH-EPILOGUE) -- runs when a CATCH-protected word returns normally: the
-# catch frame is no longer needed and the success code 0 goes on the stack.
+# (CATCH-EPILOGUE) -- runs on normal return from CATCH-protected word; drops catch frame and pushes 0.
 def prim_CATCH_EPILOGUE(inner, cur, ip):
     inner.catch_drop_frame()
     inner.push_ds_int(0)
@@ -3266,11 +3088,7 @@ CATCH_EPILOGUE_WORD = Word("(catch-epilogue)", prim=prim_CATCH_EPILOGUE)
 CATCH_EPILOGUE_THREAD = CodeThread([CATCH_EPILOGUE_WORD], [ZERO])
 
 
-# CATCH ( i*x xt -- j*x 0 | i*x n ) -- execute xt, returning 0 normally or the
-# THROW code n with the stack depth restored to just before xt ran.
-# The frame is recorded in the interpreter's flat catch arrays and xt runs via
-# a normal in-loop call (through the epilogue trampoline), so the whole
-# mechanism stays inside the trace; THROW unwinds in execute_thread.
+# CATCH ( i*x xt -- j*x 0 | i*x n ) -- execute xt; return 0 normally or THROW code with stack restored.
 def prim_CATCH(inner, cur, ip):
     word = word_from_wid(inner.pop_ds_int())
     if word.thread is None:
@@ -3284,7 +3102,7 @@ def prim_CATCH(inner, cur, ip):
     return CALL_SENTINEL
 
 
-# Cold fallback for CATCH of a primitive xt: run it in a bounded nested portal.
+# CATCH fallback for a primitive xt: run in a bounded nested portal.
 @dont_look_inside
 def _catch_primitive_xt(inner, cur, ip, word):
     if USE_STACK_FRAGMENT:
@@ -3326,7 +3144,7 @@ def _catch_primitive_xt(inner, cur, ip, word):
 
 
 # Precision for floating point output
-_float_precision = [6]  # Default precision, stored as list for mutability
+_float_precision = [6]  # list for mutability in RPython
 
 
 # SET-PRECISION ( u -- )
@@ -3356,9 +3174,7 @@ def prim_FDOT(inner, cur, ip):
     return ip
 
 
-# REPRESENT ( rf c-addr u -- n f1 f2 ) -- FLOATING-EXT. Store u significand
-# digits of rf at c-addr; n is the decimal-point position (exponent+1), f1 is
-# true when rf is negative, f2 is true when the value is finite (valid).
+# REPRESENT ( rf c-addr u -- n f1 f2 ) -- FLOATING-EXT; n is exponent+1, f1 is sign, f2 is finite flag.
 def prim_REPRESENT(inner, cur, ip):
     u = inner.pop_ds_int()
     c_addr = inner.pop_ds_int()
@@ -3382,7 +3198,6 @@ def prim_REPRESENT(inner, cur, ip):
     if prec < 0:
         prec = 0
     s = formatd(rf, 'e', prec)
-    # s is [-]d[.ddd]e[+-]xx
     if len(s) > 0 and (s[0] == '-' or s[0] == '+'):
         s = s[1:]
     epos = -1
@@ -3455,7 +3270,7 @@ def prim_D2F(inner, cur, ip):
     high = inner.pop_ds_int()
     low = inner.pop_ds_int()
     if LONG_BIT == 64:
-        d = low
+        d = low  # on 64-bit, the double fits in one cell
     else:
         d = (high << 32) | (low & 0xFFFFFFFF)
     inner.push_ds_float(float(d))
@@ -3469,10 +3284,10 @@ def prim_F2D(inner, cur, ip):
     d = int(f)
     if LONG_BIT == 64:
         inner.push_ds_int(d)
-        inner.push_ds_int(0)  # high part
+        inner.push_ds_int(0)
     else:
-        inner.push_ds_int(d & 0xFFFFFFFF)  # low
-        inner.push_ds_int(d >> 32)  # high
+        inner.push_ds_int(d & 0xFFFFFFFF)
+        inner.push_ds_int(d >> 32)
     return ip
 
 
@@ -4119,19 +3934,14 @@ def install_primitives(outer):
     # dictionary
     outer.define_prim("EXECUTE", prim_EXECUTE)
     outer.define_prim("SP@", prim_SP_FETCH)
-    # Dictionary stubs for the conditional-compilation words so ' / FIND locate
-    # them (the token loop still handles them lexically before dict lookup). brew's
-    # gene engine does `' [IF] ... >gene-evaluated-xt !` and executes them later.
+    # Dict stubs so ' / FIND locate [IF]/[ELSE]/[THEN]; token loop still handles them lexically.
     outer.define_prim("[IF]", prim_BRACKET_IF).immediate = True
     outer.define_prim("[ELSE]", prim_BRACKET_ELSE).immediate = True
     outer.define_prim("[THEN]", prim_BRACKET_THEN).immediate = True
     outer.define_prim("XT>STRING", prim_XT_TO_STRING)
-    # name>string ( nt -- addr len ): this VM does not distinguish name tokens
-    # from execution tokens, so it returns the word's name just like XT>STRING.
+    # NAME>STRING: this VM does not distinguish name tokens from execution tokens.
     outer.define_prim("NAME>STRING", prim_XT_TO_STRING)
-    # parse-word (obsolete gforth alias of parse-name): parse a space-delimited
-    # name and return ( c-addr u ). Provided so brew skips including the fallback
-    # parse-word.fs, which relies on a character-offset >IN this VM does not have.
+    # PARSE-WORD: gforth alias of PARSE-NAME; avoids including parse-word.fs which uses >IN offsets this VM lacks.
     outer.define_prim("PARSE-WORD", prim_PARSE_NAME)
     outer.define_prim("(VOCABULARY)", prim_VOCAB_SELECT)
     outer.define_prim("CONSTANT", prim_CONSTANT)
@@ -4185,8 +3995,7 @@ def install_primitives(outer):
     outer.define_prim("(:)", prim_BEGIN_NAMED)
     outer.define_prim("(;)", prim_END_DEF)
     outer.define_prim("(DOES>)", prim_DODOES)
-    # SLITERAL is immediate (a compiling word): POSTPONE SLITERAL emits it so it
-    # runs when the enclosing word runs, compiling the string then.
+    # SLITERAL is immediate: POSTPONE SLITERAL emits it so it runs during compilation of the enclosing word.
     outer.define_prim("SLITERAL", prim_SLITERAL).immediate = True
     outer.define_prim("CHAR", prim_CHAR)
     outer.define_prim("PARSE-NAME", prim_PARSE_NAME)

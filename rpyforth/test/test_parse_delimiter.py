@@ -15,8 +15,7 @@ def _chars(inner, c_addr, u):
 
 
 def test_parse_scans_to_delimiter_across_spaces():
-    # gforth-verified: `[char] } parse` from a colon body scans the current input
-    # line from >IN to the next '}', spanning intervening spaces.
+    # gforth-verified: `[char] } parse` from a colon body scans the current input line from >IN to the next '}', spanning intervening spaces.
     inner, _ = run_lines([
         ": grab [char] } parse ;",
         "grab aa bb cc}xx",
@@ -56,8 +55,7 @@ def test_parse_length_hello_world():
 
 
 def test_cvs_style_immediate_parse():
-    # brew's `cvs"` word: an IMMEDIATE parsing word that trims CVS markers and
-    # compiles the remaining text with SLITERAL.
+    # brew's `cvs"` word: an IMMEDIATE parsing word that trims CVS markers and compiles the remaining text with SLITERAL.
     inner, _ = run_lines([
         ': cvs" [char] " parse swap 6 + swap 12 - 2 max POSTPONE sliteral ; IMMEDIATE',
         ': t cvs" \tHELLOWORLD$Id: x,v 1.0 stuff $\t" ;',

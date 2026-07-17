@@ -8,12 +8,6 @@ from rpyforth.metastack import NTOP, ACTIVE_MAX, CALL_WINDOW
 from rpyforth.metastack_int_frameonly import DSIntMetaStackFrameOnly
 
 
-# ---------------------------------------------------------------------------
-# Unit level: exercise the frame-only int metastack directly. The class is
-# self-contained (no scalar tops), so these run without the RPYFORTH_FRAME_ONLY
-# flag -- they test the layout in isolation.
-# ---------------------------------------------------------------------------
-
 def test_push_pop_order_small():
     s = DSIntMetaStackFrameOnly()
     for v in range(3):
@@ -23,8 +17,7 @@ def test_push_pop_order_small():
 
 
 def test_push_pop_across_cache_boundary():
-    # Push past ACTIVE_MAX so the deepest cells evacuate to the spill, then read
-    # the whole stack back in order.
+    # Push past ACTIVE_MAX to force spill evacuation, then drain in order.
     n = 2 * ACTIVE_MAX + 3
     s = DSIntMetaStackFrameOnly()
     for v in range(n):
@@ -38,8 +31,6 @@ def test_peek_across_boundary_and_spill():
     s = DSIntMetaStackFrameOnly()
     for v in range(n):
         s.push(v)
-    # Deep peeks (PICK/ROLL-style): every depth 0..n-1 must resolve, spanning
-    # both the cached window and the spilled tail.
     for depth in range(n):
         assert s.peek(depth) == n - 1 - depth
 
@@ -67,9 +58,7 @@ def test_top_floats_at_frame_top():
 
 @pytest.mark.parametrize("depth", [1, 2, 5, 10, 15])
 def test_call_park_commit_roundtrip(depth):
-    # Fill to a given logical depth, take a call fragment (park the below-window
-    # cells, keep the CALL_WINDOW tops), then commit and verify the full stack
-    # is intact and in order.
+    # Park below-window cells, keep CALL_WINDOW tops, commit and verify full stack in order.
     s = DSIntMetaStackFrameOnly()
     for v in range(depth):
         s.push(v)
@@ -123,19 +112,10 @@ def test_reset_clears_everything():
     assert s.pop() == 42
 
 
-# ---------------------------------------------------------------------------
-# End-to-end: run whole Forth programs in a subprocess with
-# RPYFORTH_STACK_FRAGMENT=1 RPYFORTH_FRAME_ONLY=1 set at import time, so the
-# flag-gated helper dispatch, call-boundary parking and CATCH restore paths are
-# all exercised together.
-# ---------------------------------------------------------------------------
-
 def _run_forth(line):
     env = dict(os.environ)
     env["RPYFORTH_STACK_FRAGMENT"] = "1"
     env["RPYFORTH_FRAME_ONLY"] = "1"
-    # Propagate the parent's import path (repo root + the pypy checkout that the
-    # test harness put on sys.path) so the child can import rpython.
     env["PYTHONPATH"] = os.pathsep.join([p for p in sys.path if p])
     script = (
         "from rpyforth.outer_interp import OuterInterpreter\n"
@@ -177,20 +157,17 @@ def test_e2e_recursive_fib():
 
 
 def test_e2e_catch_restores_depth():
-    # Ints pushed before THROW are discarded; the pre-CATCH int survives, throw
-    # code on top.
+    # Pre-CATCH int survives; ints pushed before THROW are discarded.
     got = _run_forth("99 : bad 1 2 3 7 THROW ; ' bad CATCH")
     assert got == [7, 99]
 
 
 def test_e2e_catch_no_throw():
     got = _run_forth("5 : good 2 3 + ; ' good CATCH")
-    # stack (top first): throw-code 0, then good's result 5, then 5
     assert got == [0, 5, 5]
 
 
 def test_e2e_deep_pick():
     n = ACTIVE_MAX + 4
     prog = " ".join(str(v) for v in range(n)) + " " + str(n - 1) + " PICK"
-    # PICK n-1 copies the deepest cell (value 0) to the top.
     assert _run_forth(prog)[0] == 0
