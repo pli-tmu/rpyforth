@@ -12,11 +12,9 @@ from rpyforth.metastack_int import DSIntMetaStack
 
 
 def init_float_fields(host):
-    """Install the host-resident active float-fragment + metastack spill state.
-    Mirrors init_fields for the int stack: the top NTOP cells live in the scalar
-    fields ft0/ft1, the next cells in the small virtualizable fframe array, and
-    everything below in the shared fspill. fdep counts cells cached in ft0/ft1 +
-    fframe (0..ACTIVE_MAX)."""
+    """Float counterpart of init_fields: NTOP scalar tops ft0/ft1, the
+    virtualizable fframe array, and the shared fspill. fdep counts cells cached in
+    ft0/ft1 + fframe (0..ACTIVE_MAX)."""
     host.ft0 = 0.0
     host.ft1 = 0.0
     host.fdep = 0
@@ -69,10 +67,9 @@ def restore_float_cache(host, snap):
 
 
 class DSFloatMetaStack(DSIntMetaStack):
-    """Float data stack with the same three-tier metastack layout as the int
-    stack. Inherits from DSIntMetaStack so InnerInterpreter keeps a single
-    InterpBase chain; the float state lives in separate f-prefixed fields, so the
-    two stacks never alias."""
+    """Float data stack with the same three-tier layout as the int stack. Inherits
+    DSIntMetaStack so InnerInterpreter keeps one InterpBase chain; float state
+    lives in separate f-prefixed fields, so the two stacks never alias."""
 
     def __init__(self):
         self.init_fields()

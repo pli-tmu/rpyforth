@@ -1,8 +1,8 @@
-"""Metastack constants and the three-tier data-stack layout.
+"""Metastack constants and the three-tier data-stack layout:
 
-  * the top NTOP cells in fields like the stack-caching technique (Etrl, '95)
-  * the next FRAME_SIZE cells in a small virtualizable frame array
-  * everything deeper in the shared spill area
+  * the top NTOP cells in scalar fields (stack caching, Ertl 1995),
+  * the next FRAME_SIZE cells in a small virtualizable frame array,
+  * everything deeper in the shared spill area.
 """
 
 import os

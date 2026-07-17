@@ -1,28 +1,17 @@
-"""Frame-only (NTOP=0) ablation counterpart of the int metastack.
+"""Frame-only (NTOP=0) variant of the int metastack (metastack_int.py).
 
-The flagship layout (metastack_int.py) caches the top NTOP=2 cells in scalar
-fields t0, t1 and the next FRAME_SIZE cells in the virtualizable ``frame``
-array. Keeping "t0 = top" as an invariant costs a data-movement shift on every
-push (t1=t0; t0=v) and pop. This variant removes the scalar tops entirely
-(NTOP=0, "frame-only"): every cached cell lives in the virtualizable ``frame``
-array and the top floats at frame[cache_depth-1], so push is ``frame[cache_depth]=v; cache_depth+=1`` with
-zero data movement. Inside a trace the vable-array slots are virtual registers
-and the depth-derived indices fold, mirroring PyPy's own fastlocals_w[*].
+Drops the scalar tops t0, t1 entirely: every cached cell lives in the
+virtualizable ``frame`` array, top at frame[cache_depth-1], so push is
+``frame[cache_depth]=v; cache_depth+=1`` with no data movement (the flagship's
+"t0=top" invariant costs a shift on every push/pop). Inside a trace the array
+slots are virtual registers and the depth-derived indices fold, like PyPy's
+fastlocals_w[*].
 
-Sizing parity with the flagship: ``frame`` holds ACTIVE_MAX = NTOP + FRAME_SIZE
-cells (the same total as the flagship's t0 + t1 + frame), so both variants cache
-the same number of cells and runs at different RPYFORTH_FRAME_SIZE values stay
-comparable.
-
-Indexing conventions:
-  * deepest cached cell at frame[0], top at frame[cache_depth-1];
-  * cache_depth is the cached count (0..ACTIVE_MAX);
-  * everything below the cache is in the shared ``spill`` (contiguous,
-    spill[spill_ptr-1] just under the cache, spill[0] the stack bottom).
-
-The call boundary keeps the flagship's CALL_WINDOW = NTOP argument window: a
-call parks the below-window cells in the spill and normalizes cache_depth to that window,
-so calling-convention behavior is identical between the two variants.
+``frame`` holds ACTIVE_MAX = NTOP + FRAME_SIZE cells, the same total the flagship
+caches. frame[0] is the deepest cell, cache_depth the count (0..ACTIVE_MAX), and
+everything below sits in the shared ``spill``. The call boundary keeps
+CALL_WINDOW = NTOP, parking below-window cells and normalizing cache_depth, so
+the calling convention matches the flagship. See docs/NOTE_STACK_LAYOUT.md.
 """
 
 from rpython.rlib.jit import promote, unroll_safe
@@ -60,11 +49,9 @@ def init_fields(host):
 
 
 class DSCacheSnapshotFrameOnly(object):
-    """Immutable capture of the frame-only active cache, for saving and
-    restoring the data stack. Holds the cached depth, a private copy of the
-    frame array, and the cache/spill pointers. The shared spill buffer is not
-    copied: restore rolls the spill pointer back and relies on the cells below
-    it being undisturbed."""
+    """Immutable snapshot of the frame-only cache: cache_depth, a private copy of
+    the frame, and the two pointers. The shared spill is not copied; restore rolls
+    spill_ptr back and relies on the cells below it being undisturbed."""
 
     _immutable_fields_ = ["cache_depth", "frame[*]", "frag_ptr", "spill_ptr"]
 
@@ -103,12 +90,9 @@ def restore_cache(host, snap):
 
 class DSIntMetaStackFrameOnly(DSMetaStack):
     """Integer data stack in the frame-only (NTOP=0) layout:
-
-        frame[ACTIVE_MAX] (vable array) | spill (ONE shared heap array)
-
-    The spill is allocated once per VM (init_fields); a fragment is only the
-    frame + the two pointers (frag_ptr, spill_ptr), a window [0, spill_ptr) onto
-    the shared spill -- nest/unnest allocates nothing."""
+    frame[ACTIVE_MAX] (virtualizable) | one shared spill array. The spill is
+    allocated once per VM; a fragment is just the window [0, spill_ptr) onto it,
+    so nest/unnest allocates nothing."""
 
     def init_fields(self):
         init_fields(self)

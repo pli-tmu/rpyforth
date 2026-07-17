@@ -966,11 +966,8 @@ def prim_STORE(inner, cur, ip):
 
 # ! ( x1 x2 a-addr -- )
 def prim_2STORE(inner, cur, ip):
-    """
-    Store the cell pair x1 x2 at a-addr,
-    with x2 at a-addr and x1 at the next consecutive cell.
-    It is equivalent to the sequence SWAP OVER ! CELL+ !.
-    """
+    """Store the cell pair x1 x2 at a-addr (x2 at a-addr, x1 at the next cell);
+    equivalent to SWAP OVER ! CELL+ !."""
     addr = inner.pop_ds_int()
     x2 = inner.pop_ds_int()
     x1 = inner.pop_ds_int()
@@ -1645,11 +1642,8 @@ def prim_EXIT(inner, cur, ip):
 # we directly replace the current thread with the target's thread.
 
 def prim_TAILCALL(inner, cur, ip):
-    """Execute a tail call - jump to target word without pushing return address.
-
-    The literal at ip-1 contains the W_WordObject of the target word.
-    This primitive signals the inner interpreter to perform a tail call.
-    """
+    """Execute a tail call: jump to the target word (its W_WordObject is the
+    literal at ip-1) without pushing a return address, via TAILCALL_SENTINEL."""
     from rpyforth.inner_interp import TAILCALL_SENTINEL
     return TAILCALL_SENTINEL
 
@@ -3149,14 +3143,11 @@ def prim_FILE_SIZE(inner, cur, ip):
 # ALLOCATE ( u -- a-addr ior )
 def prim_ALLOCATE(inner, cur, ip):
     """Allocate u bytes from the high ALLOCATE region (separate from dictionary
-    space, so a large block does not disturb HERE). Returns address and 0 on
-    success, or 0 and -1 on failure.
-
-    Layout: each block carries an 8-byte size header just below the address
-    returned to the caller, so FREE can recover the usable size and recycle the
-    block. A same-size freed block is reused before the bump pointer advances,
-    which keeps the region bounded across gc.fs's repeated FREE/ALLOCATE of
-    equal-size grain-info bitvectors."""
+    space, so a large block does not disturb HERE). Returns ( addr 0 ) on success,
+    ( 0 -1 ) on failure. Each block carries an 8-byte size header just below the
+    returned address so FREE can recover the size and recycle it; a same-size
+    freed block is reused before the bump pointer advances, keeping the region
+    bounded across gc.fs's repeated FREE/ALLOCATE of equal-size bitvectors."""
     size = inner.pop_ds_int()
     if size < 0:
         inner.push_ds_int(0)

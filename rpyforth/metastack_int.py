@@ -47,11 +47,9 @@ def init_fields(host):
 
 
 class DSCacheSnapshot(object):
-    """Immutable capture of the active-fragment cache, for saving and restoring
-    the data stack. Holds the scalar tops, the cached depth, a private copy of the
-    frame array, and the cache/spill pointers. The shared spill buffer is not
-    copied: restore rolls the spill pointer back (discarding cells parked above
-    it) and relies on the cells below it being undisturbed."""
+    """Immutable snapshot of the cache: scalar tops, cache_depth, a private copy
+    of the frame, and the two pointers. The shared spill is not copied; restore
+    rolls spill_ptr back and relies on the cells below it being undisturbed."""
 
     _immutable_fields_ = ["t0", "t1", "cache_depth", "frame[*]", "frag_ptr", "spill_ptr"]
 
@@ -93,15 +91,10 @@ def restore_cache(host, snap):
 
 
 class DSIntMetaStack(DSMetaStack):
-    """Integer data stack in the three-tier layout:
-
-        t0 t1 (vable scalars) | frame[FRAME_SIZE] (vable array) | spill (ONE
-        shared heap array, all fragments)
-
-    The spill is allocated once per VM (init_fields); a fragment is only the
-    scalar tops + frame + the two pointers (frag_ptr, spill_ptr), and is a
-    window [0, spill_ptr) onto the shared spill -- nest/unnest allocates
-    nothing."""
+    """Integer data stack in the three-tier layout: t0, t1 scalars |
+    frame[FRAME_SIZE] (both virtualizable) | one shared spill array. The spill is
+    allocated once per VM; a fragment is just the window [0, spill_ptr) onto it,
+    so nest/unnest allocates nothing."""
 
     def init_fields(self):
         init_fields(self)

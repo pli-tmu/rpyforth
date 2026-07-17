@@ -953,15 +953,12 @@ class OuterInterpreter(object):
         return True
 
     def _do_limit_is_literal(self):
-        """True when the DO limit about to be consumed came from a compile-time
-        literal. The DO stack effect is ( limit start -- ), so the two most
-        recently emitted code cells are the pushes for `limit` (deeper) and
-        `start` (top). When both are LIT, each pushed exactly one value, so the
-        limit is unambiguously the literal two cells back. Requiring both to be
-        LIT keeps this sound: if `start` is a multi-cell word we cannot know the
-        limit's stack position, so we conservatively report False (correctness is
-        unaffected; only the promote fast path is skipped). CONSTANTs compile to a
-        LIT via _value_word_literal, so `NUM 0 DO` counts as literal too."""
+        """True when the DO limit came from a compile-time literal. DO is
+        ( limit start -- ), so the last two emitted cells push `limit` (deeper)
+        and `start` (top); when both are LIT each pushed one value, so the limit
+        is two cells back. Requiring both LIT keeps it sound: a multi-cell `start`
+        hides the limit's position, so we report False and skip only the promote
+        fast path. CONSTANTs compile to a LIT, so `NUM 0 DO` counts too."""
         if self.cc_ptr < 2:
             return False
         return (self.current_code[self.cc_ptr - 1] is self.wLIT and
@@ -1095,12 +1092,10 @@ class OuterInterpreter(object):
         return True
 
     def _compile_until(self):
-        """Compile UNTIL (conditional branch back to BEGIN if false).
-
-        Also supports BEGIN ... WHILE ... UNTIL THEN (used by fcp's >goodVar): the
-        WHILE entry sits above its BEGIN, so pop the WHILE, branch back to the
-        BEGIN, then re-push the WHILE so the following THEN resolves its forward
-        exit branch."""
+        """Compile UNTIL (conditional branch back to BEGIN if false). Also handles
+        BEGIN ... WHILE ... UNTIL THEN (fcp's >goodVar): the WHILE entry sits above
+        its BEGIN, so pop it, branch back to BEGIN, then re-push it so the
+        following THEN resolves its forward exit branch."""
         if not self.ctrl:
             print "UNTIL without BEGIN"
             return False
@@ -1209,10 +1204,9 @@ class OuterInterpreter(object):
             print "UNKNOWN: " + t
 
     def _value_word_literal(self, w):
-        """Return the literal x if w is a value-word (body LIT x ; EXIT), else None.
-
-        Lets a VARIABLE/CONSTANT/CREATE reference compile to an immediate push
-        instead of a call. The word stays in the dictionary, so ' / >BODY /
+        """Return the literal x if w is a value-word (body LIT x ; EXIT), else
+        None. Lets a VARIABLE/CONSTANT/CREATE reference compile to an immediate
+        push instead of a call; the word stays in the dictionary, so ' / >BODY /
         EXECUTE are unaffected."""
         if w.prim is not None:
             return None
@@ -1233,16 +1227,12 @@ class OuterInterpreter(object):
         return thread.lits[0]
 
     def _inlinable_colon_body(self, w):
-        """Return w's CodeThread if it is a small colon word that can be
-        spliced inline, else None.
-
-        Control flow inside the body is fine: branch/loop words carry an
-        absolute instruction index in their literal slot and are relocated at
-        splice time, and interior EXITs become branches past the spliced body
-        (same discipline as the recursive self-call inliner). What cannot be
-        spliced: primitives, immediate words, DOES>-carved words, and
-        tail-call-optimized bodies (a mid-thread TAILCALL would misread its
-        length-anchored literal)."""
+        """Return w's CodeThread if it is a small colon word safe to splice
+        inline, else None. Control flow is fine: branch/loop words carry an
+        absolute instruction index that is relocated at splice time, and interior
+        EXITs become branches past the spliced body. Not splicable: primitives,
+        immediate words, DOES>-carved words, and tail-call-optimized bodies (a
+        mid-thread TAILCALL would misread its length-anchored literal)."""
         if w.prim is not None:
             return None
         if w.immediate:
@@ -1552,12 +1542,10 @@ class OuterInterpreter(object):
 
     def runtime_paren(self):
         """( executed as a word: consume tokens up to and including the next one
-        containing ')'. This is the execution semantics of the '(' comment word,
-        reached when it is POSTPONEd (compat/assert.fs `POSTPONE (`). If the ')'
-        is not on the current line, leave paren_depth open so the enclosing line
-        loop's comment stripper continues the comment onto the next physical line
-        (the normal multi-line paren-comment path), rather than pulling lines here
-        and desynchronising the INCLUDE cursor."""
+        containing ')'. Reached when '(' is POSTPONEd (compat/assert.fs). If the
+        ')' is not on this line, leave paren_depth open so the line loop's comment
+        stripper continues onto the next physical line, rather than pulling lines
+        here and desynchronising the INCLUDE cursor."""
         while True:
             idx = self.inner.cell_fetch_int(self.to_in_addr)
             if idx < 0 or idx >= len(self.toks):
@@ -1786,12 +1774,11 @@ class OuterInterpreter(object):
         self.define_colon(name, CodeThread(code, lits))
 
     def runtime_does(self, does_word):
-        """(DOES>) executed at the point DOES> appears in a defining word. Rebind
-        the most recently defined (CREATEd) word so it pushes its data-field
-        address and then runs does_word. This covers the DOES>-only idiom where a
-        word without its own CREATE patches a separately CREATEd word (lexex
-        lexarrays.fth: 1darray). Idempotent for the in-word CREATE ... DOES> case,
-        where CREATE has already bound does_word."""
+        """(DOES>) executed where DOES> appears in a defining word: rebind the most
+        recently CREATEd word so it pushes its data-field address then runs
+        does_word. Covers the DOES>-only idiom where a word without its own CREATE
+        patches a separately CREATEd one (lexex lexarrays.fth: 1darray), and is
+        idempotent for the in-word CREATE ... DOES> case."""
         if does_word is None:
             return
         w = self.last_word
@@ -1870,11 +1857,10 @@ class OuterInterpreter(object):
 
     def _comment_skip(self, line, pos, n):
         """If a comment word begins at pos (a token boundary), return the position
-        just past that comment; otherwise return pos unchanged. Mirrors the line
-        tokenizer's comment removal ('\\' to end of line, '( ... )' to the next
-        ')') so token counting over source_buffer stays aligned with self.toks
-        (which was built from the comment-stripped line). This lets a char-based
-        PARSE find the right start even when a stack comment precedes it."""
+        just past that comment, else pos unchanged. Mirrors the tokenizer's comment
+        removal ('\\' to end of line, '( ... )' to the next ')') so char-based token
+        counting over source_buffer stays aligned with the comment-stripped
+        self.toks, letting PARSE find the right start after a stack comment."""
         if pos >= n:
             return pos
         ch = line[pos]
@@ -1921,12 +1907,11 @@ class OuterInterpreter(object):
         return count
 
     def runtime_parse(self):
-        """PARSE executed from a colon body ( char "ccc<char>" -- c-addr u ).
-        Scans the current input line from the parse cursor to the next occurrence
-        of the delimiter char, returning the text in between (delimiter excluded)
-        as ( c-addr u ) and advancing the cursor past the delimiter. Leading
-        spaces are not skipped. BL (space) keeps the whitespace-token fast path
-        used by fcp's `BL PARSE`."""
+        """PARSE from a colon body ( char "ccc<char>" -- c-addr u ). Scans the
+        input line from the parse cursor to the next delimiter char, returns the
+        text between (delimiter excluded) as ( c-addr u ), and advances past the
+        delimiter. Leading spaces are not skipped; BL keeps the whitespace-token
+        fast path (fcp's `BL PARSE`)."""
         delim = self.inner.pop_ds_int()
         if delim == 32:
             word_str = self.parse_next_token()

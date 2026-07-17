@@ -1,41 +1,18 @@
-"""Parametric-NTOP ablation counterpart of the int metastack.
+"""Parametric-NTOP variant of the int metastack (metastack_int.py).
 
-The flagship layout (metastack_int.py) caches the top NTOP=2 cells in scalar
-fields t0, t1 and the next FRAME_SIZE cells in the virtualizable ``frame``
-array. This variant generalizes the scalar-tops count to EFFECTIVE_NTOP, a
-translation-time constant read from RPYFORTH_NTOP (valid 4/8/16; also 2 for
-validation against the flagship). The layout is:
+Generalizes the flagship's NTOP=2 scalar tops to EFFECTIVE_NTOP, a
+translation-time constant from RPYFORTH_NTOP (2/4/8/16; 2 validates against the
+flagship). Layout: t0..t{EFFECTIVE_NTOP-1} scalars + frame[FRAME_SIZE] (both
+virtualizable) + one shared spill array.
 
-    t0 .. t{EFFECTIVE_NTOP-1} (vable scalars) | frame[FRAME_SIZE] (vable array)
-        | spill (ONE shared heap array, all fragments)
+All sixteen scalar fields t0..t15 always exist; hot methods are unrolled chains
+gated by constant compares against EFFECTIVE_NTOP, which the translator folds so
+exactly EFFECTIVE_NTOP scalars stay live.
 
-All sixteen scalar fields t0..t15 are always defined (init 0), but only the
-first EFFECTIVE_NTOP participate: every hot method is written as an UNROLLED chain
-gated by constant comparisons against EFFECTIVE_NTOP that the RPython translator
-constant-folds, so the compiled code contains exactly EFFECTIVE_NTOP live scalars
-and the rest fold away.
-
-Sizing: total cache = EFFECTIVE_NTOP + FRAME_SIZE cells. t0 is the top, t1 the next,
-etc.; frame[FRAME_SIZE-1] holds the cell just below t{EFFECTIVE_NTOP-1} and frame[0]
-the deepest cached cell. The shared spill holds everything below the cache
-(spill[spill_ptr-1] just under the cache, spill[0] the stack bottom).
-
-Call-window / park semantics (EFFECTIVE_NTOP > 2)
----------------------------------------------
-For calling-convention parity across every NTOP value the call boundary keeps the
-flagship's CALL_WINDOW = NTOP = 2 argument window regardless of EFFECTIVE_NTOP: a
-call parks the below-window cells and normalizes the active depth to (at most) 2
-cached cells, so the callee always runs with the same 2-cell window the flagship
-uses. When EFFECTIVE_NTOP > 2 this means the scalar tops beyond the window --
-t2 .. t{EFFECTIVE_NTOP-1} -- as well as all cached frame cells must be parked too,
-not just the frame cells (as in the flagship, where only frame cells sit below
-the window). push_fragment_on parks deepest-first, one cell at a time, via
-_park_one: it evacuates the deepest cached cell to the spill and slides the
-whole cache (frame then scalars) down by one, so spill receives cells in the
-same bottom-up order the flagship parks and the surviving cells end packed at
-the shallow end (t0, t1). pop_fragment_commit stays O(1): the callee's result is
-already the cache top and the parked caller cells are already the contiguous
-spill top, so it only unwinds the call counter.
+The call boundary keeps CALL_WINDOW = NTOP = 2 for calling-convention parity
+across every NTOP value, so push_fragment_on parks deepest-first (the scalar tops
+beyond the window as well as the frame cells) and pop_fragment_commit is O(1).
+See docs/NOTE_STACK_LAYOUT.md for the full scheme.
 """
 
 from rpython.rlib.jit import promote, unroll_safe
@@ -89,11 +66,9 @@ def init_fields(host):
 
 
 class DSCacheSnapshotN(object):
-    """Immutable capture of the parametric active cache, for saving and
-    restoring the data stack. Holds all sixteen scalar tops (only the live ones
-    matter), the cached depth, a private copy of the frame array, and the
-    cache/spill pointers. The shared spill buffer is not copied: restore rolls
-    the spill pointer back and relies on the cells below it being undisturbed."""
+    """Immutable snapshot of the parametric cache: all sixteen scalar tops (only
+    the live ones matter), cache_depth, a private copy of the frame, and the two
+    pointers. The shared spill is not copied; restore rolls spill_ptr back."""
 
     _immutable_fields_ = ["t0", "t1", "t2", "t3", "t4", "t5", "t6", "t7",
                           "t8", "t9", "t10", "t11", "t12", "t13", "t14", "t15",
@@ -171,13 +146,9 @@ def restore_cache(host, snap):
 
 class DSIntMetaStackN(DSMetaStack):
     """Integer data stack in the parametric-NTOP three-tier layout:
-
-        t0 .. t{EFFECTIVE_NTOP-1} (vable scalars) | frame[FRAME_SIZE] (vable array)
-            | spill (ONE shared heap array, all fragments)
-
-    The spill is allocated once per VM (init_fields); a fragment is only the
-    scalar tops + frame + the two pointers (frag_ptr, spill_ptr), a window
-    [0, spill_ptr) onto the shared spill -- nest/unnest allocates nothing."""
+    t0..t{EFFECTIVE_NTOP-1} scalars | frame[FRAME_SIZE] (both virtualizable) | one
+    shared spill array. The spill is allocated once per VM; a fragment is just the
+    window [0, spill_ptr) onto it, so nest/unnest allocates nothing."""
 
     def init_fields(self):
         init_fields(self)

@@ -72,17 +72,9 @@ def to_upper(s):
 @unroll_safe
 def remove_comments_stateful(line, depth):
     """Remove Forth comments from a line, carrying paren-comment nesting depth
-    across lines.
-
-    Handles two types:
-    - \ comment: backslash to end of line
-    - ( comment ): parenthetical comment, which may span multiple lines when a
-      file is INCLUDEd (gforth behaviour). ``depth`` is the number of open '('
-      comments inherited from previous lines.
-
-    Returns (result, out_depth): the line with comments removed and the paren
-    depth still open at end of line.
-    """
+    across lines. Handles `\\` (backslash to end of line) and `( ... )`, which may
+    span INCLUDEd lines (gforth behaviour); ``depth`` is the number of open '('
+    comments inherited from earlier lines. Returns (result, out_depth)."""
     result = ''
     i = 0
     n = len(line)

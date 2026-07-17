@@ -1,9 +1,8 @@
 """Standard-library words defined in Forth and loaded at startup.
 
-Words that are derivable from existing primitives live here rather than as
-RPython primitives: each is a few lines of Forth, and straight-line ones are
-inlined at their call sites. The text is embedded as a constant so the binary
-carries no external file dependency."""
+Words derivable from existing primitives live here rather than as RPython
+primitives; straight-line ones are inlined at their call sites. The text is
+embedded as a constant so the binary needs no external file."""
 
 PRELUDE = """\
 : TRUE -1 ;
