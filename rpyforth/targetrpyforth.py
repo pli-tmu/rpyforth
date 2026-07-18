@@ -1,6 +1,6 @@
-import os
 import sys
 
+from rpyforth.config import EXE_NAME
 from rpyforth.inner_interp import InnerInterpreter, Bye, Abort
 from rpyforth.objects import ForthException
 from rpyforth.outer_interp import OuterInterpreter
@@ -53,7 +53,7 @@ def entry_point(argv):
     return err
 
 def target(driver, args):
-    driver.exe_name = os.environ.get("RPYFORTH_EXE_NAME", "rpyforth-%(backend)s")
+    driver.exe_name = EXE_NAME
     return entry_point, None
 
 if __name__ == '__main__':

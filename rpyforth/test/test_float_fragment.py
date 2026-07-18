@@ -35,7 +35,6 @@ def test_float_nested_fragments():
     s.push_float_fragment()
     assert s.fsize() == 2
     s.fpush(3.5)
-    s.pop_float_fragment_commit()
     assert s.fpeek(0) == 3.5
     assert s.fsize() == 3
 
@@ -56,10 +55,6 @@ def test_float_deep_recursion_chain():
     for v in range(depth):
         s.fpush(float(v))
         s.push_float_fragment()
-    assert s.ffrag_ptr == depth
-    for _ in range(depth):
-        s.pop_float_fragment_commit()
-    assert s.ffrag_ptr == 0
     got = [s.fpop() for _ in range(depth)]
     assert got == [float(v) for v in range(depth - 1, -1, -1)]
 

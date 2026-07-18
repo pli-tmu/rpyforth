@@ -1,8 +1,8 @@
 """Parametric-NTOP int metastack tests.
 
 The parametric variant (metastack_int_ntop.DSIntMetaStackN) reads EFFECTIVE_NTOP
-from RPYFORTH_NTOP at import time, so every check runs in a subprocess with the
-flag set (mirroring test_frameonly.py's end-to-end pattern). Each subprocess
+from RPYFORTH_STACK_LAYOUT at import time, so every check runs in a subprocess
+with the layout set (mirroring test_frameonly.py's end-to-end pattern). Each subprocess
 drives the class directly for the unit-level layout checks, and a whole Forth
 program for the flag-gated call-boundary / CATCH integration.
 """
@@ -21,10 +21,7 @@ def _run_snippet(ntop, body):
     """Run ``body`` in a subprocess with the parametric variant selected at
     EFFECTIVE_NTOP=ntop. ``body`` prints its own results; we return stdout lines."""
     env = dict(os.environ)
-    env["RPYFORTH_STACK_FRAGMENT"] = "1"
-    env["RPYFORTH_NTOP"] = str(ntop)
-    env.pop("RPYFORTH_FRAME_ONLY", None)
-    env.pop("RPYFORTH_FLOAT_FRAGMENT", None)
+    env["RPYFORTH_STACK_LAYOUT"] = "ntop%d" % ntop
     env["PYTHONPATH"] = os.pathsep.join([p for p in sys.path if p])
     out = subprocess.check_output(
         [sys.executable, "-c", body], env=env,
@@ -85,8 +82,8 @@ def test_peek_poke_straddling_boundaries(ntop):
 
 
 @pytest.mark.parametrize("ntop", NTOPS)
-def test_park_commit_roundtrips(ntop):
-    # Park/commit at depths spanning scalar/frame/spill; verify window tops and drain order.
+def test_park_roundtrips(ntop):
+    # Park at depths spanning scalar/frame/spill; verify window tops and drain order.
     body = _UNIT_PROLOGUE + (
         "depths = [1, 2, N, N + 3, N + 12]\n"
         "for depth in depths:\n"
@@ -97,7 +94,6 @@ def test_park_commit_roundtrips(ntop):
         "    assert s.size() == depth, (depth, s.size())\n"
         "    for k in range(min(depth, CALL_WINDOW)):\n"
         "        assert s.peek(k) == depth - 1 - k, (depth, k, s.peek(k))\n"
-        "    s.pop_fragment_commit()\n"
         "    assert s.size() == depth\n"
         "    got = [s.pop() for _ in range(depth)]\n"
         "    assert got == list(range(depth - 1, -1, -1)), (depth, got)\n"
@@ -114,9 +110,6 @@ def test_deep_recursion_chain(ntop):
         "for v in range(depth):\n"
         "    s.push(v)\n"
         "    s.push_fragment()\n"
-        "assert s.frag_ptr == depth\n"
-        "for _ in range(depth): s.pop_fragment_commit()\n"
-        "assert s.frag_ptr == 0\n"
         "got = [s.pop() for _ in range(depth)]\n"
         "assert got == list(range(depth - 1, -1, -1)), got\n"
         "print('OK')\n"
@@ -220,10 +213,7 @@ _MIXED_PROG = (
 
 def _run_forth_flagship(line):
     env = dict(os.environ)
-    env["RPYFORTH_STACK_FRAGMENT"] = "1"
-    env.pop("RPYFORTH_NTOP", None)
-    env.pop("RPYFORTH_FRAME_ONLY", None)
-    env.pop("RPYFORTH_FLOAT_FRAGMENT", None)
+    env["RPYFORTH_STACK_LAYOUT"] = "fragment"
     env["PYTHONPATH"] = os.pathsep.join([p for p in sys.path if p])
     body = (
         "from rpyforth.outer_interp import OuterInterpreter\n"

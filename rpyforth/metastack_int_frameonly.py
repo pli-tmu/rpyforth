@@ -35,7 +35,6 @@ def init_fields(host):
     make_sure_not_resized(host.frame)
 
     # Shared spill: plain heap (immutable reference), one per VM; every fragment is a window [0, spill_ptr).
-    host.frag_ptr = 0
     host.spill = [0] * SPILL_SIZE
     make_sure_not_resized(host.spill)
     host.spill_ptr = 0
@@ -43,15 +42,14 @@ def init_fields(host):
 
 class DSCacheSnapshotFrameOnly(object):
     """Immutable snapshot of the frame-only cache: cache_depth, a private copy of
-    the frame, and the two pointers. The shared spill is not copied; restore rolls
+    the frame and the spill pointer. The shared spill is not copied; restore rolls
     spill_ptr back and relies on the cells below it being undisturbed."""
 
-    _immutable_fields_ = ["cache_depth", "frame[*]", "frag_ptr", "spill_ptr"]
+    _immutable_fields_ = ["cache_depth", "frame[*]", "spill_ptr"]
 
-    def __init__(self, cache_depth, frame, frag_ptr, spill_ptr):
+    def __init__(self, cache_depth, frame, spill_ptr):
         self.cache_depth = cache_depth
         self.frame = frame
-        self.frag_ptr = frag_ptr
         self.spill_ptr = spill_ptr
 
 
@@ -65,7 +63,7 @@ def snapshot_cache(host):
         i += 1
     make_sure_not_resized(frame_copy)
     return DSCacheSnapshotFrameOnly(host.cache_depth, frame_copy,
-                                    host.frag_ptr, host.spill_ptr)
+                                    host.spill_ptr)
 
 
 def restore_cache(host, snap):
@@ -77,7 +75,6 @@ def restore_cache(host, snap):
     while i < ACTIVE_MAX:
         host.frame[i] = snap.frame[i]
         i += 1
-    host.frag_ptr = snap.frag_ptr
     host.spill_ptr = snap.spill_ptr
 
 
@@ -161,23 +158,15 @@ class DSIntMetaStackFrameOnly(DSMetaStack):
 
     def reset_on(self):
         self.cache_depth = 0
-        self.frag_ptr = 0
         self.spill_ptr = 0
 
     # Call entry / return: return is O(1); _spill_bottom avoids runtime-offset index into the virtualizable array.
     @unroll_safe
     def push_fragment_on(self):
-        self.frag_ptr = self.frag_ptr + 1
         dd = self.cache_depth
         while dd > CALL_WINDOW:
             self._spill_bottom()
             dd -= 1
-
-    def pop_fragment_commit_on(self):
-        # O(1): counter cannot underflow (ABORT zeroes both together); assert instead of branching.
-        fp = self.frag_ptr - 1
-        assert fp >= 0
-        self.frag_ptr = fp
 
     def __init__(self):
         self.init_fields()
@@ -202,9 +191,6 @@ class DSIntMetaStackFrameOnly(DSMetaStack):
 
     def push_fragment(self):
         self.push_fragment_on()
-
-    def pop_fragment_commit(self):
-        self.pop_fragment_commit_on()
 
     def snapshot(self):
         return snapshot_cache(self)

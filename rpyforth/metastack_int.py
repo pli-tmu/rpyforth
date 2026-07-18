@@ -31,7 +31,6 @@ def init_fields(host):
     make_sure_not_resized(host.frame)
 
     # Shared spill holds every cell below the cache (parked caller frames + overflow), sized to full stack depth (immutable reference, too large to virtualize); every fragment is a window [0, spill_ptr) onto it, so nest/unnest allocates nothing.
-    host.frag_ptr = 0
     host.spill = [0] * SPILL_SIZE
     make_sure_not_resized(host.spill)
     host.spill_ptr = 0
@@ -39,17 +38,16 @@ def init_fields(host):
 
 class DSCacheSnapshot(object):
     """Immutable snapshot of the cache: scalar tops, cache_depth, a private copy
-    of the frame, and the two pointers. The shared spill is not copied; restore
+    of the frame and the spill pointer. The shared spill is not copied; restore
     rolls spill_ptr back and relies on the cells below it being undisturbed."""
 
-    _immutable_fields_ = ["t0", "t1", "cache_depth", "frame[*]", "frag_ptr", "spill_ptr"]
+    _immutable_fields_ = ["t0", "t1", "cache_depth", "frame[*]", "spill_ptr"]
 
-    def __init__(self, t0, t1, cache_depth, frame, frag_ptr, spill_ptr):
+    def __init__(self, t0, t1, cache_depth, frame, spill_ptr):
         self.t0 = t0
         self.t1 = t1
         self.cache_depth = cache_depth
         self.frame = frame
-        self.frag_ptr = frag_ptr
         self.spill_ptr = spill_ptr
 
 
@@ -63,7 +61,7 @@ def snapshot_cache(host):
         i += 1
     make_sure_not_resized(frame_copy)
     return DSCacheSnapshot(host.t0, host.t1, host.cache_depth, frame_copy,
-                           host.frag_ptr, host.spill_ptr)
+                           host.spill_ptr)
 
 
 def restore_cache(host, snap):
@@ -77,7 +75,6 @@ def restore_cache(host, snap):
     while i < FRAME_SIZE:
         host.frame[i] = snap.frame[i]
         i += 1
-    host.frag_ptr = snap.frag_ptr
     host.spill_ptr = snap.spill_ptr
 
 
@@ -179,13 +176,11 @@ class DSIntMetaStack(DSMetaStack):
         self.t0 = 0
         self.t1 = 0
         self.cache_depth = 0
-        self.frag_ptr = 0
         self.spill_ptr = 0
 
     # Call entry/return: a call parks the caller's below-NTOP cells in the spill and normalizes depth to the NTOP tops (which flow into the callee as its argument window); return is O(1) since the spill already holds the caller's cells.
     @unroll_safe
     def push_fragment_on(self):
-        self.frag_ptr = self.frag_ptr + 1
         dd = self.cache_depth
         if dd > NTOP:
             n = dd - NTOP
@@ -200,12 +195,6 @@ class DSIntMetaStack(DSMetaStack):
                 i += 1
             self.spill_ptr = ap + n
             self.cache_depth = NTOP
-
-    def pop_fragment_commit_on(self):
-        # O(1): result is already the cache top and parked cells the spill top just below it, so nothing moves; paired push/ABORT keep frag_ptr from underflowing (assert, not a hot-path branch).
-        fp = self.frag_ptr - 1
-        assert fp >= 0
-        self.frag_ptr = fp
 
     # Public, test-facing wrappers.
     def __init__(self):
@@ -231,9 +220,6 @@ class DSIntMetaStack(DSMetaStack):
 
     def push_fragment(self):
         self.push_fragment_on()
-
-    def pop_fragment_commit(self):
-        self.pop_fragment_commit_on()
 
     def snapshot(self):
         return snapshot_cache(self)

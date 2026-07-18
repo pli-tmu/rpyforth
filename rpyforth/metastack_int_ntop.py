@@ -1,8 +1,9 @@
 """Parametric-NTOP variant of the int metastack (metastack_int.py).
 
 Generalizes the flagship's NTOP=2 scalar tops to EFFECTIVE_NTOP, a
-translation-time constant from RPYFORTH_NTOP (2/4/8/16; 2 validates against the
-flagship). Layout: t0..t{EFFECTIVE_NTOP-1} scalars + frame[FRAME_SIZE] (both
+translation-time constant selected by RPYFORTH_STACK_LAYOUT=ntop2/4/8/16
+(ntop2 validates against the flagship). Layout:
+t0..t{EFFECTIVE_NTOP-1} scalars + frame[FRAME_SIZE] (both
 virtualizable) + one shared spill array.
 
 All sixteen scalar fields t0..t15 always exist; hot methods are unrolled chains
@@ -11,7 +12,7 @@ exactly EFFECTIVE_NTOP scalars stay live.
 
 The call boundary keeps CALL_WINDOW = NTOP = 2 for calling-convention parity
 across every NTOP value, so push_fragment_on parks deepest-first (the scalar tops
-beyond the window as well as the frame cells) and pop_fragment_commit is O(1).
+beyond the window as well as the frame cells). Return needs no data-stack work.
 See docs/NOTE_STACK_LAYOUT.md for the full scheme.
 """
 
@@ -55,7 +56,6 @@ def init_fields(host):
     make_sure_not_resized(host.frame)
 
     # Shared spill: plain heap (immutable reference), one per VM; every fragment is a window [0, spill_ptr).
-    host.frag_ptr = 0
     host.spill = [0] * SPILL_SIZE
     make_sure_not_resized(host.spill)
     host.spill_ptr = 0
@@ -63,14 +63,14 @@ def init_fields(host):
 
 class DSCacheSnapshotN(object):
     """Immutable snapshot of the parametric cache: all sixteen scalar tops (only
-    the live ones matter), cache_depth, a private copy of the frame, and the two
-    pointers. The shared spill is not copied; restore rolls spill_ptr back."""
+    the live ones matter), cache_depth, a private copy of the frame, and the
+    spill pointer. The shared spill is not copied; restore rolls spill_ptr back."""
 
     _immutable_fields_ = ["t0", "t1", "t2", "t3", "t4", "t5", "t6", "t7",
                           "t8", "t9", "t10", "t11", "t12", "t13", "t14", "t15",
-                          "cache_depth", "frame[*]", "frag_ptr", "spill_ptr"]
+                          "cache_depth", "frame[*]", "spill_ptr"]
 
-    def __init__(self, tops, cache_depth, frame, frag_ptr, spill_ptr):
+    def __init__(self, tops, cache_depth, frame, spill_ptr):
         self.t0 = tops[0]
         self.t1 = tops[1]
         self.t2 = tops[2]
@@ -89,7 +89,6 @@ class DSCacheSnapshotN(object):
         self.t15 = tops[15]
         self.cache_depth = cache_depth
         self.frame = frame
-        self.frag_ptr = frag_ptr
         self.spill_ptr = spill_ptr
 
 
@@ -107,7 +106,7 @@ def snapshot_cache(host):
             host.t7, host.t8, host.t9, host.t10, host.t11, host.t12, host.t13,
             host.t14, host.t15]
     return DSCacheSnapshotN(tops, host.cache_depth, frame_copy,
-                            host.frag_ptr, host.spill_ptr)
+                            host.spill_ptr)
 
 
 @unroll_safe
@@ -136,7 +135,6 @@ def restore_cache(host, snap):
     while i < FRAME_SIZE:
         host.frame[i] = snap.frame[i]
         i += 1
-    host.frag_ptr = snap.frag_ptr
     host.spill_ptr = snap.spill_ptr
 
 
@@ -409,23 +407,15 @@ class DSIntMetaStackN(DSMetaStack):
         self.t14 = 0
         self.t15 = 0
         self.cache_depth = 0
-        self.frag_ptr = 0
         self.spill_ptr = 0
 
     # Call entry / return: CALL_WINDOW=2 regardless of EFFECTIVE_NTOP (calling-convention parity); return is O(1).
     @unroll_safe
     def push_fragment_on(self):
-        self.frag_ptr = self.frag_ptr + 1
         dd = self.cache_depth
         while dd > CALL_WINDOW:
             self._park_one()
             dd -= 1
-
-    def pop_fragment_commit_on(self):
-        # O(1): counter cannot underflow (ABORT zeroes both together); assert instead of branching.
-        fp = self.frag_ptr - 1
-        assert fp >= 0
-        self.frag_ptr = fp
 
     def __init__(self):
         self.init_fields()
@@ -450,9 +440,6 @@ class DSIntMetaStackN(DSMetaStack):
 
     def push_fragment(self):
         self.push_fragment_on()
-
-    def pop_fragment_commit(self):
-        self.pop_fragment_commit_on()
 
     def snapshot(self):
         return snapshot_cache(self)

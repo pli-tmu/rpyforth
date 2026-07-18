@@ -57,8 +57,8 @@ def test_top_floats_at_frame_top():
 
 
 @pytest.mark.parametrize("depth", [1, 2, 5, 10, 15])
-def test_call_park_commit_roundtrip(depth):
-    # Park below-window cells, keep CALL_WINDOW tops, commit and verify full stack in order.
+def test_call_park_roundtrip(depth):
+    # Park below-window cells, keep CALL_WINDOW tops, and verify full stack order.
     s = DSIntMetaStackFrameOnly()
     for v in range(depth):
         s.push(v)
@@ -69,7 +69,6 @@ def test_call_park_commit_roundtrip(depth):
     # Argument-window tops are still readable at the shallow depths.
     for k in range(min(depth, CALL_WINDOW)):
         assert s.peek(k) == depth - 1 - k
-    s.pop_fragment_commit()
     assert s.size() == depth
     assert [s.pop() for _ in range(depth)] == list(range(depth - 1, -1, -1))
 
@@ -80,10 +79,6 @@ def test_deep_recursion_chain():
     for v in range(depth):
         s.push(v)
         s.push_fragment()
-    assert s.frag_ptr == depth
-    for _ in range(depth):
-        s.pop_fragment_commit()
-    assert s.frag_ptr == 0
     assert [s.pop() for _ in range(depth)] == list(range(depth - 1, -1, -1))
 
 
@@ -114,8 +109,7 @@ def test_reset_clears_everything():
 
 def _run_forth(line):
     env = dict(os.environ)
-    env["RPYFORTH_STACK_FRAGMENT"] = "1"
-    env["RPYFORTH_FRAME_ONLY"] = "1"
+    env["RPYFORTH_STACK_LAYOUT"] = "frame-only"
     env["PYTHONPATH"] = os.pathsep.join([p for p in sys.path if p])
     script = (
         "from rpyforth.outer_interp import OuterInterpreter\n"
@@ -147,7 +141,7 @@ def test_e2e_deep_stack_sum():
 
 
 def test_e2e_colon_call_boundary():
-    # A colon word consumes args across the call boundary (park/commit path).
+    # A colon word consumes args across the call boundary (parking path).
     assert _run_forth(": add3 + + ; 10 20 30 add3") == [60]
 
 

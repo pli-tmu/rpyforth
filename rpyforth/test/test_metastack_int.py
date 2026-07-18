@@ -22,7 +22,6 @@ def test_init_fields_sets_virtualizable_host_slots():
     assert host.t0 == 0
     assert host.t1 == 0
     assert host.cache_depth == 0
-    assert host.frag_ptr == 0
     assert host.spill_ptr == 0
     assert len(host.frame) == FRAME_SIZE
     assert len(host.spill) == SPILL_SIZE
@@ -33,7 +32,7 @@ def test_init_fields_sets_virtualizable_host_slots():
 def test_stack_fragment_virtualizables_include_tops_and_frame():
     for name in (
         "t0", "t1", "cache_depth", "frame[*]",
-        "frag_ptr", "spill_ptr",
+        "spill_ptr",
         "rs_ptr", "cs_pcs", "cs_ptr", "cs_base",
     ):
         assert name in STACK_FRAGMENT_VIRTUALIZABLES
@@ -93,33 +92,29 @@ def test_int_clear_resets():
     s.clear()
     assert s.size() == 0
     assert s.cache_depth == 0
-    assert s.frag_ptr == 0
     assert s.spill_ptr == 0
     s.push(42)
     s.push(43)
     assert s.size() == 2
 
 
-def test_int_fragment_call_commit_within_window():
+def test_int_fragment_call_within_window():
     # Caller depth fits NTOP scalar tops: nothing is parked, tops flow into the callee.
     s = DSIntMetaStack()
     for v in range(NTOP):
         s.push(v)
     s.push_fragment()
-    assert s.frag_ptr == 1
     assert s.spill_ptr == 0
     assert s.cache_depth == NTOP
     assert s.size() == NTOP
     assert s.peek(0) == NTOP - 1
     s.push(99)
-    s.pop_fragment_commit()
-    assert s.frag_ptr == 0
     assert s.size() == NTOP + 1
     assert s.peek(0) == 99
     assert [s.pop() for _ in range(NTOP + 1)] == [99] + list(range(NTOP - 1, -1, -1))
 
 
-def test_int_fragment_call_commit_beyond_window():
+def test_int_fragment_call_beyond_window():
     # Caller deeper than NTOP: below-top cells are parked in the spill; callee runs with cache normalized to NTOP.
     s = DSIntMetaStack()
     n = NTOP + 2
@@ -127,7 +122,6 @@ def test_int_fragment_call_commit_beyond_window():
         s.push(v)
     s.push_fragment()
     parked = n - NTOP
-    assert s.frag_ptr == 1
     assert s.cache_depth == NTOP
     assert s.spill_ptr == parked
     assert s.size() == n
@@ -135,15 +129,13 @@ def test_int_fragment_call_commit_beyond_window():
     assert s.peek(NTOP - 1) == n - NTOP
     assert s.peek(NTOP) == n - NTOP - 1
     assert s.peek(n - 1) == 0
-    s.pop_fragment_commit()
-    assert s.frag_ptr == 0
     assert s.size() == n
     assert [s.pop() for _ in range(n)] == list(range(n - 1, -1, -1))
     assert s.spill_ptr == 0
 
 
-def test_int_below_window_poke_then_commit():
-    # Poke below the cache writes the parked spill and must survive commit.
+def test_int_below_window_poke():
+    # Poke below the cache writes the parked spill.
     s = DSIntMetaStack()
     n = NTOP + 2
     for v in range(n):
@@ -151,7 +143,6 @@ def test_int_below_window_poke_then_commit():
     s.push_fragment()
     s.poke(n - 1, 777)           # deepest caller cell, parked in the spill
     assert s.peek(n - 1) == 777
-    s.pop_fragment_commit()
     assert s.peek(n - 1) == 777
 
 
@@ -163,18 +154,14 @@ def test_int_nested_fragments_bounded_entry_depth():
         s.push(v)
         s.push_fragment()
         assert s.cache_depth <= NTOP
-    assert s.frag_ptr == depth
     assert s.size() == depth
-    for _ in range(depth):
-        s.pop_fragment_commit()
-    assert s.frag_ptr == 0
     assert s.size() == depth
     assert [s.pop() for _ in range(depth)] == list(range(depth - 1, -1, -1))
     assert s.spill_ptr == 0
 
 
 def test_int_fragment_consume_all_args():
-    # A callee that drains the entire window leaves the stack empty after commit.
+    # A callee that drains the entire window leaves the stack empty.
     s = DSIntMetaStack()
     for v in range(NTOP):
         s.push(v)
@@ -182,9 +169,7 @@ def test_int_fragment_consume_all_args():
     for _ in range(NTOP):
         s.pop()                  # callee drains the cache
     assert s.size() == 0
-    s.pop_fragment_commit()
     assert s.size() == 0
-    assert s.frag_ptr == 0
 
 
 def test_snapshot_restore_identity():

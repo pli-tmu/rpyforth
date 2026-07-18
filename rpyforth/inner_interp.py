@@ -15,8 +15,6 @@ from rpyforth.objects import (
 )
 
 
-import os
-
 from rpython.rlib.jit import JitDriver, promote, elidable, unroll_safe, promote_string, hint
 from rpython.rlib.debug import make_sure_not_resized
 from rpython.rlib.rfile import create_stdio
@@ -28,20 +26,18 @@ from rpyforth.heap import (HEAP_CELL_COUNT, HEAP_SIZE_BYTES, DICT_SIZE_BYTES,
 def alloc_region_bytes():
     return _alloc_region_bytes()
 
-USE_VIRTUALIZATION = bool(os.environ.get("RPYFORTH_VIRTUALIZE"))
-
-USE_STACK_FRAGMENT = bool(os.environ.get("RPYFORTH_STACK_FRAGMENT"))
+from rpyforth.config import USE_VIRTUALIZATION
 
 from rpyforth.metastack import (
     FRAME_SIZE,
     ACTIVE_MAX,
     EFFECTIVE_NTOP,
+    USE_STACK_FRAGMENT,
     USE_FLOAT_FRAGMENT,
     USE_FRAME_ONLY,
     USE_NTOP_VARIANT,
     STACK_FRAGMENT_VIRTUALIZABLES,
     push_ds_fragments,
-    pop_ds_fragments_commit,
     reset_ds_fragments,
 )
 
@@ -144,9 +140,9 @@ class InnerInterpreter(InterpBase, object):
                           "lc_is", "lc_ls", "rs", "ds_locals", "heap",
                           "ca_tids", "ca_ips", "ca_dsi", "ca_dsf", "ca_dsl",
                           "ca_rs", "ca_li", "ca_lc", "ca_cs",
-                          "ca_t0", "ca_t1", "ca_cache_depth", "ca_frag", "ca_spill",
+                          "ca_t0", "ca_t1", "ca_cache_depth", "ca_spill",
                           "ca_frames",
-                          "ca_fft0", "ca_fft1", "ca_ffd", "ca_ffrag",
+                          "ca_fft0", "ca_fft1", "ca_ffd",
                           "ca_fspill", "ca_fframes", "pending_box"]
 
     if USE_VIRTUALIZATION:
@@ -227,14 +223,12 @@ class InnerInterpreter(InterpBase, object):
         self.ca_t0 = [0] * CATCH_DEPTH
         self.ca_t1 = [0] * CATCH_DEPTH
         self.ca_cache_depth = [0] * CATCH_DEPTH
-        self.ca_frag = [0] * CATCH_DEPTH
         self.ca_spill = [0] * CATCH_DEPTH
         self.ca_frames = [0] * (CATCH_DEPTH * CA_FRAME_WIDTH)
         # Parallel float-cache save slots, mirroring the int ones above.
         self.ca_fft0 = [0.0] * CATCH_DEPTH
         self.ca_fft1 = [0.0] * CATCH_DEPTH
         self.ca_ffd = [0] * CATCH_DEPTH
-        self.ca_ffrag = [0] * CATCH_DEPTH
         self.ca_fspill = [0] * CATCH_DEPTH
         self.ca_fframes = [0.0] * (CATCH_DEPTH * FRAME_SIZE)
         self.catch_ptr = 0
@@ -252,7 +246,6 @@ class InnerInterpreter(InterpBase, object):
             self.t1 = 0
             self.cache_depth = 0
             self.frame = [0]
-            self.frag_ptr = 0
             self.spill = [0]
             self.spill_ptr = 0
 
@@ -268,8 +261,6 @@ class InnerInterpreter(InterpBase, object):
         """Pop packed return address; recover the thread from its id."""
         ptr = self.cs_ptr - 1
         assert ptr >= 0
-        if USE_STACK_FRAGMENT:
-            pop_ds_fragments_commit(self)
         self.cs_ptr = ptr
         pc = self.cs_pcs[ptr]
         # Clear the slot so the JIT treats the tail above cs_ptr as dead and elides the reads on recursive traces.
@@ -313,7 +304,6 @@ class InnerInterpreter(InterpBase, object):
                 self.ca_t0[cp] = self.t0
                 self.ca_t1[cp] = self.t1
             self.ca_cache_depth[cp] = self.cache_depth
-            self.ca_frag[cp] = self.frag_ptr
             self.ca_spill[cp] = self.spill_ptr
             fbase = cp * CA_FRAME_WIDTH
             if USE_NTOP_VARIANT:
@@ -336,7 +326,6 @@ class InnerInterpreter(InterpBase, object):
             self.ca_fft0[cp] = self.ft0
             self.ca_fft1[cp] = self.ft1
             self.ca_ffd[cp] = self.fdep
-            self.ca_ffrag[cp] = self.ffrag_ptr
             self.ca_fspill[cp] = self.fspill_ptr
             ffbase = cp * FRAME_SIZE
             i = 0
@@ -374,7 +363,6 @@ class InnerInterpreter(InterpBase, object):
                 self.t0 = self.ca_t0[cp]
                 self.t1 = self.ca_t1[cp]
             self.cache_depth = self.ca_cache_depth[cp]
-            self.frag_ptr = self.ca_frag[cp]
             self.spill_ptr = self.ca_spill[cp]
             fbase = cp * CA_FRAME_WIDTH
             if USE_NTOP_VARIANT:
@@ -397,7 +385,6 @@ class InnerInterpreter(InterpBase, object):
             self.ft0 = self.ca_fft0[cp]
             self.ft1 = self.ca_fft1[cp]
             self.fdep = self.ca_ffd[cp]
-            self.ffrag_ptr = self.ca_ffrag[cp]
             self.fspill_ptr = self.ca_fspill[cp]
             ffbase = cp * FRAME_SIZE
             i = 0

@@ -2,7 +2,6 @@ import pytest
 
 from rpyforth.metastack import (
     push_ds_fragments,
-    pop_ds_fragments_commit,
     reset_ds_fragments,
 )
 from rpyforth.metastack_float import DSFloatMetaStack
@@ -49,7 +48,7 @@ def test_obj_init_fields():
 def test_inner_int_stack_fixed_path():
     inner = InnerInterpreter()
     if USE_STACK_FRAGMENT:
-        pytest.skip("requires fixed-stack build (RPYFORTH_STACK_FRAGMENT unset)")
+        pytest.skip("requires RPYFORTH_STACK_LAYOUT=plain")
     n = 100
     for v in range(n):
         inner.push_ds_int(v)
@@ -75,5 +74,4 @@ def test_coordination_noop_without_fragment_flag():
     if USE_STACK_FRAGMENT:
         pytest.skip("requires fixed-stack build")
     push_ds_fragments(inner)
-    pop_ds_fragments_commit(inner)
     reset_ds_fragments(inner)

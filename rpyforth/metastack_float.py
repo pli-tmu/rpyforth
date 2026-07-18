@@ -21,7 +21,6 @@ def init_float_fields(host):
     host.fframe = [0.0] * FRAME_SIZE
     make_sure_not_resized(host.fframe)
 
-    host.ffrag_ptr = 0
     host.fspill = [0.0] * SPILL_SIZE
     make_sure_not_resized(host.fspill)
     host.fspill_ptr = 0
@@ -31,15 +30,13 @@ class DSFloatCacheSnapshot(object):
     """Immutable capture of the active float-fragment cache. Same discipline as
     DSCacheSnapshot: private copy of fframe, spill buffer not copied."""
 
-    _immutable_fields_ = ["ft0", "ft1", "fdep", "fframe[*]",
-                          "ffrag_ptr", "fspill_ptr"]
+    _immutable_fields_ = ["ft0", "ft1", "fdep", "fframe[*]", "fspill_ptr"]
 
-    def __init__(self, ft0, ft1, fdep, fframe, ffrag_ptr, fspill_ptr):
+    def __init__(self, ft0, ft1, fdep, fframe, fspill_ptr):
         self.ft0 = ft0
         self.ft1 = ft1
         self.fdep = fdep
         self.fframe = fframe
-        self.ffrag_ptr = ffrag_ptr
         self.fspill_ptr = fspill_ptr
 
 
@@ -51,7 +48,7 @@ def snapshot_float_cache(host):
         i += 1
     make_sure_not_resized(frame_copy)
     return DSFloatCacheSnapshot(host.ft0, host.ft1, host.fdep, frame_copy,
-                                host.ffrag_ptr, host.fspill_ptr)
+                                host.fspill_ptr)
 
 
 def restore_float_cache(host, snap):
@@ -62,7 +59,6 @@ def restore_float_cache(host, snap):
     while i < FRAME_SIZE:
         host.fframe[i] = snap.fframe[i]
         i += 1
-    host.ffrag_ptr = snap.ffrag_ptr
     host.fspill_ptr = snap.fspill_ptr
 
 
@@ -165,13 +161,11 @@ class DSFloatMetaStack(DSIntMetaStack):
         self.ft0 = 0.0
         self.ft1 = 0.0
         self.fdep = 0
-        self.ffrag_ptr = 0
         self.fspill_ptr = 0
 
     # Call entry / return: float cells nest at the same points as int cells.
     @unroll_safe
     def push_float_fragment_on(self):
-        self.ffrag_ptr = self.ffrag_ptr + 1
         dd = self.fdep
         if dd > NTOP:
             n = dd - NTOP
@@ -185,11 +179,6 @@ class DSFloatMetaStack(DSIntMetaStack):
                 i += 1
             self.fspill_ptr = ap + n
             self.fdep = NTOP
-
-    def pop_float_fragment_commit_on(self):
-        fp = self.ffrag_ptr - 1
-        assert fp >= 0
-        self.ffrag_ptr = fp
 
     def fpush(self, v):
         self.fpush_on(v)
@@ -212,8 +201,6 @@ class DSFloatMetaStack(DSIntMetaStack):
     def push_float_fragment(self):
         self.push_float_fragment_on()
 
-    def pop_float_fragment_commit(self):
-        self.pop_float_fragment_commit_on()
 
     def fsnapshot(self):
         return snapshot_float_cache(self)

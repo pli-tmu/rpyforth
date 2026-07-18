@@ -18,7 +18,6 @@ def test_nested_fragments():
     s.push_fragment()
     assert s.size() == 2          # total depth preserved across entry
     s.push(3)
-    s.pop_fragment_commit()
     assert s.peek(0) == 3
     assert s.size() == 3
 
@@ -40,10 +39,6 @@ def test_deep_recursion_chain():
     for v in range(depth):
         s.push(v)
         s.push_fragment()
-    assert s.frag_ptr == depth
-    for _ in range(depth):
-        s.pop_fragment_commit()
-    assert s.frag_ptr == 0
     assert [s.pop() for _ in range(depth)] == list(range(depth - 1, -1, -1))
 
 

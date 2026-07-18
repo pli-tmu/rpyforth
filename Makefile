@@ -33,27 +33,27 @@ build-jit: _pypy_binary/bin/python setup-pypy
 
 .PHONY: build-jit-stkfrag
 build-jit-stkfrag: _pypy_binary/bin/python setup-pypy
-	RPYFORTH_STACK_FRAGMENT=1 PYTHONPATH=. RPYFORTH_EXE_NAME=rpyforth-c-stkfrag $(PYTHON2) $(RPYTHON) -Ojit $(RPYTHON_ARGS) rpyforth/$(TARGET).py
+	RPYFORTH_STACK_LAYOUT=fragment PYTHONPATH=. RPYFORTH_EXE_NAME=rpyforth-c-stkfrag $(PYTHON2) $(RPYTHON) -Ojit $(RPYTHON_ARGS) rpyforth/$(TARGET).py
 
 .PHONY: build-jit-stkfrag-floatfrag
 build-jit-stkfrag-floatfrag: _pypy_binary/bin/python setup-pypy
-	RPYFORTH_STACK_FRAGMENT=1 RPYFORTH_FLOAT_FRAGMENT=1 PYTHONPATH=. RPYFORTH_EXE_NAME=rpyforth-c-stkfrag-floatfrag $(PYTHON2) $(RPYTHON) -Ojit $(RPYTHON_ARGS) rpyforth/$(TARGET).py
+	RPYFORTH_STACK_LAYOUT=fragment-float PYTHONPATH=. RPYFORTH_EXE_NAME=rpyforth-c-stkfrag-floatfrag $(PYTHON2) $(RPYTHON) -Ojit $(RPYTHON_ARGS) rpyforth/$(TARGET).py
 
 .PHONY: build-jit-stkfrag-frameonly
 build-jit-stkfrag-frameonly: _pypy_binary/bin/python setup-pypy
-	RPYFORTH_STACK_FRAGMENT=1 RPYFORTH_FRAME_ONLY=1 PYTHONPATH=. RPYFORTH_EXE_NAME=rpyforth-c-stkfrag-frameonly $(PYTHON2) $(RPYTHON) -Ojit $(RPYTHON_ARGS) rpyforth/$(TARGET).py
+	RPYFORTH_STACK_LAYOUT=frame-only PYTHONPATH=. RPYFORTH_EXE_NAME=rpyforth-c-stkfrag-frameonly $(PYTHON2) $(RPYTHON) -Ojit $(RPYTHON_ARGS) rpyforth/$(TARGET).py
 
 .PHONY: build-jit-stkfrag-ntop4
 build-jit-stkfrag-ntop4: _pypy_binary/bin/python setup-pypy
-	RPYFORTH_STACK_FRAGMENT=1 RPYFORTH_NTOP=4 PYTHONPATH=. RPYFORTH_EXE_NAME=rpyforth-c-stkfrag-ntop4 $(PYTHON2) $(RPYTHON) -Ojit $(RPYTHON_ARGS) rpyforth/$(TARGET).py
+	RPYFORTH_STACK_LAYOUT=ntop4 PYTHONPATH=. RPYFORTH_EXE_NAME=rpyforth-c-stkfrag-ntop4 $(PYTHON2) $(RPYTHON) -Ojit $(RPYTHON_ARGS) rpyforth/$(TARGET).py
 
 .PHONY: build-jit-stkfrag-ntop8
 build-jit-stkfrag-ntop8: _pypy_binary/bin/python setup-pypy
-	RPYFORTH_STACK_FRAGMENT=1 RPYFORTH_NTOP=8 PYTHONPATH=. RPYFORTH_EXE_NAME=rpyforth-c-stkfrag-ntop8 $(PYTHON2) $(RPYTHON) -Ojit $(RPYTHON_ARGS) rpyforth/$(TARGET).py
+	RPYFORTH_STACK_LAYOUT=ntop8 PYTHONPATH=. RPYFORTH_EXE_NAME=rpyforth-c-stkfrag-ntop8 $(PYTHON2) $(RPYTHON) -Ojit $(RPYTHON_ARGS) rpyforth/$(TARGET).py
 
 .PHONY: build-jit-stkfrag-ntop16
 build-jit-stkfrag-ntop16: _pypy_binary/bin/python setup-pypy
-	RPYFORTH_STACK_FRAGMENT=1 RPYFORTH_NTOP=16 PYTHONPATH=. RPYFORTH_EXE_NAME=rpyforth-c-stkfrag-ntop16 $(PYTHON2) $(RPYTHON) -Ojit $(RPYTHON_ARGS) rpyforth/$(TARGET).py
+	RPYFORTH_STACK_LAYOUT=ntop16 PYTHONPATH=. RPYFORTH_EXE_NAME=rpyforth-c-stkfrag-ntop16 $(PYTHON2) $(RPYTHON) -Ojit $(RPYTHON_ARGS) rpyforth/$(TARGET).py
 
 .PHONY: build-jit-novirt
 build-jit-novirt: _pypy_binary/bin/python setup-pypy

@@ -54,9 +54,6 @@ class DSObjMetaStack(DSMetaStack):
     def push_fragment(self):
         self.push_fragment_on(self)
 
-    def pop_fragment_commit(self):
-        self.pop_fragment_commit_on(self)
-
     @classmethod
     def push_on(cls, state, v):
         raise NotImplementedError
@@ -83,8 +80,4 @@ class DSObjMetaStack(DSMetaStack):
 
     @classmethod
     def push_fragment_on(cls, state):
-        raise NotImplementedError
-
-    @classmethod
-    def pop_fragment_commit_on(cls, state):
         raise NotImplementedError

@@ -5,26 +5,14 @@ from rpython.rlib.objectmodel import we_are_translated
 from rpyforth.objects import W_FloatObject, make_int
 
 # Byte-addressed raw (GC-untracked) buffer; C!/C@ and !/@ share the same storage; JIT folds to single raw load/store.
-import os
+from rpyforth.config import ALLOC_MB
 
 # HERE grows from 0; scratch cells (parse cursor/BASE/STATE/WORD buffer) live at the top of this region.
 DICT_SIZE_BYTES = 1 << 23
 
 # Separate ALLOCATE region above DICT (large ALLOCATE blocks like benchgc's ~120 MB don't disturb dict space); default tiny since untranslated the buffer costs O(size) to create, set RPYFORTH_ALLOC_MB to override.
 def _alloc_region_bytes():
-    raw = os.environ.get("RPYFORTH_ALLOC_MB")
-    mb = 0
-    if raw is not None and raw != "":
-        n = 0
-        ok = True
-        for ch in raw:
-            if "0" <= ch <= "9":
-                n = n * 10 + (ord(ch) - ord("0"))
-            else:
-                ok = False
-                break
-        if ok:
-            mb = n
+    mb = ALLOC_MB
     if mb <= 0:
         mb = _default_alloc_mb(we_are_translated())
     return mb << 20
