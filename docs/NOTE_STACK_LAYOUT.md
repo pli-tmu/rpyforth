@@ -1,6 +1,6 @@
 # Integer data-stack layout: a scalar-tops cache over a shared spill
 
-The integer data stack (enabled with `RPYFORTH_STACK_FRAGMENT`) is split into
+The integer data stack (`RPYFORTH_STACK_LAYOUT=fragment`) is split into
 three tiers. The top few cells live in CPU registers, the next few in a small
 array, and everything deeper in one plain-heap "spill" arena shared by the whole
 call chain. Only the top two tiers are virtualized, so the hot stack operations
@@ -13,7 +13,7 @@ compile to register arithmetic with no memory traffic.
 
 A "fragment" here is not an allocated object. It is the implicit window
 `[0, spill_ptr)` onto the single shared spill array, plus the cached tops above
-it. Nesting a call parks some cells and bumps two integer pointers; it allocates
+it. Nesting a call parks some cells and advances `spill_ptr`; it allocates
 nothing. An earlier design allocated a fragment node per call, linked to its
 parent; the *History* section below covers why that changed.
 
@@ -21,41 +21,33 @@ parent; the *History* section below covers why that changed.
 
 Three layers, from policy down to mechanics:
 
-1. When to push and pop lives in `rpyforth/inner_interp.py`, at call boundaries.
+1. When to park lives in `rpyforth/inner_interp.py`, at call boundaries.
    `execute_thread` calls `push_ds_fragments(self)` on portal entry and on every
-   colon-word call; `pop_call` calls `pop_ds_fragments_commit(self)` on every
-   return. All of this is gated by `USE_STACK_FRAGMENT`.
-2. The dispatch wrappers are in `rpyforth/metastack.py`: `push_ds_fragments`,
-   `pop_ds_fragments_commit`, and `reset_ds_fragments` forward to the active
-   metastack's methods and also drive the float fragment when it is enabled.
-3. The mechanics are in `rpyforth/metastack_int.py`: `push_fragment_on`,
-   `pop_fragment_commit_on`, and the `push_on` / `pop_on` / `peek_on` / `poke_on`
-   hot path. Ablation variants live in `metastack_int_ntop.py` (parametric NTOP)
-   and `metastack_int_frameonly.py` (NTOP=0).
+   colon-word call. Return needs no data-stack operation.
+2. The dispatch wrappers are in `rpyforth/metastack.py`: `push_ds_fragments`
+   and `reset_ds_fragments` forward to the selected layout and also drive the
+   float fragment when it is enabled.
+3. The mechanics are in `rpyforth/metastack_int.py`: `push_fragment_on` and the
+   `push_on` / `pop_on` / `peek_on` / `poke_on` hot path. Ablation variants live
+   in `metastack_int_ntop.py` and `metastack_int_frameonly.py`.
 
 The stack state is a flat set of host fields, installed by `init_fields`
 (`metastack_int.py`): the scalar tops `t0`, `t1`; the cached depth `cache_depth`;
-the fixed array `frame[FRAME_SIZE]`; the shared `spill[SPILL_SIZE]`; and two
-pointers, `spill_ptr` and `frag_ptr`. The spill is allocated once per VM.
-
-The two pointers have distinct jobs, and keeping them separate is what keeps
-nest and unnest cheap:
+the fixed array `frame[FRAME_SIZE]`; the shared `spill[SPILL_SIZE]`; and
+`spill_ptr`. The spill is allocated once per VM.
 
 - `spill_ptr` is the only pointer that decides where cells live. It counts how
   many cells are parked in the spill, so it marks the boundary between the parked
   caller cells (`spill[0 .. spill_ptr-1]`) and the live cache above it. Every deep
-  read, every park, and every restore is written in terms of it.
-- `frag_ptr` is just a nesting counter, the call depth. `push_fragment_on`
-  increments it, `pop_fragment_commit_on` decrements it (with a `>= 0` balance
-  assert), and CATCH snapshots it. It never indexes the spill and never affects
-  where a cell is stored.
+  read, every park, and every restore is written in terms of it. Call nesting is
+  already represented by the call stack's `cs_ptr`; the former duplicate
+  `frag_ptr` counter was removed.
 
 So managing a fragment is not managing an object. A fragment is the window
 `[0, spill_ptr)` onto the shared spill, plus the cached tops above it. Entering a
 call parks the caller's below-window cells and normalizes the cache; returning
-just unwinds the counter. Both directions move only these two pointers, plus a
-copy of a few cells when a call overflows the window. No node is allocated or
-freed, which is why deep recursion stays cheap.
+does nothing to the data stack. No node is allocated or freed, which is why deep
+recursion stays cheap.
 
 ## The three tiers
 
@@ -158,34 +150,28 @@ callee's argument window, so they flow in for free, with no copy:
    cache_depth = 5, spill_ptr = 0               cache_depth = 2 (=NTOP), spill_ptr = 3
 ```
 
-`push_fragment_on` (`metastack_int.py`) increments `frag_ptr`. Then, only if
-`cache_depth > NTOP`, it copies the below-NTOP frame cells down into the spill,
-advances `spill_ptr`, and sets `cache_depth = NTOP`. The callee now runs with a
-tiny, call-local cache. Anything it reads below the tops falls through to the
-spill; anything it pushes grows the cache again.
+If `cache_depth > NTOP`, `push_fragment_on` copies the below-NTOP frame cells
+into the spill, advances `spill_ptr`, and sets `cache_depth = NTOP`. The callee
+now runs with a tiny, call-local cache. Anything it reads below the tops falls
+through to the spill; anything it pushes grows the cache again.
 
 Return needs no copy-back. The spill already holds the caller's cells contiguously
-below the callee's result, so `pop_fragment_commit` is O(1): it just decrements
-`frag_ptr`. That is why deep recursion costs no per-call allocation.
-
-`frag_ptr` is a plain nesting counter (call depth), not a pointer into a linked
-structure. It is virtualized, balance-checked on commit, and snapshotted by
-CATCH; it does not index the spill, since the spill window is defined by
-`spill_ptr`.
+below the callee's result, so return performs no data-stack operation at all.
+Call balance is already enforced by the call stack.
 
 ## CATCH and snapshot / restore
 
 CATCH saves and restores the whole cache alongside the call stack. In
-`catch_push_frame` (`inner_interp.py`) the scalar tops, `cache_depth`, `frag_ptr`,
+`catch_push_frame` (`inner_interp.py`) the scalar tops, `cache_depth`,
 `spill_ptr`, and the frame row are copied into per-frame arrays (`ca_t0`, `ca_t1`,
-`ca_cache_depth`, `ca_frag`, `ca_spill`, `ca_frames`). The spill contents below
+`ca_cache_depth`, `ca_spill`, `ca_frames`). The spill contents below
 `spill_ptr` are left in place and stay valid, because nothing overwrites them.
 `throw_unwind` restores those fields, which rolls the logical stack back to the
 CATCH point no matter how deep the protected word grew.
 
 `snapshot_cache` / `restore_cache` (`metastack_int.py`) give the same
 save/restore as a value object (`DSCacheSnapshot`) for non-CATCH uses. They copy
-the fixed-size frame and record the two pointers, and restore rolls `spill_ptr`
+the fixed-size frame and record `spill_ptr`, and restore rolls the pointer
 back without touching the cells below it.
 
 ## History: from a linked list of fragments to a shared spill
@@ -198,8 +184,8 @@ JIT, which was the decisive problem.
 
 The current design keeps the conceptual fragment, a call-local window, but backs
 every fragment with one shared, pre-allocated `spill` array. A fragment is just
-the range `[0, spill_ptr)`, and nest/unnest only moves `spill_ptr` and `frag_ptr`.
-Nothing is allocated per call, and the live cache is a small fixed set of
+the range `[0, spill_ptr)` plus the active cache. Nothing is allocated per call,
+and the live cache is a small fixed set of
 virtualizable fields the JIT can hold in registers across a trace.
 
 The linked-list types survive only as vestigial stubs kept for import
@@ -209,31 +195,31 @@ instantiated on the live integer path.
 
 ## Configuration and variants
 
-Flag resolution lives at the top of `rpyforth/metastack.py`. `USE_STACK_FRAGMENT`
-is the master switch; with it off, the interpreter uses the plain array-backed
-stacks. Above it, the int cache has three mutually exclusive layouts, resolved in
-priority order (frame-only, then parametric-NTOP, then default), plus one optional
-addon:
+Flag resolution lives only in `rpyforth/config.py`; `metastack.py` imports and
+re-exports the resolved translation-time constants. The canonical interface
+is one environment variable:
 
-- `default`: the two scalar tops `t0`, `t1` plus `frame[*]`, as described above.
-- `frame-only` (`RPYFORTH_FRAME_ONLY=1`, conceptually NTOP=0,
-  `metastack_int_frameonly.py`): no scalar tops. Every cached cell lives in the
-  virtualizable `frame[*]` array, so push/pop move no data, just an index. This
-  mirrors PyPy's own `fastlocals_w[*]`.
-- `parametric-NTOP` (`RPYFORTH_NTOP` set to 2/4/8/16, `metastack_int_ntop.py`):
-  generalizes the scalar-tops count to `EFFECTIVE_NTOP`. The call window stays
-  `CALL_WINDOW = NTOP = 2` so the calling convention matches across every NTOP
-  value.
-- `float fragment` (`RPYFORTH_FLOAT_FRAGMENT=1`): mirrors this layout for the
-  float stack. It rides only on the default int layout and measured a net loss, so
-  it stays opt-in for ablation.
+```
+RPYFORTH_STACK_LAYOUT=plain
+RPYFORTH_STACK_LAYOUT=fragment
+RPYFORTH_STACK_LAYOUT=frame-only
+RPYFORTH_STACK_LAYOUT=ntop2|ntop4|ntop8|ntop16
+RPYFORTH_STACK_LAYOUT=fragment-float
+```
+
+`fragment` is the flagship `t0/t1 + frame[*]` layout. `frame-only` has no scalar
+tops. The `ntop*` values select the parametric scalar-top implementation while
+keeping `CALL_WINDOW=2`. `fragment-float` additionally mirrors the cache for the
+float stack. The older `RPYFORTH_STACK_FRAGMENT`, `RPYFORTH_FRAME_ONLY`,
+`RPYFORTH_NTOP`, and `RPYFORTH_FLOAT_FRAGMENT` flags remain as a compatibility
+layer; when `RPYFORTH_STACK_LAYOUT` is present it is authoritative.
 
 `FRAME_SIZE` is configurable via `RPYFORTH_FRAME_SIZE` (default 8, clamped to
 [1, 64]).
 
 The virtualizable field set the JIT tracks is assembled in `metastack.py` as
 `STACK_FRAGMENT_VIRTUALIZABLES`: the int cache fields (`t0`, `t1`, `cache_depth`,
-`frame[*]`, `frag_ptr`, `spill_ptr`), the return- and call-stack pointers, and the
+`frame[*]`, `spill_ptr`), the return- and call-stack pointers, and the
 loop and cell-size state. The `spill` array itself is not in this set. It is one
 immutable-reference array, too large to virtualize, and it is touched only when
 the stack goes deeper than the roughly 10-cell cache.
