@@ -36,6 +36,31 @@ is a self-contained native binary:
 ./rpyforth-c-stkfrag program.fs
 ```
 
+The translation-time stack representation has one canonical setting:
+
+```sh
+RPYFORTH_STACK_LAYOUT=plain
+RPYFORTH_STACK_LAYOUT=fragment       # flagship t0/t1 + frame + spill
+RPYFORTH_STACK_LAYOUT=frame-only
+RPYFORTH_STACK_LAYOUT=ntop4          # also ntop2, ntop8, ntop16
+RPYFORTH_STACK_LAYOUT=fragment-float
+```
+
+`RPYFORTH_FRAME_SIZE` remains an independent numeric tuning parameter. The
+older stack-fragment boolean flags are accepted for compatibility, but new
+build and test commands should use `RPYFORTH_STACK_LAYOUT`.
+
+All `RPYFORTH_*` environment variables are parsed once in
+`rpyforth/config.py`; interpreter code only sees resolved constants. To inspect
+the effective translation settings before a build:
+
+```sh
+RPYFORTH_STACK_LAYOUT=fragment PYTHONPATH=. python -m rpyforth.config
+```
+
+See [`CONFIGURATION.md`](CONFIGURATION.md) for the complete setting
+list, defaults, and precedence.
+
 ## Running the tests
 
 The suite runs untranslated on the PyPy2 interpreter. Run it in both stack
@@ -43,7 +68,7 @@ configurations:
 
 ```sh
 make test
-RPYFORTH_STACK_FRAGMENT=1 PYTHONPATH=. ./_pypy_binary/bin/python2 ./pypy/pytest.py rpyforth/test -q
+RPYFORTH_STACK_LAYOUT=fragment PYTHONPATH=. ./_pypy_binary/bin/python2 ./pypy/pytest.py rpyforth/test -q
 ```
 
 `make test-factor` runs the rpyfactor suite.

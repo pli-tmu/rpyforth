@@ -8,7 +8,6 @@ from rpyforth.inner_interp import InnerInterpreter
 
 
 def alloc_region_bytes_with_env(value):
-    # Configuration is intentionally resolved once at import/translation time.
     env = dict(os.environ)
     env.pop("RPYFORTH_ALLOC_MB", None)
     if value is not None:
@@ -35,6 +34,21 @@ def test_untranslated_default_is_small():
 
 def test_invalid_override_preserves_default_behavior():
     assert alloc_region_bytes_with_env("invalid") == 1 << 20
+
+
+def test_env_read_at_runtime_not_import_time():
+    from rpyforth.heap import _alloc_region_bytes
+    saved = os.environ.get("RPYFORTH_ALLOC_MB")
+    try:
+        os.environ["RPYFORTH_ALLOC_MB"] = "3"
+        assert _alloc_region_bytes() == 3 << 20
+        os.environ["RPYFORTH_ALLOC_MB"] = "5"
+        assert _alloc_region_bytes() == 5 << 20
+    finally:
+        if saved is None:
+            os.environ.pop("RPYFORTH_ALLOC_MB", None)
+        else:
+            os.environ["RPYFORTH_ALLOC_MB"] = saved
 
 
 def test_translated_default_is_generous():

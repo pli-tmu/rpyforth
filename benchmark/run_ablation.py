@@ -130,7 +130,6 @@ MEASURE_DEFAULT_TIMEOUT = 300
 # ---------------------------------------------------------------------------
 
 # Axis 1: rpyforth ablation ladder. (id, exe_name, build_kind, source_commit)
-# build_kind: "virt" (RPYFORTH_VIRTUALIZE=1) or "stkfrag" (RPYFORTH_STACK_FRAGMENT=1)
 RPYFORTH_LADDER = [
     ("rpyforth-c-naive",   "rpyforth-c-naive",   "virt",    "7038abb"),
     ("rpyforth-c-prefix1", "rpyforth-c-prefix1", "stkfrag", "da61000"),
@@ -264,7 +263,7 @@ def build_ladder(iterations_note=""):
         env["PYTHONPATH"] = "."
         env["RPYFORTH_EXE_NAME"] = exe
         if kind == "stkfrag":
-            env["RPYFORTH_STACK_FRAGMENT"] = "1"
+            env["RPYFORTH_STACK_LAYOUT"] = "fragment"
         elif kind == "virt":
             env["RPYFORTH_VIRTUALIZE"] = "1"
         print("[build] %s (%s @ %s) ..." % (exe, kind, commit), file=sys.stderr)

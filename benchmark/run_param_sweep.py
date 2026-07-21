@@ -75,7 +75,7 @@ def build_binary(f: int) -> bool:
     bp = binary_path(f)
     print("Building %s (FRAME_SIZE=%d) ..." % (bp.name, f), flush=True)
     env = os.environ.copy()
-    env["RPYFORTH_STACK_FRAGMENT"] = "1"
+    env["RPYFORTH_STACK_LAYOUT"] = "fragment"
     env["RPYFORTH_FRAME_SIZE"] = str(f)
     env["RPYFORTH_EXE_NAME"] = binary_name(f)
     env["PYTHONPATH"] = str(REPO_ROOT)
