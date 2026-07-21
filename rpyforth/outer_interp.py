@@ -1,6 +1,7 @@
 from rpyforth.objects import (
-    W_StringObject, Word, CodeThread, W_IntObject, W_PtrObject, W_FloatObject, W_WordObject, ZERO, TRUE,
-    word_from_wid, ForthException)
+    W_StringObject, Word, CodeThread, DeferredCodeThread, W_IntObject,
+    W_PtrObject, W_FloatObject, W_WordObject, ZERO, TRUE,
+    word_from_wid, ForthException, THREAD_REGISTRY)
 from rpyforth.inner_interp import Abort
 from rpyforth.primitives import install_primitives
 from rpyforth.util import to_upper, split_whitespace, split_whitespace_stateful, _tokenize as _tokenize_raw
@@ -172,7 +173,7 @@ class OuterInterpreter(object):
         # Cell address backing each VALUE name (for TO to locate its storage).
         self.value_addrs = {}
 
-        # Slot id backing each DEFER name (for IS to locate its binding).
+        # DeferredCodeThread id backing each DEFER name.
         self.defer_ids = {}
 
         # Search order (A5): wordlist 0 is FORTH-WORDLIST; search_order is front-first; lone default stays on the fast path.
@@ -822,12 +823,10 @@ class OuterInterpreter(object):
             print "DEFER requires a name"
             return -1
         name, i = self._take_defining_name(toks, i)
-        slot = len(self.inner.deferred_words)
-        self.inner.deferred_words.append(None)
-        self.defer_ids[to_upper(name)] = slot
-        code = [self.wLIT, self.forth_wl["(DEFER)"], self.wEXIT]
-        lits = [W_IntObject(slot), ZERO, ZERO]
-        self.define_colon(name, CodeThread(code, lits))
+        code = [self.forth_wl["(DEFER)"], self.wEXIT]
+        thread = DeferredCodeThread(code, [ZERO, ZERO])
+        self.defer_ids[to_upper(name)] = thread.tid
+        self.define_colon(name, thread)
         return i
 
     def _handle_is(self, toks, i):
@@ -841,8 +840,9 @@ class OuterInterpreter(object):
         if key not in self.defer_ids:
             print "IS: not a DEFER"
             return -1
-        self.inner.deferred_words[self.defer_ids[key]] = \
-            word_from_wid(self.inner.pop_ds_int())
+        thread = THREAD_REGISTRY.threads[self.defer_ids[key]]
+        assert isinstance(thread, DeferredCodeThread)
+        thread.deferred_word = word_from_wid(self.inner.pop_ds_int())
         return i
 
     # Control structure compilation helpers
@@ -1168,6 +1168,10 @@ class OuterInterpreter(object):
             return None
         thread = w.thread
         if thread is None:
+            return None
+        # (DEFER) resolves its action from the identity of its owning thread;
+        # splicing it into a caller would lose that identity.
+        if isinstance(thread, DeferredCodeThread):
             return None
         if thread.does_word is not None:
             return None
@@ -1704,12 +1708,10 @@ class OuterInterpreter(object):
         if name == '':
             print "DEFER requires a name"
             return
-        slot = len(self.inner.deferred_words)
-        self.inner.deferred_words.append(None)
-        self.defer_ids[to_upper(name)] = slot
-        code = [self.wLIT, self.forth_wl["(DEFER)"], self.wEXIT]
-        lits = [W_IntObject(slot), ZERO, ZERO]
-        self.define_colon(name, CodeThread(code, lits))
+        code = [self.forth_wl["(DEFER)"], self.wEXIT]
+        thread = DeferredCodeThread(code, [ZERO, ZERO])
+        self.defer_ids[to_upper(name)] = thread.tid
+        self.define_colon(name, thread)
 
     def runtime_word(self):
         """WORD executed from a colon body: consume the next token of the line

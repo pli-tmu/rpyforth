@@ -41,13 +41,47 @@ from rpyforth.metastack import (
     reset_ds_fragments,
 )
 
-# CATCH copies the whole int cache; row width is the flag-constant CA_FRAME_WIDTH covering scalar tops + frame for whichever layout is active.
-if USE_FRAME_ONLY:
+# CATCH word copies the int cache only in the stack-fragment builds.
+# Plain (non-fragmented) builds do not need catch-frame copying.
+if not USE_STACK_FRAGMENT:
+    CA_FRAME_WIDTH = 0
+elif USE_FRAME_ONLY:
     CA_FRAME_WIDTH = ACTIVE_MAX
 elif USE_NTOP_VARIANT:
     CA_FRAME_WIDTH = EFFECTIVE_NTOP + FRAME_SIZE
 else:
     CA_FRAME_WIDTH = FRAME_SIZE
+
+# A catch frame is one logical record.  Store its integer metadata in one flat
+# stack instead of maintaining a parallel allocation for every field.  The
+# layout is specialized at translation time, so disabled stack layouts consume
+# no catch slots for state they cannot use.
+CA_TID = 0
+CA_IP = 1
+CA_DSF = 2
+CA_DSL = 3
+CA_RS = 4
+CA_LI = 5
+CA_LC = 6
+CA_CONTROL = 7
+_ca_next = 8
+if USE_STACK_FRAGMENT:
+    CA_CACHE_DEPTH = _ca_next
+    CA_SPILL = _ca_next + 1
+    _ca_next += 2
+    if not USE_FRAME_ONLY and not USE_NTOP_VARIANT:
+        CA_T0 = _ca_next
+        CA_T1 = _ca_next + 1
+        _ca_next += 2
+else:
+    CA_DSI = _ca_next
+    _ca_next += 1
+if USE_FLOAT_FRAGMENT:
+    CA_FDEP = _ca_next
+    CA_FSPILL = _ca_next + 1
+    _ca_next += 2
+CA_INT_WIDTH = _ca_next
+CA_FLOAT_WIDTH = 2 if USE_FLOAT_FRAGMENT else 0
 
 if USE_STACK_FRAGMENT:
     if USE_FRAME_ONLY:
@@ -78,12 +112,13 @@ TAILCALL_SENTINEL = -2
 # Sentinel for a primitive-initiated call (EXECUTE, CATCH): frames already pushed, dispatch loop transfers to pending_box's thread, keeping the call in the traced loop.
 CALL_SENTINEL = -3
 
-# Maximum number of simultaneously active CATCH frames.
+# Maximum number of simultaneously active CATCH frames
 CATCH_DEPTH = 16384
 
-# Call-stack packing: a return address is (tid << CS_IP_BITS) | ip; 24 bits bound the ip within a thread, tids bounded by MAX_THREADS.
-CS_IP_BITS = 24
-CS_IP_MASK = (1 << CS_IP_BITS) - 1
+# Control-stack packing: an entry is (tid << CONTROL_IP_BITS) | ip; 24 bits
+# bound the ip within a thread, tids bounded by MAX_THREADS.
+CONTROL_IP_BITS = 24
+CONTROL_IP_MASK = (1 << CONTROL_IP_BITS) - 1
 
 
 class Exit(Exception):
@@ -101,6 +136,7 @@ class Abort(Exception):
 
 # Portal-boundary sentinel: pushed on entry, popping it ends the dispatch loop; the promoted return thread id constant-folds the halt test away in traces.
 HALT_THREAD = CodeThread([], [])
+
 
 def get_printable_location(ip, thread):
     # Must be total for every (ip, thread) the JIT logs (ip==len(code), None slots at merge points): translated builds drop bounds checks, so a bad index/None deref here segfaults under PYPYLOG.
@@ -138,12 +174,8 @@ class InnerInterpreter(InterpBase, object):
     # Spill is allocated once and never reassigned (immutable reference), so the JIT hoists the array-pointer load to the loop header instead of reloading it every spill/refill.
     _immutable_fields_ = ["cell_size", "cell_size_bytes", "base", "spill",
                           "lc_is", "lc_ls", "rs", "ds_locals", "heap",
-                          "ca_tids", "ca_ips", "ca_dsi", "ca_dsf", "ca_dsl",
-                          "ca_rs", "ca_li", "ca_lc", "ca_cs",
-                          "ca_t0", "ca_t1", "ca_cache_depth", "ca_spill",
-                          "ca_frames",
-                          "ca_fft0", "ca_fft1", "ca_ffd",
-                          "ca_fspill", "ca_fframes", "pending_box"]
+                          "ca_ints", "ca_floats", "ca_frames", "ca_fframes",
+                          "pending_box"]
 
     if USE_VIRTUALIZATION:
         _virtualizable_ = ["ds_ints", "ds_floats",
@@ -178,13 +210,21 @@ class InnerInterpreter(InterpBase, object):
         self.li = 0
         self.ll = 0
         self.lc_depth = 0
+        # Dedicated loop-control stacks.  Keep index and limit separate: the
+        # JIT can optimize their independent access better than an interleaved
+        # array with a multiply in every nested I/J/LOOP lookup.
         self.lc_is = [0] * STACK_SIZE
         self.lc_ls = [0] * STACK_SIZE
 
-        # Virtualized call stack: return address packed (tid << CS_IP_BITS | ip); only the tid is promoted so THREAD_REGISTRY folds and the target inlines, while the runtime ip avoids a guard_value/bridge per return site.
+        # Runtime control stack
+        # control address packed as (tid << CONTROL_IP_BITS | ip)
+        # only the tid is promoted so THREAD_REGISTRY folds and the target inlines, while the runtime ip avoids a guard_value/bridge per return site.
+        # Keep the compact cs_* storage names: changing virtualizable field
+        # descriptors perturbs trace layout even though the abstraction exposed
+        # by this interpreter is the runtime control stack.
         self.cs_pcs = [0] * STACK_SIZE
         self.cs_ptr = 0
-        # Lower bound for execute_thread: stop popping frames at this depth; execute_word_now raises it so a nested run (CATCH) returns instead of escaping into outer frames.
+        # Lower bound for execute_thread: stop popping entries at this depth; execute_word_now raises it so a nested run (CATCH) returns instead of escaping into outer control state.
         self.cs_base = 0
 
         # Total heap = dictionary region + a runtime-sized ALLOCATE region.
@@ -207,30 +247,13 @@ class InnerInterpreter(InterpBase, object):
         self._pno_buf = []
         self.argv = []
 
-        # Words bound to DEFER slots; a deferred word executes deferred_words[id].
-        self.deferred_words = []
-
-        # Catch-frame stack: flat parallel arrays (no per-CATCH allocation) holding the resume address plus all machine state THROW restores; cached cells at ca_frames[i*FRAME_SIZE:...].
-        self.ca_tids = [0] * CATCH_DEPTH
-        self.ca_ips = [0] * CATCH_DEPTH
-        self.ca_dsi = [0] * CATCH_DEPTH
-        self.ca_dsf = [0] * CATCH_DEPTH
-        self.ca_dsl = [0] * CATCH_DEPTH
-        self.ca_rs = [0] * CATCH_DEPTH
-        self.ca_li = [0] * CATCH_DEPTH
-        self.ca_lc = [0] * CATCH_DEPTH
-        self.ca_cs = [0] * CATCH_DEPTH
-        self.ca_t0 = [0] * CATCH_DEPTH
-        self.ca_t1 = [0] * CATCH_DEPTH
-        self.ca_cache_depth = [0] * CATCH_DEPTH
-        self.ca_spill = [0] * CATCH_DEPTH
+        # Catch-frame stack.  Metadata is stored as flat records; cache-frame
+        # arrays have zero length when their stack layout is disabled.
+        self.ca_ints = [0] * (CATCH_DEPTH * CA_INT_WIDTH)
+        self.ca_floats = [0.0] * (CATCH_DEPTH * CA_FLOAT_WIDTH)
         self.ca_frames = [0] * (CATCH_DEPTH * CA_FRAME_WIDTH)
-        # Parallel float-cache save slots, mirroring the int ones above.
-        self.ca_fft0 = [0.0] * CATCH_DEPTH
-        self.ca_fft1 = [0.0] * CATCH_DEPTH
-        self.ca_ffd = [0] * CATCH_DEPTH
-        self.ca_fspill = [0] * CATCH_DEPTH
-        self.ca_fframes = [0.0] * (CATCH_DEPTH * FRAME_SIZE)
+        float_frame_cells = CATCH_DEPTH * FRAME_SIZE if USE_FLOAT_FRAGMENT else 0
+        self.ca_fframes = [0.0] * float_frame_cells
         self.catch_ptr = 0
 
         # CALL_SENTINEL target in a one-element list whose reference never changes: a field store on the virtualizable self would force a vable escape at the handoff, so the stable box keeps EXECUTE/CATCH dispatch escape-free.
@@ -249,16 +272,16 @@ class InnerInterpreter(InterpBase, object):
             self.spill = [0]
             self.spill_ptr = 0
 
-    def push_call(self, thread, ip):
-        """Push packed return address (tid << CS_IP_BITS | ip)."""
+    def push_control(self, thread, ip):
+        """Push a packed runtime control address."""
         ptr = self.cs_ptr
         assert ptr < len(self.cs_pcs)
-        assert 0 <= ip < (1 << CS_IP_BITS)
-        self.cs_pcs[ptr] = (thread.tid << CS_IP_BITS) | ip
+        assert 0 <= ip < (1 << CONTROL_IP_BITS)
+        self.cs_pcs[ptr] = (thread.tid << CONTROL_IP_BITS) | ip
         self.cs_ptr = ptr + 1
 
-    def pop_call(self):
-        """Pop packed return address; recover the thread from its id."""
+    def pop_control(self):
+        """Pop a packed runtime control address."""
         ptr = self.cs_ptr - 1
         assert ptr >= 0
         self.cs_ptr = ptr
@@ -266,12 +289,12 @@ class InnerInterpreter(InterpBase, object):
         # Clear the slot so the JIT treats the tail above cs_ptr as dead and elides the reads on recursive traces.
         self.cs_pcs[ptr] = 0
         # Promote only the thread id (registry folds, target inlines) but leave the runtime ip, so a polymorphic caller avoids a guard_value/bridge per return site; skipping the promote for megamorphic callees measured 2x slower on cd16sim.
-        tid = promote(pc >> CS_IP_BITS)
-        ip = pc & CS_IP_MASK
+        tid = promote(pc >> CONTROL_IP_BITS)
+        ip = pc & CONTROL_IP_MASK
         thread = THREAD_REGISTRY.threads[tid]
         return thread, ip
 
-    def is_call_stack_empty(self):
+    def is_control_stack_empty(self):
         return self.cs_ptr == 0
 
     def reset_after_abort(self):
@@ -291,20 +314,21 @@ class InnerInterpreter(InterpBase, object):
         THROW must restore. Flat array writes, no allocation."""
         cp = self.catch_ptr
         assert 0 <= cp < CATCH_DEPTH
-        self.ca_tids[cp] = thread.tid
-        self.ca_ips[cp] = ip
-        self.ca_dsf[cp] = self.depth_ds_float()
-        self.ca_dsl[cp] = self.ds_ptr_locals
-        self.ca_rs[cp] = self.rs_ptr
-        self.ca_li[cp] = self.li
-        self.ca_lc[cp] = self.lc_depth
-        self.ca_cs[cp] = self.cs_ptr
+        base = cp * CA_INT_WIDTH
+        self.ca_ints[base + CA_TID] = thread.tid
+        self.ca_ints[base + CA_IP] = ip
+        self.ca_ints[base + CA_DSF] = self.depth_ds_float()
+        self.ca_ints[base + CA_DSL] = self.ds_ptr_locals
+        self.ca_ints[base + CA_RS] = self.rs_ptr
+        self.ca_ints[base + CA_LI] = self.li
+        self.ca_ints[base + CA_LC] = self.lc_depth
+        self.ca_ints[base + CA_CONTROL] = self.cs_ptr
         if USE_STACK_FRAGMENT:
             if not USE_FRAME_ONLY and not USE_NTOP_VARIANT:
-                self.ca_t0[cp] = self.t0
-                self.ca_t1[cp] = self.t1
-            self.ca_cache_depth[cp] = self.cache_depth
-            self.ca_spill[cp] = self.spill_ptr
+                self.ca_ints[base + CA_T0] = self.t0
+                self.ca_ints[base + CA_T1] = self.t1
+            self.ca_ints[base + CA_CACHE_DEPTH] = self.cache_depth
+            self.ca_ints[base + CA_SPILL] = self.spill_ptr
             fbase = cp * CA_FRAME_WIDTH
             if USE_NTOP_VARIANT:
                 k = 0
@@ -321,12 +345,13 @@ class InnerInterpreter(InterpBase, object):
                     self.ca_frames[fbase + i] = self.frame[i]
                     i += 1
         else:
-            self.ca_dsi[cp] = self.ds_ptr_ints
+            self.ca_ints[base + CA_DSI] = self.ds_ptr_ints
         if USE_FLOAT_FRAGMENT:
-            self.ca_fft0[cp] = self.ft0
-            self.ca_fft1[cp] = self.ft1
-            self.ca_ffd[cp] = self.fdep
-            self.ca_fspill[cp] = self.fspill_ptr
+            fmeta = cp * CA_FLOAT_WIDTH
+            self.ca_floats[fmeta] = self.ft0
+            self.ca_floats[fmeta + 1] = self.ft1
+            self.ca_ints[base + CA_FDEP] = self.fdep
+            self.ca_ints[base + CA_FSPILL] = self.fspill_ptr
             ffbase = cp * FRAME_SIZE
             i = 0
             while i < FRAME_SIZE:
@@ -344,26 +369,27 @@ class InnerInterpreter(InterpBase, object):
     def throw_unwind(self, code):
         """Unwind to the nearest CATCH frame of this portal: restore its saved
         state, push the throw code, and return the resume (thread, ip). If the
-        top frame belongs to an outer portal (below cs_base), re-raise so the
+        top frame belongs to an outer portal (below control_base), re-raise so the
         exception propagates out of this execute_thread invocation."""
         cp = self.catch_ptr - 1
-        if cp < 0 or self.ca_cs[cp] < self.cs_base:
+        base = cp * CA_INT_WIDTH
+        if cp < 0 or self.ca_ints[base + CA_CONTROL] < self.cs_base:
             raise ForthException(code)
         assert cp >= 0
         self.catch_ptr = cp
         if not USE_FLOAT_FRAGMENT:
-            self.ds_ptr_floats = self.ca_dsf[cp]
-        self.ds_ptr_locals = self.ca_dsl[cp]
-        self.rs_ptr = self.ca_rs[cp]
-        self.li = self.ca_li[cp]
-        self.lc_depth = self.ca_lc[cp]
-        self.cs_ptr = self.ca_cs[cp]
+            self.ds_ptr_floats = self.ca_ints[base + CA_DSF]
+        self.ds_ptr_locals = self.ca_ints[base + CA_DSL]
+        self.rs_ptr = self.ca_ints[base + CA_RS]
+        self.li = self.ca_ints[base + CA_LI]
+        self.lc_depth = self.ca_ints[base + CA_LC]
+        self.cs_ptr = self.ca_ints[base + CA_CONTROL]
         if USE_STACK_FRAGMENT:
             if not USE_FRAME_ONLY and not USE_NTOP_VARIANT:
-                self.t0 = self.ca_t0[cp]
-                self.t1 = self.ca_t1[cp]
-            self.cache_depth = self.ca_cache_depth[cp]
-            self.spill_ptr = self.ca_spill[cp]
+                self.t0 = self.ca_ints[base + CA_T0]
+                self.t1 = self.ca_ints[base + CA_T1]
+            self.cache_depth = self.ca_ints[base + CA_CACHE_DEPTH]
+            self.spill_ptr = self.ca_ints[base + CA_SPILL]
             fbase = cp * CA_FRAME_WIDTH
             if USE_NTOP_VARIANT:
                 k = 0
@@ -380,20 +406,21 @@ class InnerInterpreter(InterpBase, object):
                     self.frame[i] = self.ca_frames[fbase + i]
                     i += 1
         else:
-            self.ds_ptr_ints = self.ca_dsi[cp]
+            self.ds_ptr_ints = self.ca_ints[base + CA_DSI]
         if USE_FLOAT_FRAGMENT:
-            self.ft0 = self.ca_fft0[cp]
-            self.ft1 = self.ca_fft1[cp]
-            self.fdep = self.ca_ffd[cp]
-            self.fspill_ptr = self.ca_fspill[cp]
+            fmeta = cp * CA_FLOAT_WIDTH
+            self.ft0 = self.ca_floats[fmeta]
+            self.ft1 = self.ca_floats[fmeta + 1]
+            self.fdep = self.ca_ints[base + CA_FDEP]
+            self.fspill_ptr = self.ca_ints[base + CA_FSPILL]
             ffbase = cp * FRAME_SIZE
             i = 0
             while i < FRAME_SIZE:
                 self.fframe[i] = self.ca_fframes[ffbase + i]
                 i += 1
         self.push_ds_int(code)
-        thread = THREAD_REGISTRY.threads[self.ca_tids[cp]]
-        ip = self.ca_ips[cp]
+        thread = THREAD_REGISTRY.threads[self.ca_ints[base + CA_TID]]
+        ip = self.ca_ints[base + CA_IP]
         return thread, ip
 
     def push_loop(self, limit, counter):
@@ -697,20 +724,20 @@ class InnerInterpreter(InterpBase, object):
 
     def execute_thread(self, thread, ip=0):
         # A halt frame marks the portal boundary; every return pops unconditionally and the promoted return address folds the halt test away, so returning costs one guard.
-        self.push_call(HALT_THREAD, 0)
+        self.push_control(HALT_THREAD, 0)
         if USE_STACK_FRAGMENT:
             push_ds_fragments(self)
         while True:
             jitdriver.jit_merge_point(ip=ip, thread=thread, self=self)
             if ip >= len(thread.code):
-                thread, ip = self.pop_call()
+                thread, ip = self.pop_control()
                 if thread is HALT_THREAD:
                     break
                 continue
 
             w = promote(thread.code[ip])
             if w is None:
-                thread, ip = self.pop_call()
+                thread, ip = self.pop_control()
                 if thread is HALT_THREAD:
                     break
                 continue
@@ -724,7 +751,7 @@ class InnerInterpreter(InterpBase, object):
                     thread, ip = self.throw_unwind(e.code)
                     continue
                 if ip == EXIT_SENTINEL:
-                    thread, ip = self.pop_call()
+                    thread, ip = self.pop_control()
                     if thread is HALT_THREAD:
                         break
                     continue
@@ -747,13 +774,13 @@ class InnerInterpreter(InterpBase, object):
                             ip = 0
                             jitdriver.can_enter_jit(ip=ip, thread=thread, self=self)
                             continue
-                    thread, ip = self.pop_call()
+                    thread, ip = self.pop_control()
                     if thread is HALT_THREAD:
                         break
                     continue
             else:
                 nested_thread = promote(w.thread)
-                self.push_call(thread, ip)
+                self.push_control(thread, ip)
                 if USE_STACK_FRAGMENT:
                     push_ds_fragments(self)
                 thread = nested_thread
@@ -761,7 +788,7 @@ class InnerInterpreter(InterpBase, object):
                 jitdriver.can_enter_jit(ip=ip, thread=thread, self=self)
 
     def execute_word_now(self, w):
-        # Run w as a self-contained call bounded to the current call-stack depth so it returns when w finishes; CATCH relies on this to avoid native-stack growth inside a loop.
+        # Run w as a self-contained call bounded to the current control-stack depth so it returns when w finishes; CATCH relies on this to avoid native-stack growth inside a loop.
         nt = w.now_thread
         if nt is None:
             nt = CodeThread([w], [ZERO])

@@ -74,7 +74,7 @@ MAX_THREADS = 65536
 
 
 class ThreadRegistry(object):
-    """Maps a dense int id -> CodeThread. The call stack stores a thread's id
+    """Maps a dense int id -> CodeThread. The control stack stores a thread's id
     (an int, no GC write barrier) instead of its pointer; pop recovers the object
     from here. The table is a fixed-size, write-once-per-slot immutable array, so
     the JIT folds threads[const_id] to a constant rather than emitting a real
@@ -105,6 +105,14 @@ class CodeThread(object):
         self.lits = lits # literal values used by code[i]
         self.tid = THREAD_REGISTRY.register(self)
         self.does_word = None
+
+
+class DeferredCodeThread(CodeThread):
+    """Thread owned by one DEFER word, with a directly accessible action."""
+
+    def __init__(self, code, lits):
+        CodeThread.__init__(self, code, lits)
+        self.deferred_word = None
 
 
 class W_Object(object):

@@ -12,6 +12,7 @@ from rpyforth.objects import (
     TRUE,
     ZERO,
     CodeThread,
+    DeferredCodeThread,
     ForthException,
     Word,
     W_IntObject,
@@ -24,6 +25,7 @@ from rpyforth.objects import (
     SMALL_INT_MAX,
     word_from_wid,
     WORD_REGISTRY,
+    THREAD_REGISTRY,
 )
 from rpyforth.inner_interp import (
     jitdriver,
@@ -1786,7 +1788,7 @@ def _call_word_inline(inner, cur, ip, word):
     the dispatch loop: push the return frame exactly like a compiled call, hand
     the target to the loop via pending_box, and signal with CALL_SENTINEL.
     Keeps EXECUTE/CATCH/deferred calls traceable (no nested portal)."""
-    inner.push_call(cur, ip)
+    inner.push_control(cur, ip)
     push_ds_fragments(inner)
     inner.pending_box[0] = word
     return CALL_SENTINEL
@@ -1859,10 +1861,10 @@ def prim_VOCAB_SELECT(inner, cur, ip):
     return ip
 
 
-# (DEFER) ( id -- ) -- execute the word bound to deferred slot id.
+# (DEFER) -- execute the action stored on this deferred word's own thread.
 def prim_DEFER_EXEC(inner, cur, ip):
-    idx = inner.pop_ds_int()
-    word = inner.deferred_words[idx]
+    assert isinstance(cur, DeferredCodeThread)
+    word = cur.deferred_word
     if word is None:
         print "uninitialized DEFER"
         return ip
@@ -1872,10 +1874,12 @@ def prim_DEFER_EXEC(inner, cur, ip):
     return ip
 
 
-# (IS!) ( xt id -- ) -- bind xt to deferred slot id (compiled by IS).
+# (IS!) ( xt tid -- ) -- bind xt to a DeferredCodeThread (compiled by IS).
 def prim_IS_STORE(inner, cur, ip):
-    idx = inner.pop_ds_int()
-    inner.deferred_words[idx] = word_from_wid(inner.pop_ds_int())
+    tid = inner.pop_ds_int()
+    thread = THREAD_REGISTRY.threads[tid]
+    assert isinstance(thread, DeferredCodeThread)
+    thread.deferred_word = word_from_wid(inner.pop_ds_int())
     return ip
 
 
@@ -2066,9 +2070,9 @@ def prim_SEARCH(inner, cur, ip):
 def prim_DEFER_STORE(inner, cur, ip):
     xt_def = word_from_wid(inner.pop_ds_int())
     xt = word_from_wid(inner.pop_ds_int())
-    slot_w = xt_def.thread.lits[0]
-    assert isinstance(slot_w, W_IntObject)
-    inner.deferred_words[slot_w.intval] = xt
+    thread = xt_def.thread
+    assert isinstance(thread, DeferredCodeThread)
+    thread.deferred_word = xt
     return ip
 
 
@@ -3094,9 +3098,9 @@ def prim_CATCH(inner, cur, ip):
     if word.thread is None:
         return _catch_primitive_xt(inner, cur, ip, word)
     inner.catch_push_frame(cur, ip)
-    inner.push_call(cur, ip)
+    inner.push_control(cur, ip)
     push_ds_fragments(inner)
-    inner.push_call(CATCH_EPILOGUE_THREAD, 0)
+    inner.push_control(CATCH_EPILOGUE_THREAD, 0)
     push_ds_fragments(inner)
     inner.pending_box[0] = word
     return CALL_SENTINEL
@@ -3119,7 +3123,7 @@ def _catch_primitive_xt(inner, cur, ip, word):
     s_rs = inner.rs_ptr
     s_li = inner.li
     s_lc = inner.lc_depth
-    s_cs = inner.cs_ptr
+    s_control = inner.cs_ptr
     s_catch = inner.catch_ptr
     try:
         inner.execute_word_now(word)
@@ -3135,7 +3139,7 @@ def _catch_primitive_xt(inner, cur, ip, word):
         inner.rs_ptr = s_rs
         inner.li = s_li
         inner.lc_depth = s_lc
-        inner.cs_ptr = s_cs
+        inner.cs_ptr = s_control
         inner.catch_ptr = s_catch
         inner.push_ds_int(e.code)
         return ip
