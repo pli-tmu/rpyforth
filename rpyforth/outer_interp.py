@@ -1199,6 +1199,28 @@ class OuterInterpreter(object):
             i += 1
         return thread
 
+    def _inlinable_does_body(self, w):
+        """Return the carved DOES> body thread when w is a CREATEd word of
+        shape [LIT addr, does_word, EXIT] and that body is itself splicable.
+        The call site then compiles as LIT addr + spliced body, removing the
+        per-call round-trip through the anonymous does word."""
+        if w.prim is not None or w.immediate or w.does_ip != -1:
+            return None
+        thread = w.thread
+        if thread is None or isinstance(thread, DeferredCodeThread):
+            return None
+        if thread.does_word is not None:
+            return None
+        code = thread.code
+        if len(code) != 3:
+            return None
+        if code[0] is not self.wLIT or code[2] is not self.wEXIT:
+            return None
+        dw = code[1]
+        if dw is None:
+            return None
+        return self._inlinable_colon_body(dw)
+
     def _emit_inline(self, thread):
         """Splice a callee body (all but its trailing EXIT) into the current
         def, relocating branch targets by the insertion offset. A target at or
@@ -1238,11 +1260,16 @@ class OuterInterpreter(object):
                 if lit is not None:
                     self._emit_lit(lit)
                 else:
-                    body = self._inlinable_colon_body(w)
-                    if body is not None:
-                        self._emit_inline(body)
+                    dbody = self._inlinable_does_body(w)
+                    if dbody is not None:
+                        self._emit_lit(w.thread.lits[0])
+                        self._emit_inline(dbody)
                     else:
-                        self._emit_word(w)
+                        body = self._inlinable_colon_body(w)
+                        if body is not None:
+                            self._emit_inline(body)
+                        else:
+                            self._emit_word(w)
         elif self.inner.base == 10 and self._is_float(t):
             self._emit_lit(W_FloatObject(self._to_float(t)))
         elif self._is_number_base(t, self.inner.base):

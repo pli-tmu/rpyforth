@@ -75,6 +75,12 @@ RPYFORTH_STACK_LAYOUT=fragment PYTHONPATH=. ./_pypy_binary/bin/python2 ./pypy/py
 
 ## Benchmarks
 
+Comparison engines used in the published numbers:
+
+- gforth-fast 0.7.9_20260610 (Makefile pins the snapshot URL)
+- VFX Forth 64 5.43 [build 0199] (2023-11-09, Linux x64; download URL is unversioned, pinned by SHA256)
+- SwiftForth x64-Linux 4.1.8 (05-Jul-2026, evaluation; download URL is unversioned, pinned by SHA256)
+
 Everything runs from the project root through `make`; each target sets up
 its own prerequisites on first use (Python 3 venv with matplotlib, the
 translated binary if missing, the comparison engines, and the appbench-1.4
