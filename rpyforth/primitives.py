@@ -1830,6 +1830,8 @@ def prim_EXECUTE(inner, cur, ip):
     _w = inner.pop_ds_int()
     if _w < 0 or _w >= WORD_REGISTRY.count:
         raise ForthException(-21)
+    # xts reaching EXECUTE come from jump tables / immutable cells and are near-constant per trace; promoting folds the registry lookup and lets the callee inline.
+    _w = promote(_w)
     word = word_from_wid(_w)
     if word.thread is not None:
         return _call_word_inline(inner, cur, ip, word)
