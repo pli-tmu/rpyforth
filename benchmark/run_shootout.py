@@ -22,6 +22,7 @@ Use --iterations N to repeat each run and report median elapsed times.
 
 import argparse
 import json
+import math
 import os
 import platform
 import random
@@ -70,12 +71,14 @@ COMPARE_PRESETS: Dict[str, Tuple[str, str, bool]] = {
     "jit": ("./rpyforth-c", "./rpyforth-c --jit off", False),
     "virt": ("./rpyforth-c", "./rpyforth-c-novirt", False),
     "gforth": ("gforth", "./rpyforth-c", True),
+    "stkfrag": ("./rpyforth-c-stkfrag", "./rpyforth-c", False),
 }
 
 COMPARE_TITLES: Dict[str, str] = {
     "jit": "JIT Comparison",
     "virt": "Virtualization Comparison",
     "gforth": "Gforth Baseline Comparison",
+    "stkfrag": "Stack-fragment Ablation (stkfrag vs contiguous)",
 }
 
 
@@ -251,7 +254,8 @@ def run_benchmark(
     )
 
     cmd = list(wrapper or []) + list(cmd_prefix) + [str(benchmark)] + args
-    stdin_path = STDIN_FILES.get(result.name)
+    stdin_key = result.name.replace("shootout/curve/", "shootout/")
+    stdin_path = STDIN_FILES.get(stdin_key)
     stdin_fh = None
     start = time.perf_counter()
     try:
@@ -617,8 +621,11 @@ def short_label(cmd: List[str]) -> str:
     from plot_engines import engine_display_name, normalize_engine
 
     name = Path(cmd[0]).name
+    # Keep stack-layout / build variants distinct for ablation charts.
+    variant = engine_display_name(name)
+    if variant in ("stkfrag", "contiguous", "novirt"):
+        return variant
     canon = normalize_engine(name)
-    # Known engines collapse to a stable legend name (drop .sh / -stkfrag).
     if canon in ("rpyforth", "gforth-fast", "gforth", "vfxforth", "swiftforth"):
         return engine_display_name(canon)
     if len(cmd) == 1:
@@ -763,7 +770,6 @@ def build_run_plan(args: argparse.Namespace) -> RunPlan:
 
 
 def format_comparison(results: List[BenchmarkResult], plan: RunPlan) -> str:
-    """Build a comparison table from paired A/B results."""
     groups: Dict[str, Dict[str, BenchmarkResult]] = {}
     for r in results:
         groups.setdefault(r.name, {})[r.config] = r
@@ -788,6 +794,7 @@ def format_comparison(results: List[BenchmarkResult], plan: RunPlan) -> str:
 
     mismatches = 0
     errors = 0
+    speedup_vals: List[float] = []
     for name in sorted(groups):
         group = groups[name]
         a = group.get("A")
@@ -811,9 +818,12 @@ def format_comparison(results: List[BenchmarkResult], plan: RunPlan) -> str:
         b_elapsed = b.elapsed_usec if b.elapsed_usec is not None else 0
 
         if plan.speedup_a_over_b:
-            speedup_str = f"{a_elapsed / b_elapsed:.2f}x" if b_elapsed > 0 else "n/a"
+            speedup = (a_elapsed / b_elapsed) if b_elapsed > 0 else None
         else:
-            speedup_str = f"{b_elapsed / a_elapsed:.2f}x" if a_elapsed > 0 else "n/a"
+            speedup = (b_elapsed / a_elapsed) if a_elapsed > 0 else None
+        speedup_str = f"{speedup:.2f}x" if speedup is not None else "n/a"
+        if speedup is not None and speedup > 0:
+            speedup_vals.append(speedup)
 
         match = a.result_value == b.result_value
         if not match:
@@ -824,6 +834,12 @@ def format_comparison(results: List[BenchmarkResult], plan: RunPlan) -> str:
             f"{name:<25} {a_elapsed:>16,}us {b_elapsed:>16,}us {speedup_str:>10} {match_str:>8}"
         )
 
+    if speedup_vals:
+        gm = math.exp(sum(math.log(v) for v in speedup_vals) / len(speedup_vals))
+        lines.append(
+            f"{'geomean':<25} {'':>16} {'':>16} {gm:>9.2f}x {'':>8}"
+        )
+
     lines.append("=" * 100)
     lines.append(
         f"Comparison summary: {len(groups)} pairs, {mismatches} result mismatches, {errors} errors"
@@ -832,27 +848,25 @@ def format_comparison(results: List[BenchmarkResult], plan: RunPlan) -> str:
         lines.append(
             f"Interpretation: speedup = {a_label} / {b_label}; >1 means {b_label} is faster."
         )
-    elif mismatches:
+    else:
+        lines.append(
+            f"Interpretation: speedup = {b_label} / {a_label}; >1 means {a_label} is faster."
+        )
+    if mismatches:
         lines.append("Warning: result values differ between configurations!")
     return "\n".join(lines)
 
 
 def format_multi_comparison(results: List[BenchmarkResult], plan: RunPlan) -> str:
-    """Build a comparison table across three or more configurations.
-
-    Elapsed times are shown per configuration; the ratio column is each
-    configuration's time divided by the reference (first) configuration, so a
-    value below 1.0 means that engine is faster than the reference.
-    """
     groups: Dict[str, Dict[str, BenchmarkResult]] = {}
     for r in results:
         groups.setdefault(r.name, {})[r.config] = r
 
     config_ids = [cfg_id for cfg_id, _, _ in plan.configs]
     ref = plan.reference_config
+    others = [c for c in config_ids if c != ref]
 
     def cell(r: Optional[BenchmarkResult]) -> Tuple[str, float, Optional[int]]:
-        """Return (display, relative CI half-width %, median) for one result."""
         if r is None or r.status not in ("ok", "warning") or r.elapsed_usec is None:
             return ("-", 0.0, None)
         _, ci = median_ci(r.elapsed_samples or [r.elapsed_usec])
@@ -860,46 +874,81 @@ def format_multi_comparison(results: List[BenchmarkResult], plan: RunPlan) -> st
         return (disp, ci, r.elapsed_usec)
 
     colw = 22
-    width = 24 + (colw + 1) * len(config_ids) + 14
+    speedup_w = max(12, max((len(plan.label_for(c)) for c in others), default=8) + 2)
+    width = 24 + (colw + 1) * len(config_ids) + 1 + (speedup_w + 1) * len(others)
     lines: List[str] = []
     lines.append("=" * width)
-    lines.append(f"Performance comparison (median us, ratio vs {plan.label_for(ref)})")
+    lines.append(
+        f"Performance comparison (median us; speedup = baseline / {plan.label_for(ref)})"
+    )
     lines.append("=" * width)
     header = f"{'Benchmark':<24}"
     for cfg_id in config_ids:
         header += f" {plan.label_for(cfg_id):>{colw}}"
-    header += f" {'ratios':>14}"
+    for cfg_id in others:
+        header += f" {'vs ' + plan.label_for(cfg_id):>{speedup_w}}"
     lines.append(header)
     lines.append("-" * width)
 
     mismatches = 0
     noisy = False
+    elapsed_by_cfg: Dict[str, List[float]] = {c: [] for c in config_ids}
+    speedup_by_other: Dict[str, List[float]] = {c: [] for c in others}
+
     for name in sorted(groups):
         group = groups[name]
         row = f"{name:<24}"
-        ref_disp, ref_ci, ref_elapsed = cell(group.get(ref))
-        ratios: List[str] = []
+        _, ref_ci, ref_elapsed = cell(group.get(ref))
         values = set()
+        elapsed_row: Dict[str, Optional[int]] = {}
         for cfg_id in config_ids:
             r = group.get(cfg_id)
             disp, ci, elapsed = cell(r)
             row += f" {disp:>{colw}}"
-            if cfg_id != ref and elapsed and ref_elapsed:
-                ratio = elapsed / ref_elapsed
-                # Mark ratios that fall within the combined run-to-run noise.
-                within = abs(ratio - 1.0) <= (ci + ref_ci) / 100.0
-                noisy = noisy or within
-                ratios.append(f"{ratio:.2f}x{'~' if within else ''}")
+            elapsed_row[cfg_id] = elapsed
+            if elapsed is not None and elapsed > 0:
+                elapsed_by_cfg[cfg_id].append(float(elapsed))
             if r is not None and r.result_value is not None:
                 values.add(r.result_value)
+        for cfg_id in others:
+            elapsed = elapsed_row.get(cfg_id)
+            if elapsed and ref_elapsed:
+                speedup = float(elapsed) / float(ref_elapsed)
+                _, ci, _ = cell(group.get(cfg_id))
+                within = abs(speedup - 1.0) <= (ci + ref_ci) / 100.0
+                noisy = noisy or within
+                mark = "~" if within else ""
+                cell_s = f"{speedup:.2f}x{mark}"
+                row += f" {cell_s:>{speedup_w}}"
+                if speedup > 0:
+                    speedup_by_other[cfg_id].append(speedup)
+            else:
+                row += f" {'-':>{speedup_w}}"
         if len(values) > 1:
             mismatches += 1
-        row += f" {'/'.join(ratios):>14}"
         lines.append(row)
 
+    geo_row = f"{'geomean':<24}"
+    for cfg_id in config_ids:
+        vals = elapsed_by_cfg[cfg_id]
+        if vals:
+            gm = math.exp(sum(math.log(v) for v in vals) / len(vals))
+            geo_row += f" {f'{gm:,.0f}':>{colw}}"
+        else:
+            geo_row += f" {'-':>{colw}}"
+    for cfg_id in others:
+        vals = speedup_by_other[cfg_id]
+        if vals:
+            gm = math.exp(sum(math.log(v) for v in vals) / len(vals))
+            geo_row += f" {f'{gm:.2f}x':>{speedup_w}}"
+        else:
+            geo_row += f" {'-':>{speedup_w}}"
+    lines.append(geo_row)
+
     lines.append("=" * width)
-    others = ", ".join(plan.label_for(c) for c in config_ids if c != ref)
-    lines.append(f"ratios = ({others}) / {plan.label_for(ref)}; <1.0 means faster than {plan.label_for(ref)}")
+    lines.append(
+        f"speedup = baseline / {plan.label_for(ref)}; >1.0 means {plan.label_for(ref)} is faster"
+    )
     lines.append("± = 90% bootstrap CI of the median over the timed runs")
     if noisy:
         lines.append("~ = difference within combined run-to-run noise (not significant)")

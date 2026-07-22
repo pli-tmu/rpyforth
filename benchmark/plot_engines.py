@@ -16,7 +16,11 @@ PRIMARY_ENGINES = ("rpyforth", "gforth-fast", "vfxforth", "swiftforth")
 ENGINE_COLORS = {
     "rpyforth": "#d62728",
     "rpyforth-c-stkfrag": "#d62728",
-    "rpyforth-c": "#d62728",
+    "stkfrag": "#d62728",
+    "rpyforth-c": "#8c564b",
+    "contiguous": "#8c564b",
+    "rpyforth-c-novirt": "#e377c2",
+    "novirt": "#e377c2",
     "gforth-fast": "#1f77b4",
     "gforth": "#2ca02c",
     "vfxforth": "#9467bd",
@@ -54,15 +58,31 @@ def normalize_engine(name: str) -> str:
 
 
 def engine_color(engine: str) -> str:
+    raw = Path(str(engine).strip()).name.lower()
+    if raw.endswith(".sh"):
+        raw = raw[: -len(".sh")]
+    if raw in ENGINE_COLORS:
+        return ENGINE_COLORS[raw]
     key = normalize_engine(engine)
     if key in ENGINE_COLORS:
         return ENGINE_COLORS[key]
-    # Stable fallback by hashing the name into the spare palette.
     return _FALLBACK_PALETTE[sum(ord(c) for c in key) % len(_FALLBACK_PALETTE)]
 
 
 def engine_display_name(engine: str) -> str:
-    """Human-readable legend label."""
+    raw = Path(str(engine).strip()).name.lower()
+    if raw.endswith(".sh"):
+        raw = raw[: -len(".sh")]
+    variant_labels = {
+        "rpyforth-c-stkfrag": "stkfrag",
+        "stkfrag": "stkfrag",
+        "rpyforth-c": "contiguous",
+        "contiguous": "contiguous",
+        "rpyforth-c-novirt": "novirt",
+        "novirt": "novirt",
+    }
+    if raw in variant_labels:
+        return variant_labels[raw]
     key = normalize_engine(engine)
     labels = {
         "rpyforth": "rpyforth",

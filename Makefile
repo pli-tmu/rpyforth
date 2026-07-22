@@ -256,8 +256,30 @@ bench-shootout: $(BENCH_DEPS)
 bench-shootout-curve: $(BENCH_DEPS)
 	@$(PLOT_PY) benchmark/run_shootout.py \
 		$(SHOOTOUT_COMPARE) \
-		--only curve/ --iterations 5 \
-		--curve-chart shootout-curve.pdf
+		--only curve/ --iterations 5 --steady-state \
+		--curve-chart shootout-curve.pdf \
+		--chart shootout-curve-bars.pdf
+
+.PHONY: bench-ablation-stkfrag
+bench-ablation-stkfrag: $(RPYFORTH_STKFRAG) $(PLOT_PY)
+	@test -x ./rpyforth-c || $(MAKE) build-jit
+	@$(PLOT_PY) benchmark/run_shootout.py \
+		--compare stkfrag \
+		--exclude curve/ --iterations 5 --pin 2 \
+		--chart logs/ablation-stkfrag/shootout.pdf \
+		--json logs/ablation-stkfrag/results.json \
+		--output logs/ablation-stkfrag
+
+.PHONY: bench-ablation-stkfrag-curve
+bench-ablation-stkfrag-curve: $(RPYFORTH_STKFRAG) $(PLOT_PY)
+	@test -x ./rpyforth-c || $(MAKE) build-jit
+	@$(PLOT_PY) benchmark/run_shootout.py \
+		--compare stkfrag \
+		--only curve/ --iterations 5 --pin 2 --steady-state \
+		--curve-chart logs/ablation-stkfrag/shootout-curve.pdf \
+		--chart logs/ablation-stkfrag/shootout-curve-bars.pdf \
+		--json logs/ablation-stkfrag/results-curve.json \
+		--output logs/ablation-stkfrag
 
 .PHONY: bench-appbench
 bench-appbench: $(BENCH_DEPS) setup-appbench
@@ -270,6 +292,7 @@ bench-appbench-curve: $(BENCH_DEPS) setup-appbench
 	@$(PLOT_PY) benchmark/run_appbench.py steady \
 		--engines rpyforth gforth-fast vfxforth swiftforth \
 		--iterations 50 --pin 3 --pdf appbench-curve.pdf
+	@echo "Bar chart: appbench-curve-bars.pdf"
 
 .PHONY: bench-factor
 bench-factor: setup-plot

@@ -774,17 +774,25 @@ def fmt_usec(v):
     return "%d us" % v
 
 
+def _geomean(values):
+    vals = [v for v in values if v is not None and v > 0]
+    if not vals:
+        return None
+    return math.exp(sum(math.log(v) for v in vals) / len(vals))
+
+
 def print_table(results, engines, iterations):
-    """results: {prog_name: {engine: run_dict}}"""
     print("")
-    print("=" * 92)
+    print("=" * 100)
     print("STEADY-STATE COMPARISON  (R=%d iterations/program, warm tail = last 50%%)" % iterations)
-    print("=" * 92)
-    header = "%-10s %-13s %12s %14s %12s" % (
+    print("=" * 100)
+    header = "%-10s %-13s %12s %20s %12s" % (
         "program", "engine", "cold[iter0]", "warm[tail-med]", "vs-ref",
     )
     print(header)
-    print("-" * 92)
+    print("-" * 100)
+    warm_by_engine = {e: [] for e in engines}
+    ratio_by_engine = {e: [] for e in engines}
     for prog in results:
         eng_res = results[prog]
         ref = eng_res.get(REFERENCE_ENGINE)
@@ -797,6 +805,15 @@ def print_table(results, engines, iterations):
             times = r["times"]
             cold = times[0] if times else None
             warm = steady_state_tail(times)
+            if warm is None:
+                warm_disp = "n/a"
+            else:
+                warm_disp = fmt_usec(warm).strip()
+                tail = times[int(len(times) * 0.5):] or times
+                _, ci = median_ci(tail)
+                if round(ci) > 0:
+                    warm_disp = "%s ±%.0f%%" % (warm_disp, ci)
+                warm_by_engine[engine].append(float(warm))
             if r["timed_out"]:
                 ratio = "TIMEOUT"
             elif not times:
@@ -804,17 +821,38 @@ def print_table(results, engines, iterations):
             elif engine == REFERENCE_ENGINE:
                 ratio = "1.00x (ref)"
             elif ref_warm and warm:
-                # ratio = ref / this ; >1.0 means this engine is faster than ref.
-                ratio = "%.2fx" % (ref_warm / float(warm))
+                ratio_v = ref_warm / float(warm)
+                ratio = "%.2fx" % ratio_v
+                ratio_by_engine[engine].append(ratio_v)
             else:
                 ratio = "  -"
             name_col = prog if first_prog_row else ""
             first_prog_row = False
-            print("%-10s %-13s %12s %14s %12s" % (
-                name_col, engine, fmt_usec(cold), fmt_usec(warm), ratio,
+            print("%-10s %-13s %12s %20s %12s" % (
+                name_col, engine, fmt_usec(cold), warm_disp, ratio,
             ))
-        print("-" * 92)
-    print("Note: 'vs-ref' = gforth-fast_warm / rpyforth_warm.  >1.00x  => rpyforth WINS warm.")
+        print("-" * 100)
+
+    geo_warm = []
+    geo_ratio = []
+    for engine in engines:
+        gm_w = _geomean(warm_by_engine.get(engine, []))
+        geo_warm.append(fmt_usec(gm_w).strip() if gm_w is not None else "-")
+        if engine == REFERENCE_ENGINE:
+            geo_ratio.append("1.00x (ref)")
+        else:
+            gm_r = _geomean(ratio_by_engine.get(engine, []))
+            geo_ratio.append("%.2fx" % gm_r if gm_r is not None else "-")
+    # Print geomean as one row per engine to keep the table aligned.
+    first = True
+    for engine, warm_s, ratio_s in zip(engines, geo_warm, geo_ratio):
+        name_col = "geomean" if first else ""
+        first = False
+        print("%-10s %-13s %12s %20s %12s" % (name_col, engine, "", warm_s, ratio_s))
+    print("-" * 100)
+    print("Note: 'vs-ref' = %s_warm / engine_warm.  >1.00x => engine beats %s warm."
+          % (REFERENCE_ENGINE, REFERENCE_ENGINE))
+    print("Note: ± = 90% bootstrap CI of the warm-tail median")
     print("Note: lexex re-runs its compute core (decorate + FSM table build + output")
     print("      arrays) per iteration via a dictionary rewind; the file-writing")
     print("      saveAllTables is excluded and correctness is re-verified against ref.tt.")
@@ -829,11 +867,14 @@ def make_chart(results, engines, iterations, pdf_path):
 
     progs = list(results.keys())
     n = len(progs)
-    fig, axes = plt.subplots(n, 1, figsize=(10, 4.0 * n), squeeze=False)
+    cols = min(3, max(1, n))
+    rows = (n + cols - 1) // cols
+    fig, axes = plt.subplots(rows, cols, figsize=(5 * cols, 3.6 * rows), squeeze=False)
     plot_engines = sort_engines(engines)
+    flat = axes.flatten()
 
-    for row, prog in enumerate(progs):
-        ax = axes[row][0]
+    for idx, prog in enumerate(progs):
+        ax = flat[idx]
         eng_res = results[prog]
         for engine in plot_engines:
             r = eng_res.get(engine)
@@ -861,12 +902,91 @@ def make_chart(results, engines, iterations, pdf_path):
         ax.grid(True, alpha=0.3)
         ax.legend(loc="upper right", fontsize=8)
 
+    for idx in range(n, rows * cols):
+        flat[idx].set_visible(False)
+
     fig.suptitle(
         "Warm-up curves: rpyforth / gforth-fast / vfxforth / swiftforth\n"
         "dotted line = warm-tail median; dashed vertical = steady-state onset",
         fontsize=11)
     fig.tight_layout(rect=(0, 0, 1, 0.97))
     fig.savefig(str(pdf_path))
+    plt.close(fig)
+
+
+def make_bar_chart(results, engines, pdf_path):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from plot_engines import engine_color, sort_engines
+
+    plot_engines = sort_engines(engines)
+    progs = list(results.keys())
+    warm = {e: [] for e in plot_engines}
+    for prog in progs:
+        for engine in plot_engines:
+            r = results[prog].get(engine)
+            med = steady_state_tail(r["times"]) if r and r.get("times") else None
+            warm[engine].append(float(med) if med is not None else None)
+
+    names = list(progs) + ["geomean"]
+    warm_g = {
+        e: warm[e] + [_geomean(warm[e])]
+        for e in plot_engines
+    }
+    height = max(4.0, len(progs) * 0.55)
+    fig, (ax_abs, ax_spd) = plt.subplots(1, 2, figsize=(14, height))
+
+    n_cfg = max(1, len(plot_engines))
+    group = 0.8
+    width = group / n_cfg
+    y = range(len(names))
+    for j, engine in enumerate(plot_engines):
+        offsets = [i - group / 2 + width * (j + 0.5) for i in y]
+        heights = [v if v is not None else 0 for v in warm_g[engine]]
+        ax_abs.barh(offsets, heights, width, label=engine, color=engine_color(engine))
+    ax_abs.axhline(len(names) - 1.5, color="gray", linewidth=0.8, linestyle=":")
+    ax_abs.set_xscale("log")
+    ax_abs.set_yticks(list(y))
+    ax_abs.set_yticklabels(names)
+    ax_abs.set_xlabel("Warm-tail median (usec, log)")
+    ax_abs.set_title("Elapsed time per engine")
+    ax_abs.legend(fontsize=8)
+    ax_abs.grid(axis="x", linestyle="--", alpha=0.5)
+
+    baselines = [e for e in plot_engines if e != ENGINE_RPYFORTH]
+    rpy_vals = warm.get(ENGINE_RPYFORTH, [])
+    if baselines and any(v is not None for v in rpy_vals):
+        n_base = max(1, len(baselines))
+        width_s = group / n_base
+        for j, engine in enumerate(baselines):
+            offsets = [i - group / 2 + width_s * (j + 0.5) for i in y]
+            speedups = []
+            for o, r in zip(warm[engine], rpy_vals):
+                if o is not None and r:
+                    speedups.append(o / r)
+                else:
+                    speedups.append(None)
+            speedups = speedups + [_geomean(speedups)]
+            heights = [v if v is not None else 0 for v in speedups]
+            ax_spd.barh(offsets, heights, width_s, label="vs " + engine,
+                        color=engine_color(engine))
+        ax_spd.axvline(1.0, color="black", linestyle="--", linewidth=1)
+        ax_spd.axhline(len(names) - 1.5, color="gray", linewidth=0.8, linestyle=":")
+        ax_spd.set_yticks(list(y))
+        ax_spd.set_yticklabels(names)
+        ax_spd.set_xlabel("Speedup = baseline / rpyforth (>1 means rpyforth faster)")
+        ax_spd.set_title("rpyforth speedup vs baselines")
+        ax_spd.legend(fontsize=8)
+        ax_spd.grid(axis="x", linestyle="--", alpha=0.5)
+    else:
+        ax_spd.text(0.5, 0.5, "No rpyforth baselines", ha="center", va="center",
+                    transform=ax_spd.transAxes)
+        ax_spd.set_axis_off()
+
+    fig.suptitle("Appbench steady-state (warm-tail median)", fontsize=12)
+    fig.tight_layout(rect=(0, 0, 1, 0.96))
+    fig.savefig(str(pdf_path), dpi=120)
     plt.close(fig)
 
 
@@ -892,6 +1012,11 @@ def _save_steady_logs(results, engines, log_dir, iterations):
                 f.write("iteration,elapsed_usec\n")
                 for i, t in enumerate(r["times"]):
                     f.write("%d,%d\n" % (i, t))
+            warm = steady_state_tail(r["times"])
+            warm_ci = 0.0
+            if r["times"] and warm is not None:
+                tail = r["times"][int(len(r["times"]) * 0.5):] or r["times"]
+                _, warm_ci = median_ci(tail)
             summary["results"].append({
                 "program": prog,
                 "engine": engine,
@@ -900,7 +1025,8 @@ def _save_steady_logs(results, engines, log_dir, iterations):
                 "returncode": r["rc"],
                 "timed_out": r["timed_out"],
                 "cold_usec": r["times"][0] if r["times"] else None,
-                "warm_median_usec": steady_state_tail(r["times"]),
+                "warm_median_usec": warm,
+                "warm_ci_pct": warm_ci,
             })
     json_path = log_dir / "steady_results.json"
     json_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
@@ -972,6 +1098,14 @@ def run_steady(args):
         print("Warm-up curve chart written to %s" % pdf_path)
     except Exception as exc:
         print("ERROR generating chart: %s" % exc, file=sys.stderr)
+        return 1
+
+    bar_path = pdf_path.with_name(pdf_path.stem + "-bars" + pdf_path.suffix)
+    try:
+        make_bar_chart(results, args.engines, bar_path)
+        print("Bar chart written to %s" % bar_path)
+    except Exception as exc:
+        print("ERROR generating bar chart: %s" % exc, file=sys.stderr)
         return 1
 
     return 0

@@ -29,10 +29,21 @@ def is_stable_benchmark(name: str) -> bool:
 def build_stable_elapsed_samples(
     results: List[BenchmarkResult],
 ) -> Dict[str, Dict[str, List[int]]]:
-    """Return stable benchmark elapsed times grouped by name and config."""
     samples: Dict[str, Dict[str, List[int]]] = {}
     for result in results:
         if not is_stable_benchmark(result.name):
+            continue
+        if result.elapsed_samples:
+            elapsed = result.elapsed_samples
+        elif result.elapsed_usec is not None:
+            elapsed = [result.elapsed_usec]
+        else:
+            continue
+        samples.setdefault(result.name, {})[result.config] = elapsed
+    if samples:
+        return samples
+    for result in results:
+        if not is_curve_benchmark(result.name):
             continue
         if result.elapsed_samples:
             elapsed = result.elapsed_samples
@@ -215,6 +226,43 @@ def draw_normalized(ax, names, data, plan, colors, errs=None) -> None:
     ax.grid(axis="x", linestyle="--", alpha=0.5)
 
 
+def draw_rpyforth_speedup(ax, names, data, plan, colors) -> None:
+    ref = plan.reference_config
+    ref_vals = data.get(ref, [None] * len(names))
+    others = [cid for cid in data if cid != ref]
+    if not others:
+        ax.text(0.5, 0.5, "No baselines to compare", ha="center", va="center",
+                transform=ax.transAxes)
+        ax.set_axis_off()
+        return
+    names = list(names) + ["geomean"]
+    n_cfg = max(1, len(others))
+    group = 0.8
+    width = group / n_cfg
+    y = range(len(names))
+    for j, cid in enumerate(others):
+        offsets = [i - group / 2 + width * (j + 0.5) for i in y]
+        speedups = [
+            (o / r) if (o is not None and r) else None
+            for o, r in zip(data[cid], ref_vals)
+        ]
+        speedups = speedups + [_geomean(speedups)]
+        heights = [v if v is not None else 0 for v in speedups]
+        ax.barh(offsets, heights, width, label="vs " + plan.label_for(cid),
+                color=colors[cid])
+    ax.axvline(1.0, color="black", linestyle="--", linewidth=1)
+    ax.axhline(len(names) - 1.5, color="gray", linewidth=0.8, linestyle=":")
+    ax.set_yticks(list(y))
+    ax.set_yticklabels([_short(n) for n in names])
+    ax.set_xlabel(
+        "Speedup = baseline / %s (>1 means %s is faster)"
+        % (plan.label_for(ref), plan.label_for(ref))
+    )
+    ax.set_title("%s speedup vs baselines" % plan.label_for(ref))
+    ax.legend()
+    ax.grid(axis="x", linestyle="--", alpha=0.5)
+
+
 def generate_bar_chart(
     out_path: Path,
     results: List[BenchmarkResult],
@@ -238,10 +286,11 @@ def generate_bar_chart(
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     colors = config_colors(plan)
-    height = max(4.0, len(names) * 0.6)
-    fig, (ax_norm, ax_abs) = plt.subplots(1, 2, figsize=(15, height))
+    height = max(4.0, len(names) * 0.55)
+    fig, (ax_norm, ax_abs, ax_spd) = plt.subplots(1, 3, figsize=(20, height))
     draw_normalized(ax_norm, names, data, plan, colors, errs=errs)
     draw_grouped_elapsed(ax_abs, names, data, plan, colors, logx=True)
+    draw_rpyforth_speedup(ax_spd, names, data, plan, colors)
     labels = ", ".join(plan.label_for(c) for c in config_ids)
     fig.suptitle(f"Shootout benchmarks: {labels}", fontsize=13)
     fig.tight_layout(rect=(0, 0.02, 1, 0.97))
@@ -421,6 +470,12 @@ def generate_pdf_report(
 
                 fig, ax = plt.subplots(figsize=(10, max(6, len(names) * 0.5)))
                 draw_grouped_elapsed(ax, names, data, plan, colors, logx=True)
+                plt.tight_layout()
+                pdf.savefig(fig)
+                plt.close(fig)
+
+                fig, ax = plt.subplots(figsize=(10, max(6, len(names) * 0.5)))
+                draw_rpyforth_speedup(ax, names, data, plan, colors)
                 plt.tight_layout()
                 pdf.savefig(fig)
                 plt.close(fig)
