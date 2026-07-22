@@ -760,7 +760,6 @@ class InnerInterpreter(InterpBase, object):
                     self.pending_box[0] = None
                     thread = target.thread
                     ip = 0
-                    jitdriver.can_enter_jit(ip=ip, thread=thread, self=self)
                     continue
                 if ip == TAILCALL_SENTINEL:
                     from rpyforth.objects import W_WordObject
@@ -772,6 +771,8 @@ class InnerInterpreter(InterpBase, object):
                         if nested_thread is not None:
                             thread = nested_thread
                             ip = 0
+                            # A tail call is a jump, not a call: for tail-recursive
+                            # words it is the loop back-edge, so it keeps its header.
                             jitdriver.can_enter_jit(ip=ip, thread=thread, self=self)
                             continue
                     thread, ip = self.pop_control()
@@ -783,9 +784,15 @@ class InnerInterpreter(InterpBase, object):
                 self.push_control(thread, ip)
                 if USE_STACK_FRAGMENT:
                     push_ds_fragments(self)
+                # Loop headers form at real backward branches (_maybe_enter_jit)
+                # and at direct self-recursion, where the entry IS the back-edge.
+                # A header at every word entry made nested call chains compete as
+                # bogus loop headers (bad-loop abort storms, bridge-chain walks).
+                recursing = nested_thread is thread
                 thread = nested_thread
                 ip = 0
-                jitdriver.can_enter_jit(ip=ip, thread=thread, self=self)
+                if recursing:
+                    jitdriver.can_enter_jit(ip=ip, thread=thread, self=self)
 
     def execute_word_now(self, w):
         # Run w as a self-contained call bounded to the current control-stack depth so it returns when w finishes; CATCH relies on this to avoid native-stack growth inside a loop.
