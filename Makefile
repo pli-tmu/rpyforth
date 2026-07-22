@@ -234,8 +234,6 @@ setup-baselines: setup-gforth setup-vfxforth setup-swiftforth
 
 RPYFORTH_STKFRAG = rpyforth-c-stkfrag
 
-# Build the benchmark binary only when it does not exist yet; use
-# `make build-jit-stkfrag` explicitly to force a re-translation.
 $(RPYFORTH_STKFRAG):
 	$(MAKE) build-jit-stkfrag
 
@@ -252,14 +250,14 @@ bench-shootout: $(BENCH_DEPS)
 	@$(PLOT_PY) benchmark/run_shootout.py \
 		$(SHOOTOUT_COMPARE) \
 		--exclude curve/ --iterations 5 \
-		--chart compare.pdf
+		--chart shootout.pdf
 
 .PHONY: bench-shootout-curve
 bench-shootout-curve: $(BENCH_DEPS)
 	@$(PLOT_PY) benchmark/run_shootout.py \
 		$(SHOOTOUT_COMPARE) \
 		--only curve/ --iterations 5 \
-		--curve-chart warmup.pdf
+		--curve-chart shootout-curve.pdf
 
 .PHONY: bench-appbench
 bench-appbench: $(BENCH_DEPS) setup-appbench
