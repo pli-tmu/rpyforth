@@ -771,8 +771,6 @@ class InnerInterpreter(InterpBase, object):
                         if nested_thread is not None:
                             thread = nested_thread
                             ip = 0
-                            # A tail call is a jump, not a call: for tail-recursive
-                            # words it is the loop back-edge, so it keeps its header.
                             jitdriver.can_enter_jit(ip=ip, thread=thread, self=self)
                             continue
                     thread, ip = self.pop_control()
@@ -784,10 +782,6 @@ class InnerInterpreter(InterpBase, object):
                 self.push_control(thread, ip)
                 if USE_STACK_FRAGMENT:
                     push_ds_fragments(self)
-                # Loop headers form at real backward branches (_maybe_enter_jit)
-                # and at direct self-recursion, where the entry IS the back-edge.
-                # A header at every word entry made nested call chains compete as
-                # bogus loop headers (bad-loop abort storms, bridge-chain walks).
                 recursing = nested_thread is thread
                 thread = nested_thread
                 ip = 0
