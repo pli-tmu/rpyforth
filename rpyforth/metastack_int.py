@@ -79,15 +79,9 @@ def restore_cache(host, snap):
 
 
 class DSIntMetaStack(DSMetaStack):
-    """Integer data stack in the three-tier layout: t0, t1 scalars |
-    frame[FRAME_SIZE] (both virtualizable) | one shared spill array. The spill is
-    allocated once per VM; a fragment is just the window [0, spill_ptr) onto it,
-    so nest/unnest allocates nothing."""
-
     def init_fields(self):
         init_fields(self)
 
-    # Hot path: top NTOP cells are scalars (dup/swap/+/- are register arithmetic); frame reached past depth NTOP, spill past ACTIVE_MAX.
     def push_on(self, v):
         dd = self.cache_depth
         if dd >= ACTIVE_MAX:
@@ -115,7 +109,6 @@ class DSIntMetaStack(DSMetaStack):
         return r
 
     def _pop_from_spill(self):
-        # Cache empty: the top is in the spill (a callee consumed past its imported window); underflow is a bug, checked by assert (no hot-path branch).
         ap = self.spill_ptr - 1
         assert ap >= 0
         r = self.spill[ap]
@@ -124,7 +117,6 @@ class DSIntMetaStack(DSMetaStack):
 
     @unroll_safe
     def _spill_bottom(self):
-        # Move the deepest cached cell (frame[0]) to the spill and slide the frame down; cold, only when depth exceeds ACTIVE_MAX.
         ap = self.spill_ptr
         if ap >= SPILL_SIZE:
             raise DataStackOverflow()
@@ -178,7 +170,6 @@ class DSIntMetaStack(DSMetaStack):
         self.cache_depth = 0
         self.spill_ptr = 0
 
-    # Call entry/return: a call parks the caller's below-NTOP cells in the spill and normalizes depth to the NTOP tops (which flow into the callee as its argument window); return is O(1) since the spill already holds the caller's cells.
     @unroll_safe
     def push_fragment_on(self):
         dd = self.cache_depth
@@ -188,7 +179,6 @@ class DSIntMetaStack(DSMetaStack):
             if ap + n > SPILL_SIZE:
                 raise DataStackOverflow()
             assert ap >= 0
-            # park below-NTOP frame cells: frame[i] (deepest at i=0) lands at spill[ap+i], leaving the shallowest at the spill top.
             i = 0
             while i < n:
                 self.spill[ap + i] = self.frame[i]

@@ -74,11 +74,7 @@ MAX_THREADS = 65536
 
 
 class ThreadRegistry(object):
-    """Maps a dense int id -> CodeThread. The control stack stores a thread's id
-    (an int, no GC write barrier) instead of its pointer; pop recovers the object
-    from here. The table is a fixed-size, write-once-per-slot immutable array, so
-    the JIT folds threads[const_id] to a constant rather than emitting a real
-    pointer load on every return. A prebuilt singleton."""
+    """Maps a dense int id -> CodeThread"""
 
     _immutable_fields_ = ["threads[*]"]
 
@@ -101,8 +97,8 @@ class CodeThread(object):
     _immutable_fields_ = ["code[*]", "lits[*]", "tid"]
 
     def __init__(self, code, lits):
-        self.code = code # list of Words
-        self.lits = lits # literal values used by code[i]
+        self.code = code     # list of Words
+        self.lits = lits     # literal values used by code[i]
         self.tid = THREAD_REGISTRY.register(self)
         self.does_word = None
 
@@ -113,6 +109,9 @@ class DeferredCodeThread(CodeThread):
     def __init__(self, code, lits):
         CodeThread.__init__(self, code, lits)
         self.deferred_word = None
+
+    def set_deferred_word(self, word):
+        self.deferred_word = word
 
 
 class W_Object(object):

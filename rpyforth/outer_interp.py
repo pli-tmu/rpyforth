@@ -809,7 +809,7 @@ class OuterInterpreter(object):
         return i
 
     def _handle_included(self):
-        """Handle INCLUDED / REQUIRED ( c-addr u -- ): the filename is a string."""
+        """INCLUDED / REQUIRED ( c-addr u -- ): the filename is a string."""
         self.inner.pop_ds_int()           # length (unused: the cell holds the string)
         c_addr = self.inner.pop_ds_int()
         w = self.inner.buf_get(c_addr)
@@ -817,7 +817,7 @@ class OuterInterpreter(object):
         self._include_file(w.strval)
 
     def _handle_defer(self, toks, i):
-        """Handle DEFER: define a word that executes a later-bound xt."""
+        """DEFER: define a word that executes a later-bound xt."""
         toks_len = len(toks)
         if not self.has_nextname and i >= toks_len:
             print "DEFER requires a name"
@@ -830,7 +830,7 @@ class OuterInterpreter(object):
         return i
 
     def _handle_is(self, toks, i):
-        """Handle IS (interpret mode): bind the xt on the stack to a DEFER word."""
+        """IS (interpret mode): bind the xt on the stack to a DEFER word."""
         toks_len = len(toks)
         if i >= toks_len:
             print "IS requires a name"

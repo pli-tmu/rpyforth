@@ -660,6 +660,7 @@ class InnerInterpreter(InterpBase, object):
         assert 0 <= i < len(self.buf)
         self.buf[i] = w_str
 
+    @unroll_safe
     def alloc_buf(self, content, size):
         # String lives as both a boxed object (buf_get) and real bytes in data space so char-level words see the same characters; here is aligned first so each owns a distinct buf slot.
         addr = (self.here + CELL_SIZE_BYTES - 1) & ~(CELL_SIZE_BYTES - 1)
@@ -723,7 +724,6 @@ class InnerInterpreter(InterpBase, object):
         return self.heap.float_fetch(addr)
 
     def execute_thread(self, thread, ip=0):
-        # A halt frame marks the portal boundary; every return pops unconditionally and the promoted return address folds the halt test away, so returning costs one guard.
         self.push_control(HALT_THREAD, 0)
         if USE_STACK_FRAGMENT:
             push_ds_fragments(self)
@@ -789,7 +789,6 @@ class InnerInterpreter(InterpBase, object):
                     jitdriver.can_enter_jit(ip=ip, thread=thread, self=self)
 
     def execute_word_now(self, w):
-        # Run w as a self-contained call bounded to the current control-stack depth so it returns when w finishes; CATCH relies on this to avoid native-stack growth inside a loop.
         nt = w.now_thread
         if nt is None:
             nt = CodeThread([w], [ZERO])
