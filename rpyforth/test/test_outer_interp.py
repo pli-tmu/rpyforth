@@ -77,6 +77,12 @@ def test_2dup():
 def test_2drop():
     inner = run_and_pop("1 2 3 2DROP") == 1
 
+
+def test_3drop():
+    assert run_and_pop("1 2 3 4 3DROP") == 1
+    assert run_and_pop(": KEEP-FIRST 3DROP ; 1 2 3 4 KEEP-FIRST") == 1
+
+
 def test_2swap():
     inner = run("1 2 3 4 2SWAP")
     assert inner.pop_ds_int() == 2

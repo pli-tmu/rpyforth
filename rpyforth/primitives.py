@@ -184,6 +184,16 @@ def prim_2DROP(inner, cur, ip):
     inner.pop_ds_int()
     return ip
 
+
+# 3DROP ( x1 x2 x3 -- )
+def prim_3DROP(inner, cur, ip):
+    """Discard the top three stack items."""
+    inner.pop_ds_int()
+    inner.pop_ds_int()
+    inner.pop_ds_int()
+    return ip
+
+
 # SWAP ( x1 x2 -- x2 x1 )
 def prim_SWAP(inner, cur, ip):
     """GForth core 2012: exchange the top two stack items."""
@@ -3719,6 +3729,7 @@ def install_primitives(outer):
 
     outer.define_prim("2DUP", prim_2DUP)
     outer.define_prim("2DROP", prim_2DROP)
+    outer.define_prim("3DROP", prim_3DROP)
     outer.define_prim("2SWAP", prim_2SWAP)
     outer.define_prim("2OVER", prim_2OVER)
 
