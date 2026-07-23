@@ -109,8 +109,12 @@ EXIT_SENTINEL = -1
 # Sentinel value for TAILCALL - indicates a tail call to another word
 TAILCALL_SENTINEL = -2
 
-# Sentinel for a primitive-initiated call (EXECUTE, CATCH): frames already pushed, dispatch loop transfers to pending_box's thread, keeping the call in the traced loop.
+# Sentinel for a primitive-initiated call (EXECUTE, CATCH)
+# frames already pushed, dispatch loop transfers to pending_box's thread, keeping the call in the traced loop.
 CALL_SENTINEL = -3
+
+# Sentinel for a deferred-word tail call
+DEFER_TAILCALL_SENTINEL = -4
 
 # Maximum number of simultaneously active CATCH frames
 CATCH_DEPTH = 16384
@@ -256,7 +260,6 @@ class InnerInterpreter(InterpBase, object):
         self.ca_fframes = [0.0] * float_frame_cells
         self.catch_ptr = 0
 
-        # CALL_SENTINEL target in a one-element list whose reference never changes: a field store on the virtualizable self would force a vable escape at the handoff, so the stable box keeps EXECUTE/CATCH dispatch escape-free.
         self.pending_box = [None]
 
         if USE_STACK_FRAGMENT:
@@ -776,6 +779,12 @@ class InnerInterpreter(InterpBase, object):
                     thread, ip = self.pop_control()
                     if thread is HALT_THREAD:
                         break
+                    continue
+                if ip == DEFER_TAILCALL_SENTINEL:
+                    target = promote(self.pending_box[0])
+                    self.pending_box[0] = None
+                    thread = target.thread
+                    ip = 0
                     continue
             else:
                 nested_thread = promote(w.thread)

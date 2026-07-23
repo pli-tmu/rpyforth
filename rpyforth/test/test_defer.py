@@ -30,6 +30,12 @@ def test_defer_used_in_colon():
     assert inner.pop_ds_int() == 99
 
 
+def test_defer_primitive_action():
+    inner = run("DEFER hook  ' DUP IS hook  7 hook")
+    assert inner.pop_ds_int() == 7
+    assert inner.pop_ds_int() == 7
+
+
 def test_defer_store():
     # DEFER! ( xt xt-deferred -- )
     inner = run("DEFER foo  : bar 55 ;  ' bar  ' foo DEFER!  foo")

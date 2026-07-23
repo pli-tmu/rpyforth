@@ -33,6 +33,7 @@ from rpyforth.inner_interp import (
     HEAP_SIZE_BYTES,
     USE_STACK_FRAGMENT,
     CALL_SENTINEL,
+    DEFER_TAILCALL_SENTINEL,
 )
 from rpyforth.heap import ALLOC_BASE, DICT_SIZE_BYTES
 from rpyforth.metastack import push_ds_fragments
@@ -1787,7 +1788,7 @@ def _call_word_inline(inner, cur, ip, word):
     """Transfer control to a colon word from inside a primitive without leaving
     the dispatch loop: push the return frame exactly like a compiled call, hand
     the target to the loop via pending_box, and signal with CALL_SENTINEL.
-    Keeps EXECUTE/CATCH/deferred calls traceable (no nested portal)."""
+    Keeps EXECUTE/CATCH calls traceable (no nested portal)."""
     inner.push_control(cur, ip)
     push_ds_fragments(inner)
     inner.pending_box[0] = word
@@ -1870,7 +1871,8 @@ def prim_DEFER_EXEC(inner, cur, ip):
         print "uninitialized DEFER"
         return ip
     if word.thread is not None:
-        return _call_word_inline(inner, cur, ip, word)
+        inner.pending_box[0] = word
+        return DEFER_TAILCALL_SENTINEL
     inner.execute_word_now(word)
     return ip
 
