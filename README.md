@@ -75,7 +75,7 @@ RPYFORTH_STACK_LAYOUT=fragment PYTHONPATH=. ./_pypy_binary/bin/python2 ./pypy/py
 
 ## Benchmarks
 
-Comparison engines used in the published numbers:
+Comparison engines are the follows:
 
 - gforth-fast 0.7.9_20260610 (Makefile pins the snapshot URL)
 - VFX Forth 64 5.43 [build 0199] (2023-11-09, Linux x64; download URL is unversioned, pinned by SHA256)
