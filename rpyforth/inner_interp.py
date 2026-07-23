@@ -3,6 +3,7 @@ from rpyforth.objects import (
     ForthException,
     Word,
     CodeThread,
+    DeferredCodeThread,
     ZERO,
     W_Object,
     W_IntObject,
@@ -110,7 +111,6 @@ EXIT_SENTINEL = -1
 TAILCALL_SENTINEL = -2
 
 # Sentinel for a primitive-initiated call (EXECUTE, CATCH)
-# frames already pushed, dispatch loop transfers to pending_box's thread, keeping the call in the traced loop.
 CALL_SENTINEL = -3
 
 # Sentinel for a deferred-word tail call
@@ -120,7 +120,7 @@ DEFER_TAILCALL_SENTINEL = -4
 CATCH_DEPTH = 16384
 
 # Control-stack packing: an entry is (tid << CONTROL_IP_BITS) | ip; 24 bits
-# bound the ip within a thread, tids bounded by MAX_THREADS.
+# bound the ip within a thread, tids bounded by MAX_THREADS
 CONTROL_IP_BITS = 24
 CONTROL_IP_MASK = (1 << CONTROL_IP_BITS) - 1
 
@@ -781,8 +781,9 @@ class InnerInterpreter(InterpBase, object):
                         break
                     continue
                 if ip == DEFER_TAILCALL_SENTINEL:
-                    target = promote(self.pending_box[0])
-                    self.pending_box[0] = None
+                    assert isinstance(thread, DeferredCodeThread)
+                    target = promote(thread.deferred_word)
+                    assert target is not None
                     thread = target.thread
                     ip = 0
                     continue

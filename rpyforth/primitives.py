@@ -1881,7 +1881,6 @@ def prim_DEFER_EXEC(inner, cur, ip):
         print "uninitialized DEFER"
         return ip
     if word.thread is not None:
-        inner.pending_box[0] = word
         return DEFER_TAILCALL_SENTINEL
     inner.execute_word_now(word)
     return ip
